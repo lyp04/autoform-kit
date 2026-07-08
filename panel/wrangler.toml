@@ -1,0 +1,36 @@
+# Cloudflare Worker config for the autoform admin panel.
+name = "autoform-panel"
+main = "src/worker.js"
+compatibility_date = "2024-11-01"
+
+# Optional: bind a custom domain so the app can fetch the catalog from a stable URL.
+# Uncomment and set a hostname that is a zone on YOUR Cloudflare account.
+# routes = [
+#   { pattern = "panel.example.com", custom_domain = true }
+# ]
+
+# Serve the SPA in ./public as static assets; the Worker handles /api/* and /catalog/*.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+
+[vars]
+# Base URL of YOUR backend that authenticates operators and serves form templates.
+BACKEND_API_BASE = "https://backend.example.com/api"
+# owner/name of the (private) catalog repo this panel publishes to (form-profiles.json + manifest.json).
+GITHUB_REPO = "your-name/your-catalog-repo"
+# Public base URL the app fetches the catalog from — normally this worker's own URL. Used for the
+# published manifest's profilesUrl, so it must be a live host (even when authoring via `wrangler dev`).
+PUBLIC_URL = "https://your-worker.example.com"
+# AI is any OpenAI-compatible chat endpoint. Default: OpenRouter (a public service).
+AI_BASE_URL = "https://openrouter.ai/api/v1"
+# Any model slug your AI endpoint accepts. Example is a common, cheap public model.
+AI_MODEL = "openai/gpt-4o-mini"
+
+# Secrets — set each with `wrangler secret put <NAME>`, NEVER commit their values:
+#   wrangler secret put GITHUB_TOKEN      -> fine-grained PAT, catalog repo ONLY, Contents: Read & Write
+#   wrangler secret put AI_API_KEY        -> key for the AI endpoint above (used by /api/ai/draft); optional
+#   wrangler secret put CATALOG_READ_KEY  -> optional read-key gating /catalog/*, /api/config, /api/profiles
+# When CATALOG_READ_KEY is UNSET (e.g. local `wrangler dev`) that read gate is open. There is NO panel
+# password: the panel's write/publish actions are gated solely by a valid backend login — the admin
+# signs into YOUR backend from the browser (account + password + captcha) and that token is the only gate.

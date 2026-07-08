@@ -1,0 +1,729 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>表单管理面板</title>
+<style>
+  :root { --bg:#f8fafc; --card:#fff; --line:#e2e8f0; --ink:#0f172a; --muted:#64748b; --accent:#0f766e; --danger:#dc2626; --amber:#f59e0b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font:14px/1.55 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); }
+  header { padding:14px 18px; background:var(--accent); color:#fff; display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+  header b { font-size:16px; } header .who { margin-left:auto; font-size:13px; opacity:.9; }
+  main { max-width:820px; margin:0 auto; padding:18px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:16px; }
+  .card h2 { margin:0 0 4px; font-size:16px; } .card .sub { color:var(--muted); font-size:12.5px; margin-bottom:12px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  input, textarea, select { width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px; font:inherit; background:#fff; }
+  textarea#draft { min-height:300px; font-family:ui-monospace,Menlo,Consolas,monospace; font-size:12.5px; white-space:pre; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; } .row > .g { flex:1; min-width:120px; }
+  button { padding:9px 14px; border:0; border-radius:8px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.ghost { background:#eef2f7; color:var(--ink); } button.danger { background:#fee2e2; color:var(--danger); padding:6px 10px; }
+  button.sm { padding:5px 10px; font-size:13px; } button:disabled { opacity:.5; cursor:default; }
+  .muted { color:var(--muted); } .hide { display:none; } .err { color:var(--danger); white-space:pre-wrap; } .ok { color:var(--accent); }
+  code { background:#f1f5f9; padding:1px 5px; border-radius:5px; font-size:12.5px; }
+  #captchaImg { height:60px; border:1px solid var(--line); border-radius:6px; background:#fff; cursor:pointer; }
+  .tlist .item { display:flex; gap:10px; align-items:center; padding:8px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px; }
+  .tlist .item .grow { flex:1; }
+  .previewWrap { background:#eef2f6; border:1px solid var(--line); border-radius:12px; padding:18px 12px; display:flex; justify-content:center; }
+  .previewCap { color:var(--muted); font-size:12.5px; text-align:center; margin:8px 0 0; }
+  .aibox { background:#fffbeb; border:1px solid #fde68a; border-radius:10px; padding:14px; margin:14px 0; }
+  .aibox textarea { min-height:74px; font-size:14px; line-height:1.6; }
+  .fsec { border:1px solid var(--line); border-radius:10px; padding:14px; margin-bottom:12px; }
+  .fsec h3 { margin:0 0 4px; font-size:14px; } .fsec .h { color:var(--muted); font-size:12px; margin-bottom:10px; }
+  .slot { display:flex; gap:8px; align-items:flex-end; flex-wrap:wrap; padding:10px; background:#f8fafc; border:1px solid var(--line); border-radius:8px; margin-bottom:8px; }
+  .slot .g { flex:1; min-width:130px; } .num { width:92px !important; text-align:center; }
+  .matrow { display:flex; gap:10px; align-items:center; padding:6px 0; border-bottom:1px solid #f1f5f9; }
+  .matrow .mn { flex:1; font-size:13.5px; }
+  .skipmat{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:6px 14px;margin-top:6px;max-height:220px;overflow:auto;padding:2px}
+  .skipmat label{display:flex;align-items:center;gap:8px;margin:0;padding:5px 8px;font-size:13px;color:var(--ink);border:1px solid var(--line);border-radius:7px;background:#fff;cursor:pointer}
+  .skipmat label:hover{background:#f8fafc}
+  .skipmat input{width:auto;flex:0 0 auto;margin:0}
+  .skipmat .mn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .sw { position:relative; width:46px; height:26px; flex:0 0 auto; } .sw input { display:none; }
+  .sw span { position:absolute; inset:0; background:#cbd5e1; border-radius:999px; transition:.15s; cursor:pointer; }
+  .sw span:before { content:""; position:absolute; width:20px; height:20px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.15s; }
+  .sw input:checked + span { background:var(--accent); } .sw input:checked + span:before { transform:translateX(20px); }
+  .imp { border-top:1px dashed var(--line); margin-top:14px; padding-top:12px; }
+  @media(max-width:560px){ .num{width:74px !important} }
+</style>
+</head>
+<body>
+<header><b>表单管理面板</b><span style="color:#d1fae5;font-size:12.5px">登录 → 选机型 → 改 → 发布，手机自动更新</span><span class="who" id="who"></span><button id="globalSettingsBtn" class="ghost sm hide" style="margin-left:8px">⚙ 全局设置</button></header>
+<main>
+
+  <section class="card" id="loginCard">
+    <h2>登录账号</h2>
+    <div class="sub">用你后端系统的账号密码登录。登录就是这个面板的门槛——登进来才能改/发布表单。</div>
+    <div class="row">
+      <div class="g"><label>账号</label><input id="account" autocomplete="username" /></div>
+      <div class="g"><label>密码</label><input id="password" type="password" autocomplete="current-password" /></div>
+    </div>
+    <label>验证码（看不清点图片换一张）</label>
+    <div class="row">
+      <img id="captchaImg" alt="captcha" title="点击换一张" />
+      <input id="captcha" style="flex:2" placeholder="输入图里的数字" />
+      <button id="loginBtn" style="flex:0 0 auto">登录</button>
+    </div>
+    <p class="err" id="loginErr"></p>
+    <details style="margin-top:10px">
+      <summary class="muted" style="cursor:pointer">已经登录过后端网页？粘贴 token 直接进（高级）</summary>
+      <label>从已登录的后端网页 F12 → Network → 任意请求头 <code>Authorization: Bearer</code> 后面那段</label>
+      <div class="row"><input id="pasteToken" style="flex:3" placeholder="粘贴 token" /><button id="tokenBtn" class="ghost" style="flex:0 0 auto">进入</button></div>
+    </details>
+  </section>
+
+  <section class="card hide" id="pickCard">
+    <h2>选机型</h2>
+    <div class="sub">改一个已发布的表单，或从后端拉一个新机型的模板进来。改完点发布，手机下次启动 App 自动更新。</div>
+
+    <div class="tlist" id="tlist">加载中…</div>
+    <div class="row" style="margin-top:6px"><button class="ghost sm" id="reloadBtn">刷新列表</button></div>
+
+    <details class="imp" id="importBox">
+      <summary style="cursor:pointer;font-weight:600;color:var(--accent)">➕ 添加新机型（从后端拉模板，然后用 AI 改）</summary>
+      <div class="sub" style="margin-top:10px">搜机型关键词 → 选它，就会按后端真实模板生成一份草稿，再用「AI 帮我改」整理。</div>
+      <div class="row">
+        <input id="kw" class="g" placeholder="按型号/关键字搜索" />
+        <button id="searchBtn" style="flex:0 0 auto">搜索</button>
+      </div>
+      <div class="tlist" id="searchList" style="margin-top:10px"></div>
+    </details>
+  </section>
+
+  <section class="card hide" id="editCard">
+    <h2>设计录入表单 <span class="muted" id="editTitle"></span></h2>
+
+    <div class="previewWrap"><div id="preview"></div></div>
+    <div class="previewCap">↑ 操作员在 App 里看到的样子（实时跟随下面的设置；点「结果」可切换 ABC 类 / 不良品 的不同上传框）</div>
+
+    <div class="aibox">
+      <label style="font-size:13px;color:#92400e;margin-top:0">💬 用大白话说你想怎么改（最简单，不用懂技术）</label>
+      <textarea id="aiInstr" placeholder="例如：&#10;· 这个机型不分 ABC 等级&#10;· 只要一个上传框、能拍多张照片&#10;· 第二个框改名叫『配件照片』，最多拍 5 张&#10;· 生成一个『不良品』独立表单&#10;· 拖布默认数量改成 2"></textarea>
+      <div class="row" style="margin-top:8px">
+        <button id="aiBtn" style="flex:0 0 auto">✨ AI 帮我改</button>
+        <span id="aiMsg" class="muted" style="flex:1"></span>
+      </div>
+    </div>
+
+    <div id="form"></div>
+
+    <details style="margin-top:8px">
+      <summary class="muted" style="cursor:pointer">高级：直接看/改 JSON（开发用）</summary>
+      <textarea id="draft" spellcheck="false" style="margin-top:8px"></textarea>
+      <button class="ghost sm" id="applyJsonBtn" style="margin-top:6px">用这段 JSON 覆盖上面</button>
+    </details>
+
+    <div class="row" style="margin-top:16px;border-top:1px solid var(--line);padding-top:14px">
+      <button id="publishBtn" style="flex:0 0 auto">✅ 发布（手机下次启动自动更新）</button>
+      <span id="editMsg" style="flex:1"></span>
+    </div>
+  </section>
+</main>
+
+<!-- 全局设置：表单排序 + 通知 webhook。用原生 <dialog>，::backdrop 自带遮罩，Esc 可关。 -->
+<dialog id="globalSettingsDlg" style="border:1px solid var(--line);border-radius:12px;padding:0;max-width:640px;width:calc(100% - 32px)">
+  <div style="padding:16px 18px">
+    <div class="row" style="align-items:center">
+      <h2 style="margin:0;font-size:17px;flex:1">⚙ 全局设置</h2>
+      <button id="globalSettingsClose" class="ghost sm" type="button">关闭</button>
+    </div>
+
+    <div class="fsec" style="margin-top:14px">
+      <h3>表单顺序</h3>
+      <div class="h">用 ▲ ▼ 调整机型在 App 里的先后顺序，点「保存顺序」生效（手机下次启动按此顺序）。</div>
+      <div class="tlist" id="orderList">加载中…</div>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <button id="saveOrderBtn" class="sm" type="button">保存顺序</button>
+        <span id="orderMsg" class="muted" style="flex:1"></span>
+      </div>
+    </div>
+
+    <div class="fsec">
+      <h3>App 后端 &amp; 通知设置</h3>
+      <div class="h">App 从面板读取后端地址和品牌名（不再硬编码）；异常 / 汇总等通知发到你配置的 webhook。改完点「保存」，手机下次启动生效。</div>
+      <label>后端地址 (backendApiBase)</label>
+      <input id="backendApiBaseInput" placeholder="https://backend.example.com/api" />
+      <label>品牌名 (brand)</label>
+      <input id="brandInput" placeholder="我的录入表单" />
+      <label>自更新仓库 Owner (updateOwner)</label>
+      <input id="updateOwnerInput" placeholder="github-org" />
+      <label>自更新仓库 Repo (updateRepo)</label>
+      <input id="updateRepoInput" placeholder="my-app-releases" />
+      <label>Web Origin（可选，留空则不发该头）</label>
+      <input id="webOriginInput" placeholder="https://backend.example.com" />
+      <label>Web Referer（可选，留空则不发该头）</label>
+      <input id="webRefererInput" placeholder="https://backend.example.com/" />
+      <label>通知 Webhook（留空则不发）</label>
+      <input id="notifyWebhookInput" placeholder="https://hooks.example.com/services/…" />
+      <label>高级：后端接口路径 (JSON)</label>
+      <textarea id="endpointsInput" spellcheck="false" placeholder='{ "login": "/account/adminLogin" }' style="min-height:150px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <button id="saveNotifyBtn" class="sm" type="button">保存</button>
+        <span id="notifyMsg" class="muted" style="flex:1"></span>
+      </div>
+      <div class="muted" style="font-size:12px;margin-top:8px">这些设置驱动 App：后端接口路径 (endpoints)、自更新仓库 (updateOwner/updateRepo)、可选的 Web Origin/Referer 请求头；留空则用默认值。后端地址 / 品牌名留空则用服务端默认。通知的测试发送请在 App 内进行（浏览器直接发会被 CORS 拦截）。</div>
+    </div>
+  </div>
+</dialog>
+
+<!-- Schema-driven mockup of the OFFICIAL app form. Loaded as a module and bridged onto window so the
+     classic script below can call it. Firing fp-ready lets a draft applied during load paint itself. -->
+<script type="module">
+  import { renderFormPreview, deriveSnPlugins, syncSnFields, hasDefectiveBranch } from "./form-preview.js";
+  window.FormPreview = { renderFormPreview, deriveSnPlugins, syncSnFields, hasDefectiveBranch };
+  window.dispatchEvent(new Event("fp-ready"));
+</script>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s==null?"":s).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+// A profile is graded iff it carries a non-empty gradeMap — that's what the APP keys off (the
+// `graded` boolean is panel-only and absent on older profiles, so never trust it for display).
+const isGraded = (p) => !!(p && p.gradeMap && Object.keys(p.gradeMap).length);
+const gradeKeys = (p) => Object.keys((p && p.gradeMap) || {}).join("/");
+let TOKEN = "";                 // backend token (set after login; gates the worker via verifyToken)
+let DRAFT = null;               // single source of truth (the profile object)
+let PREVIEW_RESULT = null;      // which 翻新结果 the preview opens on ("grade:A" / "__def__" / null)
+let FP = sessionStorage.getItem("fp");
+if (!FP) { FP = [...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""); sessionStorage.setItem("fp", FP); }
+
+// Call OUR worker. Sends the backend token as a Bearer — the worker verifies it (verifyToken) on
+// every call, so a valid backend login is the gate. /api/profiles also requires that token (auth:true).
+async function api(path, { method="GET", body, auth=true } = {}) {
+  const headers = { "Content-Type": "application/json" };
+  if (auth && TOKEN) { headers["Authorization"] = "Bearer " + TOKEN; headers["X-Fp"] = FP; }
+  const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(()=>({}));
+  if (res.status === 401 && TOKEN) { TOKEN=""; clearSession(); showLogin(); throw new Error(data.error || "登录已失效，请重新登录"); }
+  if (!res.ok) throw new Error((data.error || ("HTTP " + res.status)) + (data.problems ? "\n"+data.problems.map(p=>(p.errors||[]).join("；")).join("\n") : ""));
+  return data;
+}
+
+// Call the backend DIRECTLY from the browser (not via the Worker). The browser runs on the user's
+// own allowed network, so the backend's login endpoint works — whereas the Worker's Cloudflare
+// egress IP may be blocked for adminLogin. This assumes the backend sends permissive CORS.
+// Deployers: set BACKEND_BASE to your own backend API base URL.
+const BACKEND_BASE = "https://backend.example.com/api";
+// The panel browser hits the backend directly for login/captcha/template reads, BEFORE the catalog
+// settings load — so these paths can't come from CATALOG_SETTINGS. Edit them here to match your backend.
+// Deployers: match these to your backend.
+const BACKEND_ENDPOINTS = {
+  captcha: "account/getCaptcha",
+  loginVerify: "account/userLoginVerify",
+  login: "account/adminLogin",
+  userInfo: "users/userInfo",
+  templateList: "retread/myTemplateListPage",
+  templateDetail: "retread/templateDetail"
+};
+async function backend(path, { method="GET", query, body, token } = {}) {
+  const url = new URL(String(path).replace(/^\/+/,""), BACKEND_BASE.replace(/\/+$/,"")+"/");
+  if (query) for (const [k,v] of Object.entries(query)) if (v!=null && v!=="") url.searchParams.set(k, v);
+  const headers = { "Accept":"application/json, text/plain, */*" };
+  if (token) headers["Authorization"] = "Bearer " + token;
+  let payload;
+  if (body) { payload = new URLSearchParams(body).toString(); headers["Content-Type"]="application/x-www-form-urlencoded; charset=utf-8"; }
+  const res = await fetch(url, { method, headers, body: payload });
+  const text = await res.text(); let j=null; try { j = text ? JSON.parse(text) : null; } catch {}
+  const ok = j && ("code" in j ? Number(j.code)===200 : ("data" in j));
+  if (!ok) throw new Error((j && (j.message||j.msg||j.error)) || ("HTTP "+res.status+" "+String(text).slice(0,150)));
+  return (j && j.data!=null) ? j.data : j;
+}
+
+/* ---------- login (browser -> backend directly, on your own network) ---------- */
+function showLogin(){ $("loginCard").classList.remove("hide"); $("pickCard").classList.add("hide"); $("editCard").classList.add("hide"); $("globalSettingsBtn").classList.add("hide"); $("who").textContent=""; if(!window._client) loadCaptcha(); }
+async function loadCaptcha() {
+  $("loginErr").textContent = "";
+  try {
+    const c = await backend(BACKEND_ENDPOINTS.captcha);
+    window._client = c.client;
+    $("captchaImg").src = String(c.captcha).startsWith("data:") ? c.captcha : "data:image/png;base64," + c.captcha;
+  } catch (e) { $("loginErr").textContent = "验证码获取失败: " + e.message; }
+}
+$("captchaImg").onclick = loadCaptcha;
+function onLoggedIn(name){ $("who").textContent="已登录: "+(name||""); $("loginCard").classList.add("hide"); $("pickCard").classList.remove("hide"); $("globalSettingsBtn").classList.remove("hide"); loadCatalog(); }
+$("loginBtn").onclick = async () => {
+  const btn=$("loginBtn"), lbl=btn.textContent;
+  if (!window._client) await loadCaptcha();
+  btn.disabled=true; btn.textContent="登录中…"; $("loginErr").textContent="";
+  try {
+    const account=$("account").value.trim(), password=$("password").value, captcha=$("captcha").value.trim(), client=window._client;
+    const form={ account, password, captcha, client };
+    await backend(BACKEND_ENDPOINTS.loginVerify, { method:"POST", body:form });
+    const d = await backend(BACKEND_ENDPOINTS.login, { method:"POST", body:form });
+    const token = d?.token?.access_token || d?.access_token || (typeof d?.token==="string"?d.token:"");
+    if(!token) throw new Error("登录成功但没拿到 token");
+    TOKEN=token; saveSession(token, d.userName||d.name||account); onLoggedIn(d.userName||d.name||account);
+  } catch (e) { $("loginErr").textContent="登录失败: "+e.message; alert("登录失败：\n"+e.message+"\n\n验证码区分大小写且会过期，已换新，请按新图重输。"); loadCaptcha(); }
+  finally { btn.disabled=false; btn.textContent=lbl; }
+};
+$("captcha").addEventListener("keydown", e=>{ if(e.key==="Enter") $("loginBtn").click(); });
+$("password").addEventListener("keydown", e=>{ if(e.key==="Enter") $("captcha").focus(); });
+$("tokenBtn").onclick = async () => {
+  const t=$("pasteToken").value.trim().replace(/^Bearer\s+/i,""); if(!t){alert("先粘贴 token");return;}
+  try { const me=await backend(BACKEND_ENDPOINTS.userInfo, { token:t }); TOKEN=t; saveSession(t, me.userName||me.name||"(token)"); onLoggedIn(me.userName||me.name||"(token)"); }
+  catch(e){ alert("token 无效或已过期：" + e.message); }
+};
+// —— 记住登录态（localStorage），直到被挤下线（40002）或 token 失效——刷新不再要求重登 ——
+function saveSession(token, name){ try{ localStorage.setItem("backendToken", token); localStorage.setItem("backendName", name||""); }catch(e){} }
+function clearSession(){ try{ localStorage.removeItem("backendToken"); localStorage.removeItem("backendName"); }catch(e){} }
+async function restoreSession(){
+  let t=""; try{ t=localStorage.getItem("backendToken")||""; }catch(e){}
+  if(!t){ showLogin(); return; }
+  TOKEN=t;
+  // 用浏览器自身(登录来源签名)验 userInfo：成功=仍在登录、直接进；失败(含被挤下线 40002)=清掉重登。
+  try{ const me=await backend(BACKEND_ENDPOINTS.userInfo, { token:t }); onLoggedIn(me.userName||me.name||localStorage.getItem("backendName")||"(已登录)"); }
+  catch(e){ TOKEN=""; clearSession(); showLogin(); }
+}
+restoreSession();
+
+/* ---------- published profiles list (public read) ---------- */
+async function catalogSource(){
+  // Injected local catalog (demo) wins.
+  if (window.__LOCAL_CATALOG__) return { profiles: window.__LOCAL_CATALOG__ };
+  try { return await api("/api/profiles", { auth:true }); }
+  catch (e) {
+    // A plain local static server (localhost:8790) has no worker, so /api/profiles 404s. Fall back to
+    // the bundled demo catalog so the full flow is viewable locally. Guarded to localhost — production
+    // (the deployed worker) always answers /api/profiles, so this branch never runs there.
+    if (location.hostname === "localhost" || location.hostname === "127.0.0.1") {
+      try { const m = await import("./_local-catalog.js"); window.__LOCAL_CATALOG__ = m.CATALOG; return { profiles: m.CATALOG }; } catch {}
+    }
+    throw e;
+  }
+}
+// A backend template is one form, but it holds BOTH a 良品 side (good grades → 外观/配件) and (usually) a
+// 不良品 side (不良品 → 不良品照片). The admin thinks of these as two things, so the list SPLITS each
+// form into a 良品 row and a 不良品 row, with a 良品/不良品 filter. Both rows edit the same profile; the
+// row just picks which side the preview opens on.
+let CATALOG_PROFILES = [];
+let CATALOG_SETTINGS = {};    // sibling settings block from /api/profiles (e.g. { notifyWebhook, updatedAt })
+let CATALOG_FILTER = "all"; // all | good | defective
+async function loadCatalog(){
+  $("tlist").innerHTML = "加载中…";
+  try { const cat = await catalogSource(); CATALOG_PROFILES = cat.profiles || []; CATALOG_SETTINGS = cat.settings || {}; renderCatalog(); }
+  catch (e) { $("tlist").innerHTML='<span class="err">'+esc(e.message)+'</span>'; }
+}
+function hasDefBranch(p){ return window.FormPreview && window.FormPreview.hasDefectiveBranch ? window.FormPreview.hasDefectiveBranch(p) : !!p.defective; }
+// A profile IS a 不良品 form when it's a dedicated `<id>-defective` profile OR its whole gradeMap is 不良品/报废.
+function isDefectiveForm(p){
+  if(String(p.id||"").endsWith("-defective")) return true;
+  const gm=p.gradeMap||{}, keys=Object.keys(gm);
+  return keys.length>0 && keys.every(k=>/不良|报废|defective|reject/i.test((gm[k]&&(gm[k].label||(gm[k].value&&gm[k].value.name)))||""));
+}
+function catalogEntries(){
+  const out=[];
+  CATALOG_PROFILES.forEach(p=>{
+    if(isDefectiveForm(p)){ out.push({p, kind:"defective"}); return; } // 独立不良品表单：只出一行「不良品」
+    out.push({p, kind:"good"});
+    if(hasDefBranch(p)) out.push({p, kind:"defective"});               // 旧内嵌不良品分支(convert 已不再产生)
+  });
+  return out;
+}
+function renderCatalog(){
+  if(!CATALOG_PROFILES.length){ $("tlist").innerHTML='<span class="muted">还没发布过任何表单。展开下面「➕ 添加新机型」来创建第一个。</span>'; return; }
+  const entries=catalogEntries();
+  const goodN=entries.filter(e=>e.kind==="good").length, defN=entries.filter(e=>e.kind==="defective").length;
+  const shown=entries.filter(e=> CATALOG_FILTER==="all" || e.kind===CATALOG_FILTER);
+  $("tlist").innerHTML="";
+  const bar=document.createElement("div"); bar.className="row"; bar.style.cssText="gap:6px;margin-bottom:10px;align-items:center";
+  bar.innerHTML='<span class="muted" style="font-size:12px">筛选：</span>';
+  [["all","全部 "+entries.length],["good","🟢 良品 "+goodN],["defective","🔴 不良品 "+defN]].forEach(([k,lab])=>{
+    const b=document.createElement("button"); b.className="sm"+(CATALOG_FILTER===k?"":" ghost"); b.textContent=lab;
+    b.onclick=()=>{ CATALOG_FILTER=k; renderCatalog(); }; bar.appendChild(b);
+  });
+  $("tlist").appendChild(bar);
+  shown.forEach(e=> $("tlist").appendChild(catalogRow(e)));
+}
+function catalogRow(e){
+  const p=e.p, isDef=e.kind==="defective";
+  const el=document.createElement("div"); el.className="item";
+  const tag='<span style="border-radius:6px;padding:1px 8px;font-size:12px;margin-right:6px;'
+    +(isDef?'background:#fef2f2;color:#dc2626;border:1px solid #fecaca':'background:#f0fdfa;color:#0f766e;border:1px solid #99f6e4')+'">'+(isDef?'不良品':'良品')+'</span>';
+  const info=isDef
+    ? '不良品 · '+(((p.defective&&p.defective.photoSlots)||p.photoSlots||[]).length)+' 张不良品照片'
+    : (isGraded(p)?("分 "+esc(gradeKeys(p))+" 等级"):"不分等级")+' · '+((p.photoSlots||p.uploadFields||[]).length)+' 个上传框';
+  el.innerHTML='<div class="grow">'+tag+'<b>'+esc(p.displayName||p.id)+'</b> <span class="muted">'+esc(p.id)+' · '+info+'</span></div>';
+  const b=document.createElement("button"); b.className="sm"; b.textContent="改";
+  b.onclick=()=>{ window._lastTemplate=null; PREVIEW_RESULT = (isDef && p.defective) ? "__def__" : firstGoodResult(p);
+    applyDraft(JSON.parse(JSON.stringify(p))); $("editTitle").textContent="（改："+(isDef?"不良品·":"良品·")+esc(p.displayName||p.id)+"）"; openEditor(); };
+  el.appendChild(b); return el;
+}
+function firstGoodResult(p){ const g=Object.keys(p.gradeMap||{})[0]; return g?("grade:"+g):null; }
+$("reloadBtn").onclick = loadCatalog;
+
+/* ---------- add new model: search backend templates (browser -> backend directly) ---------- */
+$("searchBtn").onclick = async () => {
+  $("searchList").innerHTML = "搜索中…";
+  try {
+    // Some backends 500 if we send pageSize (and status filters) — only page + keyword are kept.
+    const data = await backend(BACKEND_ENDPOINTS.templateList, { token:TOKEN, query:{ page:1, keyword:$("kw").value.trim() } });
+    const items = Array.isArray(data) ? data : (Array.isArray(data?.list) ? data.list : []);
+    renderTemplates(items.map(t => ({ id: t.id ?? t.template_id ?? t.templateId, name: t.name || t.template_name || "", sku: t.sku || "" })));
+  } catch (e) { $("searchList").innerHTML = '<span class="err">'+esc(e.message)+'</span>'; }
+};
+// A small red badge shown when a form carries an in-form 不良品 branch (profile.defective). It's one
+// form either way — this just flags that 翻新结果 includes 不良品 (with its own 不良品照片).
+function defBadge(hasDef){
+  if(!hasDef) return "";
+  return '<span style="background:#fef2f2;color:#dc2626;border:1px solid #fecaca;border-radius:6px;padding:1px 7px;font-size:12px;margin-right:6px">含不良品分支</span>';
+}
+function renderTemplates(list) {
+  if (!list || !list.length) { $("searchList").innerHTML = '<span class="muted">没搜到，换个关键词试试</span>'; return; }
+  $("searchList").innerHTML = "";
+  list.forEach(t => {
+    const el=document.createElement("div"); el.className="item";
+    el.innerHTML='<div class="grow"><b>'+esc(t.name||"(无名)")+'</b> <span class="muted">#'+t.id+' · '+esc(t.sku||"")+'</span></div>';
+    const b=document.createElement("button"); b.className="sm"; b.textContent="选它"; b.onclick=()=>loadTemplate(t.id);
+    el.appendChild(b); $("searchList").appendChild(el);
+  });
+}
+async function loadTemplate(id) {
+  $("editMsg").textContent=""; $("editTitle").textContent="（新：模板 #"+id+"）";
+  try {
+    const template = await backend(BACKEND_ENDPOINTS.templateDetail, { token:TOKEN, query:{ id } });   // browser -> backend (your network)
+    const r = await api("/api/convert", { method:"POST", body:{ template } });               // worker: pure transform
+    window._lastTemplate = r.template; applyDraft(r.draft); openEditor();
+  } catch (e) { alert("生成草稿失败: " + e.message); }
+}
+function openEditor(){ $("editCard").classList.remove("hide"); $("editCard").scrollIntoView({behavior:"smooth"}); }
+
+/* ---------- the editor: DRAFT is the single source of truth ---------- */
+function applyDraft(p){ DRAFT = p || {}; if(isGraded(DRAFT)) DRAFT.graded = true; $("draft").value = JSON.stringify(DRAFT, null, 2); renderPreview(); renderForm(); }
+
+// The preview is a LIVE, EDITABLE mockup: it renders from DRAFT, and interacting with it (checking
+// 非新机原因/操作内容, toggling/qty-ing 物料) edits DRAFT via onPreviewEdit — which is exactly what the
+// app submits, so the preview controls real submission. Passing onEdit turns on editable mode.
+function renderPreview(){
+  const mount=$("preview");
+  if(window.FormPreview && DRAFT){ window.FormPreview.renderFormPreview(mount, DRAFT, { result: PREVIEW_RESULT, onEdit: onPreviewEdit }); }
+  else { mount.innerHTML='<div class="muted" style="padding:12px">加载预览…</div>'; }
+}
+// A preview interaction mutated DRAFT — reflect it in the JSON box + the structured editor below. Do NOT
+// re-render the preview (it already updated its own DOM; re-rendering would reset scroll/selection).
+function onPreviewEdit(){ if(!DRAFT) return; syncDraftTextarea(DRAFT); renderForm(); }
+// If a draft was applied before the preview module finished loading, paint it once it's ready.
+window.addEventListener("fp-ready", ()=>{ if(DRAFT) renderPreview(); });
+
+function renderForm(){
+  const p=DRAFT, box=$("form"); box.innerHTML="";
+  const s1=sec("基本", "操作员看到的机型名 + 这台机器分不分新旧等级。");
+  s1.appendChild(field("机型显示名", inputCtl(p.displayName||"", v=>{ p.displayName=v; renderPreview(); })));
+  const tg=document.createElement("label"); tg.className="row"; tg.style.marginTop="10px";
+  tg.innerHTML='<span class="g" style="flex:0 0 auto">分 ABC 等级？</span>';
+  const sw=document.createElement("label"); sw.className="sw";
+  const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=isGraded(p);
+  cb.onchange=()=>{
+    if(cb.checked){
+      if(!isGraded(p)){ alert("这个表单还没有等级映射(gradeMap)。请用上面的「AI 帮我改」说『分 A/B/C 等级』，或从后端模板导入——结构化开关无法凭空建立等级。"); cb.checked=false; return; }
+      p.graded=true;
+    } else { p.graded=false; delete p.gradeMap; }
+    renderPreview(); renderForm();
+  };
+  sw.appendChild(cb); sw.appendChild(document.createElement("span")); tg.appendChild(sw);
+  const hint=document.createElement("span"); hint.className="muted"; hint.style.flex="1"; hint.textContent = isGraded(p) ? ("分 "+(gradeKeys(p)||"等级")+" 等级（提交时让操作员选）") : "不分等级（适合不按成色分的机型）";
+  tg.appendChild(hint); s1.appendChild(tg); s1.appendChild(settingsPanel(p)); box.appendChild(s1);
+
+  box.appendChild(snPluginsEditor(p));
+  box.appendChild(resultPhotosEditor(p));
+
+  (p.materialGroups||[]).forEach((g)=>{
+    const mats=g.materials||[]; if(!mats.length) return;
+    const s3=sec("物料默认数量"+(g.title?("："+g.title):""), "每种配件提交时默认换几个。改这里就行。");
+    mats.forEach((m)=>{
+      const row=document.createElement("div"); row.className="matrow";
+      const nm=document.createElement("div"); nm.className="mn"; nm.textContent=m.name||m.code; row.appendChild(nm);
+      row.appendChild(numCtl(m.defaultQty??1, 0, v=>{ m.defaultQty=v; }));
+      s3.appendChild(row);
+    });
+    box.appendChild(s3);
+  });
+  $("draft").value=JSON.stringify(p,null,2);
+}
+function sec(title,hint){ const d=document.createElement("div"); d.className="fsec"; d.innerHTML='<h3>'+esc(title)+'</h3><div class="h">'+esc(hint)+'</div>'; return d; }
+function field(lab,ctl,cls){ const d=document.createElement("div"); if(cls)d.className=cls; const l=document.createElement("label"); l.textContent=lab; d.appendChild(l); d.appendChild(ctl); return d; }
+function inputCtl(val,on){ const i=document.createElement("input"); i.value=val; i.oninput=()=>on(i.value); return i; }
+function numCtl(val,min,on){ const i=document.createElement("input"); i.type="number"; i.className="num"; i.min=min; i.value=val; i.oninput=()=>on(Math.max(min, parseInt(i.value||min,10))); return i; }
+// ⚙ 设置：表单颜色（圆色图）+ 缺料不通知。折叠在「基本」框里，点开才展开。
+const COLOR_PALETTE=["#1989FA","#0F766E","#2563EB","#7C3AED","#9333EA","#EA580C","#DC2626","#BE123C","#65A30D","#16A34A","#0891B2","#111827"];
+function settingsPanel(p){
+  const wrap=document.createElement("div"); wrap.style.marginTop="12px";
+  const btn=document.createElement("button"); btn.type="button"; btn.className="ghost"; btn.textContent="⚙ 设置（表单颜色 · 缺料不通知）";
+  const body=document.createElement("div"); body.className="hide"; body.style.marginTop="10px"; body.style.padding="12px"; body.style.border="1px solid var(--line)"; body.style.borderRadius="8px";
+  btn.onclick=()=>body.classList.toggle("hide");
+  wrap.appendChild(btn); wrap.appendChild(body);
+
+  // —— 表单颜色（圆色图）——
+  const cl=document.createElement("div"); const clab=document.createElement("label"); clab.textContent="表单颜色（App 里这个机型表单的主题色）"; cl.appendChild(clab);
+  const dots=document.createElement("div"); dots.style.cssText="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:4px";
+  const curColor=()=>String(p.uiColor||"").toLowerCase();
+  const custom=document.createElement("input"); custom.type="color"; custom.value=/^#[0-9a-fA-F]{6}$/.test(p.uiColor||"")?p.uiColor:"#1989FA"; custom.title="自定义颜色";
+  custom.style.cssText="width:34px;height:30px;border:0;background:none;cursor:pointer;padding:0";
+  const paint=()=>{ [...dots.querySelectorAll(".cdot")].forEach(d=>{ d.style.outline=(d.dataset.c.toLowerCase()===curColor())?"3px solid #0f172a":"none"; }); };
+  COLOR_PALETTE.forEach(c=>{
+    const dot=document.createElement("span"); dot.className="cdot"; dot.dataset.c=c; dot.title=c;
+    dot.style.cssText="width:28px;height:28px;border-radius:50%;background:"+c+";cursor:pointer;outline-offset:2px;border:1px solid rgba(0,0,0,.08)";
+    dot.onclick=()=>{ p.uiColor=c; custom.value=c; renderPreview(); paint(); syncDraftTextarea(p); };
+    dots.appendChild(dot);
+  });
+  custom.oninput=()=>{ p.uiColor=custom.value; renderPreview(); paint(); syncDraftTextarea(p); };
+  dots.appendChild(custom); cl.appendChild(dots); body.appendChild(cl); paint();
+
+  // —— 缺料不通知 ——
+  const ml=document.createElement("div"); ml.style.marginTop="16px";
+  const mlab=document.createElement("label"); ml.appendChild(mlab);
+  const mats=[]; (p.materialGroups||[]).forEach(g=>(g.allMaterials||g.materials||[]).forEach(m=>{ if(m&&m.code&&!mats.some(x=>x.code===m.code)) mats.push(m); }));
+  const skipCount=()=>(p.notifySkipMaterials||[]).length;
+  const paintLabel=()=>{ mlab.textContent="缺料不通知（勾选的料，缺了也不发缺料通知）"+(skipCount()?"（已选 "+skipCount()+"）":""); };
+  paintLabel();
+  if(!mats.length){ const n=document.createElement("div"); n.className="muted"; n.style.fontSize="12px"; n.textContent="这个表单没有物料清单。"; ml.appendChild(n); }
+  else {
+    const grid=document.createElement("div"); grid.className="skipmat";
+    mats.forEach(m=>{
+      const r=document.createElement("label");
+      const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=(p.notifySkipMaterials||[]).includes(m.code);
+      cb.onchange=()=>{ const s=new Set(p.notifySkipMaterials||[]); if(cb.checked)s.add(m.code); else s.delete(m.code); p.notifySkipMaterials=[...s]; if(!p.notifySkipMaterials.length) delete p.notifySkipMaterials; paintLabel(); syncDraftTextarea(p); };
+      const sp=document.createElement("span"); sp.className="mn"; sp.textContent=m.name||m.code; sp.title=m.name||m.code; r.appendChild(cb); r.appendChild(sp); grid.appendChild(r);
+    });
+    ml.appendChild(grid);
+  }
+  body.appendChild(ml);
+  return wrap;
+}
+// small labelled iOS-style switch (matches the .sw styles)
+function swField(labelText,checked,on){
+  const w=document.createElement("label"); w.className="row"; w.style.cssText="margin:0;flex:0 0 auto;gap:6px";
+  const t=document.createElement("span"); t.className="muted"; t.style.fontSize="12px"; t.textContent=labelText;
+  const sw=document.createElement("label"); sw.className="sw"; const cb=document.createElement("input"); cb.type="checkbox"; cb.checked=!!checked;
+  cb.onchange=()=>on(cb.checked); sw.appendChild(cb); sw.appendChild(document.createElement("span"));
+  w.appendChild(t); w.appendChild(sw); return w;
+}
+function syncDraftTextarea(p){ $("draft").value=JSON.stringify(p,null,2); }
+
+// SN scan fields, modeled as editable PLUGINS: each scan box can be renamed, marked required, and have
+// its 搜索🔍 / 扫码⊡ icons toggled. Forms without a base-station / color-box just delete those boxes.
+// Edits write back to snFields/requiresSecondSn (syncSnFields) so the app still submits correctly.
+function snPluginsEditor(p){
+  const FP=window.FormPreview;
+  if(!Array.isArray(p.snPlugins) && FP){ p.snPlugins = FP.deriveSnPlugins(p); }
+  if(!Array.isArray(p.snPlugins)) p.snPlugins=[];
+  if(!Array.isArray(p.snPluginsHidden)) p.snPluginsHidden=[];
+  const s=sec("扫码字段（插件）","扫/填的码来自后端模板的固定字段。用「显示」开关控制这个框在 App / 预览里出现不出现——关掉就不显示也不提交，但配置留着，以后有要求要填直接开回来（彩盒SN/装箱号默认关）。框下灰字 = 对应提交字段。");
+  const sync=()=>{ if(FP&&FP.syncSnFields) FP.syncSnFields(p); syncDraftTextarea(p); renderPreview(); };
+  // Enabled (snPlugins) first, then hidden (snPluginsHidden). The 显示 switch moves a plugin between the
+  // two lists; the preview + app render snPlugins only, so hiding one = it disappears everywhere.
+  const rows=[...p.snPlugins.map(pl=>({pl,shown:true})), ...p.snPluginsHidden.map(pl=>({pl,shown:false}))];
+  rows.forEach(({pl,shown})=>{
+    const r=document.createElement("div"); r.className="slot"; if(!shown) r.style.opacity="0.55";
+    r.appendChild(field("框名称"+(shown?"":"（已隐藏）"), inputCtl(pl.label||"", v=>{ pl.label=v; sync(); }), "g"));
+    const toggles=document.createElement("div"); toggles.className="row"; toggles.style.cssText="flex-basis:100%;gap:14px;margin-top:2px";
+    if(pl.key==="primary"){ const b=document.createElement("span"); b.className="muted"; b.style.fontSize="12px"; b.textContent="（主 SN·常驻）"; toggles.appendChild(b); }
+    else toggles.appendChild(swField("显示", shown, on=>{
+      if(on){ p.snPluginsHidden=p.snPluginsHidden.filter(x=>x!==pl); if(!p.snPlugins.includes(pl)) p.snPlugins.push(pl); }
+      else { p.snPlugins=p.snPlugins.filter(x=>x!==pl); if(!p.snPluginsHidden.includes(pl)) p.snPluginsHidden.push(pl); }
+      sync(); renderForm();
+    }));
+    toggles.appendChild(swField("必填*", pl.required, v=>{ pl.required=v; sync(); }));
+    toggles.appendChild(swField("搜索🔍", pl.search!==false, v=>{ pl.search=v; sync(); }));
+    toggles.appendChild(swField("扫码⊡", pl.scan!==false, v=>{ pl.scan=v; sync(); }));
+    r.appendChild(toggles);
+    const fl=document.createElement("div"); fl.style.cssText="flex-basis:100%;font-size:11.5px;color:#94a3b8;margin-top:3px";
+    fl.textContent = pl.field ? ("对应提交字段："+pl.field) : "⚠ 未绑定字段";
+    if(!pl.field) fl.style.color="#b45309";
+    r.appendChild(fl); s.appendChild(r);
+  });
+  const note=document.createElement("div"); note.className="muted"; note.style.fontSize="12px";
+  note.textContent="「显示」开=App 里出现并提交该字段；关=不出现、不提交，但配置保留、随时开回来。";
+  s.appendChild(note);
+  return s;
+}
+
+function h3mini(t){ const d=document.createElement("div"); d.style.cssText="flex-basis:100%;font-weight:600;font-size:13px;margin-bottom:2px"; d.textContent=t; return d; }
+function mutedLine(t){ const d=document.createElement("div"); d.className="muted"; d.style.fontSize="12px"; d.textContent=t; return d; }
+function photoSlotRow(p, arr, i, opts={}){
+  const sl=arr[i]; const r=document.createElement("div"); r.className="slot";
+  r.appendChild(field((opts.label||"框名称")+(opts.index?(" "+(i+1)):""), inputCtl(sl.title||sl.field||"", v=>{ sl.title=v; syncDraftTextarea(p); renderPreview(); }), "g"));
+  r.appendChild(field("最少张", numCtl(sl.minPhotos??(opts.minDefault??1),0,v=>{ sl.minPhotos=v; renderPreview(); })));
+  r.appendChild(field("最多张", numCtl(sl.maxPhotos??10,1,v=>{ sl.maxPhotos=v; renderPreview(); })));
+  if(opts.deletable){ const del=document.createElement("button"); del.className="danger"; del.textContent="删";
+    del.onclick=()=>{ arr.splice(i,1); syncDraftTextarea(p); renderPreview(); renderForm(); }; r.appendChild(del); }
+  return r;
+}
+
+// ONE form. 翻新结果 = good grades + (if the template has it) 不良品. The pick drives the photos:
+// good grade → ① 外观/配件, 不良品 → ② 不良品照片 (mutually exclusive). ③ optional boxes always show.
+// The 不良品 branch is data-driven (present iff the imported template offered a 不良品 result) — no toggle.
+function resultPhotosEditor(p){
+  const hasDef = !!p.defective;
+  const grades = Object.entries(p.gradeMap||{}).map(([k,v])=>v.label||(v.value&&v.value.name)||k);
+  const results = grades.concat(hasDef ? [(p.defective.label||"不良品")] : []);
+  const s=sec("结果 → 拍照（按结果二选一）","结果 = "+(results.join("、")||"（无）")+"。操作员选好成色 → 只拍 ①；"+(hasDef?"选「不良品」→ 只拍 ②（与①互斥）。":"此模板没有不良品结果。"));
+  const box=()=>{ const d=document.createElement("div"); d.style.cssText="border:1px dashed var(--line);border-radius:8px;padding:10px 10px 8px;margin:8px 0"; return d; };
+
+  // ① good-grade photos (v2 photoSlots or legacy uploadFields)
+  const arr = Array.isArray(p.photoSlots) ? p.photoSlots : (Array.isArray(p.uploadFields) ? p.uploadFields : null);
+  const a=box(); a.appendChild(h3mini("① 选好成色时拍 —— 外观/配件"));
+  if(arr && arr.length){ arr.forEach((_,i)=> a.appendChild(photoSlotRow(p, arr, i, {label:"框", index:true, deletable:true}))); }
+  else a.appendChild(mutedLine("（无好成色照片框）"));
+  s.appendChild(a);
+
+  // ② 不良品 photos — shown only when the template offers a 不良品 result (data-driven, no toggle)
+  if(hasDef){
+    const b=box();
+    b.appendChild(h3mini("② 选「不良品」时拍 —— 与 ① 互斥"));
+    b.appendChild(mutedLine("结果里有「"+(p.defective.label||"不良品")+"」这个选项才有此分支；来自模板，不能手动开关。"));
+    const dslots = Array.isArray(p.defective.photoSlots)?p.defective.photoSlots:(p.defective.photoSlots=[]);
+    if(dslots.length){ dslots.forEach((_,i)=> b.appendChild(photoSlotRow(p, dslots, i, {label:"不良品照片框"}))); }
+    else b.appendChild(mutedLine("（无不良品照片框）"));
+    s.appendChild(b);
+  }
+
+  // ③ optional boxes (e.g. 机器电量) — selfill, both branches
+  const c=box();
+  c.appendChild(h3mini("③ 可选照片框 —— 选填"));
+  const opt = Array.isArray(p.optionalSlots)?p.optionalSlots:(p.optionalSlots=[]);
+  if(!opt.length) c.appendChild(mutedLine("没有可选框。"));
+  opt.forEach((_,i)=> c.appendChild(photoSlotRow(p, opt, i, {label:"框名称", minDefault:0, deletable:true})));
+  const add=document.createElement("button"); add.className="ghost sm"; add.style.marginTop="6px"; add.textContent="＋ 加可选框（如：机器电量）";
+  add.onclick=()=>{ opt.push({field:"opt_"+Date.now().toString(36), title:"机器电量（机器电量大于30%）", minPhotos:0, maxPhotos:10, required:false}); syncDraftTextarea(p); renderPreview(); renderForm(); };
+  c.appendChild(add);
+  s.appendChild(c);
+  return s;
+}
+
+/* ---------- AI ---------- */
+$("aiBtn").onclick = async () => {
+  const instr=$("aiInstr").value.trim(); if(!instr){ $("aiMsg").innerHTML='<span class="err">先用大白话写一句你想怎么改</span>'; return; }
+  const btn=$("aiBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="AI 思考中…（通常 30-60 秒，最长约 1.5 分钟，别关页面）"; $("aiMsg").textContent="";
+  try {
+    const body = { template: window._lastTemplate || { field_list:[] }, draft:DRAFT, instructions:instr };
+    const r=await api("/api/ai/draft", { method:"POST", body });
+    applyDraft(r.profile);
+    const v=r.violations||[];
+    $("aiMsg").innerHTML = v.length ? '<span class="err">⚠ AI 用到了不存在的字段，已拦截，请换个说法：\n'+esc(v.join("；"))+'</span>' : '<span class="ok">✓ 改好了，看上面的预览对不对</span>';
+    $("aiInstr").value="";
+  } catch (e) { $("aiMsg").innerHTML='<span class="err">AI 失败：'+esc(e.message)+'</span>'; }
+  finally { btn.disabled=false; btn.textContent=lbl; }
+};
+
+/* ---------- advanced JSON + publish ---------- */
+// Live: as you type valid JSON, the preview follows immediately (debounced). We only re-render the
+// PREVIEW here (not the structured editor / textarea) so your cursor in the JSON box isn't disturbed;
+// the structured editor catches up when you click 「用这段 JSON 覆盖上面」 or edit it directly.
+let _jsonLiveTimer=null;
+$("draft").addEventListener("input", ()=>{
+  clearTimeout(_jsonLiveTimer);
+  _jsonLiveTimer=setTimeout(()=>{
+    try { const p=JSON.parse($("draft").value); DRAFT=p; if(isGraded(DRAFT)) DRAFT.graded=true; renderPreview(); $("editMsg").innerHTML='<span class="ok">↑ 预览已跟随 JSON</span>'; }
+    catch { $("editMsg").innerHTML='<span class="muted">JSON 未闭合/格式错，预览暂不更新…</span>'; }
+  }, 400);
+});
+$("applyJsonBtn").onclick = () => {
+  try { applyDraft(JSON.parse($("draft").value)); $("editMsg").innerHTML='<span class="ok">已套用</span>'; }
+  catch (e) { $("editMsg").innerHTML='<span class="err">JSON 格式错：'+esc(e.message)+'</span>'; }
+};
+// Strip editor-only display backups (allValues on 非新机原因/操作内容, _allMaterials on 物料) before
+// publishing, so the stored profile stays clean — value/materials already hold exactly what the app submits.
+function cleanForPublish(p){
+  const c=JSON.parse(JSON.stringify(p));
+  (c.conditionalFields||[]).forEach(f=>delete f.allValues);
+  (c.operationFields||[]).forEach(f=>delete f.allValues);
+  (c.materialGroups||[]).forEach(g=>delete g._allMaterials);
+  return c;
+}
+$("publishBtn").onclick = async () => {
+  if(!DRAFT){ return; }
+  if(!confirm("确认发布「"+(DRAFT.displayName||DRAFT.id)+"」？\n手机下次打开 App 会自动更新成这个。")) return;
+  const btn=$("publishBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="发布中…"; $("editMsg").textContent="";
+  try {
+    const r=await api("/api/publish", { method:"POST", body:{ profiles:[cleanForPublish(DRAFT)], notes:"panel" } });
+    $("editMsg").innerHTML='<span class="ok">✅ 已发布（第 '+r.version+' 版，共 '+r.total+' 个表单）。手机下次启动自动更新。</span>';
+    loadCatalog();
+  } catch (e) { $("editMsg").innerHTML='<span class="err">发布失败：'+esc(e.message)+'</span>'; }
+  finally { btn.disabled=false; btn.textContent=lbl; }
+};
+
+/* ---------- 全局设置：表单顺序 + 通知 webhook ---------- */
+// 顺序编辑在一份本地工作副本上做（打开对话框时从 CATALOG_PROFILES 浅拷贝一次）；▲▼ 交换相邻项，
+// 「保存顺序」把整份重排后的 profiles 数组 POST 给后端。保存成功后 loadCatalog() 刷新。
+let ORDER_WORKING = [];
+// 与 catalogRow 一致的 良品/不良品 标签样式（此处按 profile 维度取一个代表类型）。
+function orderTag(isDef){
+  return '<span style="border-radius:6px;padding:1px 8px;font-size:12px;margin-right:6px;'
+    +(isDef?'background:#fef2f2;color:#dc2626;border:1px solid #fecaca':'background:#f0fdfa;color:#0f766e;border:1px solid #99f6e4')+'">'+(isDef?'不良品':'良品')+'</span>';
+}
+function renderOrderList(){
+  const box=$("orderList"); box.innerHTML="";
+  if(!ORDER_WORKING.length){ box.innerHTML='<span class="muted">还没有任何表单。</span>'; return; }
+  ORDER_WORKING.forEach((p,i)=>{
+    const el=document.createElement("div"); el.className="item";
+    const isDef=(typeof isDefectiveForm==="function") && isDefectiveForm(p);
+    el.innerHTML='<div class="grow">'+orderTag(isDef)+'<b>'+esc(p.displayName||p.id)+'</b> <span class="muted">'+esc(p.id||"")+'</span></div>';
+    const up=document.createElement("button"); up.className="ghost sm"; up.type="button"; up.textContent="▲"; up.disabled=(i===0);
+    up.onclick=()=>{ const a=ORDER_WORKING; [a[i-1],a[i]]=[a[i],a[i-1]]; renderOrderList(); };
+    const dn=document.createElement("button"); dn.className="ghost sm"; dn.type="button"; dn.textContent="▼"; dn.disabled=(i===ORDER_WORKING.length-1);
+    dn.onclick=()=>{ const a=ORDER_WORKING; [a[i+1],a[i]]=[a[i],a[i+1]]; renderOrderList(); };
+    el.appendChild(up); el.appendChild(dn); box.appendChild(el);
+  });
+}
+function openGlobalSettings(){
+  ORDER_WORKING = CATALOG_PROFILES.slice(); // 浅拷贝：只重排引用，profile 对象不改
+  renderOrderList();
+  $("orderMsg").textContent=""; $("notifyMsg").textContent="";
+  $("notifyWebhookInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.notifyWebhook) || "";
+  $("backendApiBaseInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.backendApiBase) || "";
+  $("brandInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.brand) || "";
+  $("updateOwnerInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.updateOwner) || "";
+  $("updateRepoInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.updateRepo) || "";
+  $("webOriginInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.webOrigin) || "";
+  $("webRefererInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.webReferer) || "";
+  const ep = (CATALOG_SETTINGS && CATALOG_SETTINGS.endpoints) || {};
+  $("endpointsInput").value = (ep && Object.keys(ep).length) ? JSON.stringify(ep, null, 2) : "";
+  const dlg=$("globalSettingsDlg");
+  if(dlg.showModal) dlg.showModal(); else dlg.setAttribute("open","");
+}
+function closeGlobalSettings(){ const dlg=$("globalSettingsDlg"); if(dlg.close) dlg.close(); else dlg.removeAttribute("open"); }
+$("globalSettingsBtn").onclick = openGlobalSettings;
+$("globalSettingsClose").onclick = closeGlobalSettings;
+$("saveOrderBtn").onclick = async () => {
+  const btn=$("saveOrderBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("orderMsg").textContent="";
+  try {
+    await api("/api/settings", { method:"POST", body:{ profiles: ORDER_WORKING } });
+    $("orderMsg").innerHTML='<span class="ok">✅ 顺序已保存</span>';
+    await loadCatalog();
+    ORDER_WORKING = CATALOG_PROFILES.slice(); renderOrderList();
+  } catch (e) { $("orderMsg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
+  finally { btn.disabled=false; btn.textContent=lbl; }
+};
+$("saveNotifyBtn").onclick = async () => {
+  const notifyWebhook=$("notifyWebhookInput").value.trim();
+  const backendApiBase=$("backendApiBaseInput").value.trim();
+  const brand=$("brandInput").value.trim();
+  const updateOwner=$("updateOwnerInput").value.trim();
+  const updateRepo=$("updateRepoInput").value.trim();
+  const webOrigin=$("webOriginInput").value.trim();
+  const webReferer=$("webRefererInput").value.trim();
+  // The endpoints textarea holds the whole `endpoints` object as JSON. Blank = {} (use App defaults).
+  // A bad JSON (or a non-object) aborts the save with an inline error — never POST a malformed body.
+  const epRaw=$("endpointsInput").value.trim();
+  let endpoints={};
+  if (epRaw) {
+    try { endpoints=JSON.parse(epRaw); }
+    catch (e) { $("notifyMsg").innerHTML='<span class="err">接口路径 JSON 解析失败：'+esc(e.message)+'</span>'; return; }
+    if (typeof endpoints!=="object" || endpoints===null || Array.isArray(endpoints)) {
+      $("notifyMsg").innerHTML='<span class="err">接口路径必须是一个 JSON 对象</span>'; return;
+    }
+  }
+  const btn=$("saveNotifyBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("notifyMsg").textContent="";
+  try {
+    await api("/api/settings", { method:"POST", body:{ notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints } });
+    CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints });
+    $("notifyMsg").innerHTML='<span class="ok">✅ 已保存</span>';
+  } catch (e) { $("notifyMsg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
+  finally { btn.disabled=false; btn.textContent=lbl; }
+};
+
+loadCaptcha();
+</script>
+</body>
+</html>
