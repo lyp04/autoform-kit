@@ -1,0 +1,28 @@
+# Android
+app/build/
+build/
+.gradle/
+local.properties
+*.apk
+*.aab
+*.jks
+*.keystore
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Signing / secrets (never commit)
+*.local.json
+**/.dev.vars
+dist/
+
+# Cloudflare Worker / Node
+node_modules/
+.wrangler/
+panel/.dev.vars
+
+# Editors / OS
+.DS_Store
+.idea/
+*.iml
+.vscode/

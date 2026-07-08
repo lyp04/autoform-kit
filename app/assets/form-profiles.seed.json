@@ -1,0 +1,94 @@
+{
+  "version": 1,
+  "schemaVersion": 2,
+  "settings": {
+    "notifyWebhook": ""
+  },
+  "profiles": [
+    {
+      "id": "sample-form-a",
+      "brand": "",
+      "model": "Sample A",
+      "color": "black",
+      "displayName": "Sample Form A",
+      "searchText": "Sample A",
+      "requiresSecondSn": false,
+      "defaultPhotoOrder": "fronts_then_backs",
+      "template": {
+        "id": 1001,
+        "step": 4,
+        "sku": "SAMPLE_A",
+        "warehouseId": 1
+      },
+      "snFields": {
+        "primary": "sn",
+        "package": "packageSn"
+      },
+      "uploadFields": [
+        {
+          "field": "photo_front",
+          "title": "Upload a product photo (up to 10)",
+          "kind": "front",
+          "required": true,
+          "sources": [
+            "front"
+          ]
+        }
+      ],
+      "gradeMap": {
+        "A": {
+          "field": "grade",
+          "label": "Grade A",
+          "value": {
+            "sku": "SAMPLE_A-A",
+            "name": "Grade A",
+            "num": 1
+          }
+        }
+      },
+      "uiColor": "#2563EB"
+    },
+    {
+      "id": "sample-form-b",
+      "brand": "",
+      "model": "Sample B",
+      "color": "white",
+      "displayName": "Sample Form B",
+      "searchText": "Sample B",
+      "requiresSecondSn": false,
+      "defaultPhotoOrder": "fronts_then_backs",
+      "template": {
+        "id": 1002,
+        "step": 4,
+        "sku": "SAMPLE_B",
+        "warehouseId": 1
+      },
+      "snFields": {
+        "primary": "sn"
+      },
+      "uploadFields": [
+        {
+          "field": "photo_front",
+          "title": "Upload a product photo",
+          "kind": "front",
+          "required": true,
+          "sources": [
+            "front"
+          ]
+        }
+      ],
+      "gradeMap": {
+        "A": {
+          "field": "grade",
+          "label": "Grade A",
+          "value": {
+            "sku": "SAMPLE_B-A",
+            "name": "Grade A",
+            "num": 1
+          }
+        }
+      },
+      "uiColor": "#16A34A"
+    }
+  ]
+}
