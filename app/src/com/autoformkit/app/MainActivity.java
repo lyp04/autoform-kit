@@ -486,11 +486,34 @@ public class MainActivity extends Activity {
         showFormPage(true);
     }
 
+    /** Re-read the cached catalog (freshly synced from the panel) into the in-memory profile list, so a
+     *  fresh install or a new publish shows the real forms without needing an app restart. Keeps the
+     *  current selection if its id still exists. No-op if nothing usable is cached. */
+    private void reloadCatalogProfiles() {
+        try {
+            JSONArray reloaded = FormCatalog.loadProfiles(this);
+            if (reloaded == null || reloaded.length() == 0) return;
+            String currentId = (profile != null) ? profile.optString("id", "") : "";
+            allProfiles = reloaded;
+            catalogSettings = FormCatalog.loadSettings(this);
+            profiles = filterGoodProfiles(allProfiles);
+            JSONObject keep = null;
+            for (int i = 0; i < profiles.length(); i++) {
+                if (profiles.getJSONObject(i).optString("id", "").equals(currentId)) { keep = profiles.getJSONObject(i); break; }
+            }
+            profile = keep != null ? keep : (profiles.length() > 0 ? profiles.getJSONObject(0)
+                : (allProfiles.length() > 0 ? allProfiles.getJSONObject(0) : profile));
+        } catch (Exception ignored) {
+            // keep the currently loaded profiles on any error
+        }
+    }
+
     private void showFormPage(boolean promptSavedDraft) {
         if (savedToken().isEmpty()) {
             showSettingsPage();
             return;
         }
+        reloadCatalogProfiles(); // pick up a freshly-synced catalog (fresh install / new publish) without an app restart
         profileSelectionReady = false;
 
         ScrollView scroll = new ScrollView(this);
