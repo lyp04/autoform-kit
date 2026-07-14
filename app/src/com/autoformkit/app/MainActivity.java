@@ -211,6 +211,8 @@ public class MainActivity extends Activity {
     private boolean aStepEntrySubmitting = false;
     // 报废录入「加功能不良」勾选：提交时把功能不良一并勾上、操作内容由未做任何操作换成检测。每次提交成功后复位。
     private boolean aStepEntryFunctionalDefect = false;
+    // 勾选「加功能不良」时按需拉取的 -defective 模板详情缓存（按模板 id），避免连续报废逐台重复请求。
+    private final Map<Integer, JSONObject> defectiveTemplateCache = new HashMap<>();
 
     private TextView loginStatus;
     private TextView updateChannelText;
@@ -1138,6 +1140,9 @@ public class MainActivity extends Activity {
                 JSONObject payload = (defProfile != null)
                     ? buildDefectiveProfilePayload(defProfile, sn, imageUrls, functionalDefect)
                     : buildAStepEntryRejectPayload(aClassStepTemplate(api, 1), sn, imageUrls, functionalDefect);
+                // 勾了「加功能不良」且走 profile 路径：profile 固定值里既没有功能测试字段的值也没有
+                // 「检测」的真实选项值（发布的 profile 不带完整选项表），必须拉一次模板详情按真实选项补。
+                if (functionalDefect && defProfile != null) overlayFunctionalDefectFromTemplate(api, defProfile, payload);
                 if (functionalDefect) applyFunctionalDefectOverrides(defProfile, payload);
                 submitAutoStepPayload(api, payload, sn + " " + t("a_step_one"));
             } catch (Exception exc) {
@@ -1382,6 +1387,56 @@ public class MainActivity extends Activity {
             if (s.contains("检测") || s.contains("检查") || s.contains("detect") || s.contains("inspect") || s.contains("test")) detect.put(all.opt(i));
         }
         return detect.length() > 0 ? detect : null;
+    }
+
+    // 勾了「加功能不良」的 profile 路径补齐：按 -defective 模板的真实字段/选项，把功能测试类字段填成
+    // 不良/不通过（后端把 功能测试=不通过 归为功能不良），并把带「未做任何操作」选项的操作内容字段
+    // 换成「检测」选项——提交值必须取自模板选项本身（发布的 profile 只有固定值、没有完整选项表，
+    // 选项的提交值未必等于其文案）。模板拉取失败不阻塞提交——保持 profile 固定值原样，只记日志。
+    private void overlayFunctionalDefectFromTemplate(Api api, JSONObject defProfile, JSONObject payload) {
+        try {
+            int templateId = defProfile.getJSONObject("template").getInt("id");
+            JSONObject detail = defectiveTemplateCache.get(templateId);
+            if (detail == null) {
+                detail = loadTemplateDetail(api, templateId);
+                if (detail != null) defectiveTemplateCache.put(templateId, detail);
+            }
+            if (detail == null) {
+                appendLog(t("a_step_entry_functional_fallback"));
+                return;
+            }
+            JSONObject data = payload.getJSONObject("data");
+            JSONArray fields = templateFields(detail);
+            for (int i = 0; i < fields.length(); i++) {
+                JSONObject field = fields.optJSONObject(i);
+                if (field == null) continue;
+                String name = field.optString("field", "");
+                if (name.isEmpty()) continue;
+                JSONArray options = field.optJSONArray("option_list");
+                if (options == null || options.length() == 0) options = field.optJSONArray("optionList");
+                if (options == null || options.length() == 0) continue;
+                if (field.optString("title", "").contains("功能测试")) {
+                    // 功能测试状况 → 不通过；若还有功能测试不通过结果类字段则挑不良项。
+                    JSONObject pick = findAStepEntryOption(options, "defective");
+                    if (pick == null) pick = findAStepEntryOption(options, "fail");
+                    if (pick != null) data.put(name, wrapForFieldType(field, optionValueForSubmit(field, pick)));
+                    continue;
+                }
+                if (findAStepEntryOption(options, "no_op") != null) {
+                    JSONObject detect = findAStepEntryOption(options, "detect");
+                    if (detect != null) data.put(name, wrapForFieldType(field, optionValueForSubmit(field, detect)));
+                }
+            }
+        } catch (Exception exc) {
+            appendLog(t("a_step_entry_functional_fallback") + " " + conciseError(exc));
+        }
+    }
+
+    private Object wrapForFieldType(JSONObject field, Object value) {
+        if (!"checkbox".equals(field.optString("type", ""))) return value;
+        JSONArray array = new JSONArray();
+        array.put(value);
+        return array;
     }
 
     // 面板可配置模块：profile 里可选的 functionalDefect.data —— 勾选「加功能不良」提交时，把这里
@@ -8527,6 +8582,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_submit": return "提交报废录入";
             case "a_step_entry_verdict": return "\u56fa\u5b9a\u63d0\u4ea4\u5185\u5bb9\uff1a\u5916\u89c2\u4e0d\u901a\u8fc7 \u00b7 \u5212\u75d5 \u00b7 \u810f\u6c61 \u00b7 \u65e0\u6cd5\u7ef4\u4fee \u00b7 \u4e0d\u826f\u54c1 \u00b7 \u672a\u505a\u4efb\u4f55\u64cd\u4f5c";
             case "a_step_entry_functional": return "\u52a0\u529f\u80fd\u4e0d\u826f\uff08\u64cd\u4f5c\u6362\u6210\u68c0\u6d4b\uff09";
+            case "a_step_entry_functional_fallback": return "\u529f\u80fd\u4e0d\u826f\u8865\u9f50\u5931\u8d25\uff1a\u6a21\u677f\u8be6\u60c5\u4e0d\u53ef\u7528\uff0c\u672c\u5355\u6309\u539f\u56fa\u5b9a\u5185\u5bb9\u63d0\u4ea4";
             case "a_step_entry_sn_empty": return "\uff08\u672a\u5f55\u5165 SN\uff0c\u626b\u7801\u6216\u624b\u8f93\u540e\u663e\u793a\u5728\u6b64\uff09";
             case "a_step_entry_no_photo": return "\u5c1a\u672a\u62cd\u7167";
             case "a_step_entry_photo_ready": return "\u7167\u7247\u5df2\u5c31\u7eea";
@@ -8869,6 +8925,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_submit": return "Submit scrap entry";
             case "a_step_entry_verdict": return "Fixed payload: appearance fail · scratch · dirt · unrepairable · defective · no operation";
             case "a_step_entry_functional": return "Add functional defect (operation: detection)";
+            case "a_step_entry_functional_fallback": return "Functional-defect fill failed: template detail unavailable, submitted fixed content as-is";
             case "a_step_entry_sn_empty": return "(No SN yet — scan or type, it shows here)";
             case "a_step_entry_no_photo": return "No photo yet";
             case "a_step_entry_photo_ready": return "Photo ready";
@@ -9211,6 +9268,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_submit": return "Enviar descarte";
             case "a_step_entry_verdict": return "Envio fijo: apariencia no apta · rayon · suciedad · irreparable · defectuoso · sin operacion";
             case "a_step_entry_functional": return "Agregar defecto funcional (operacion: deteccion)";
+            case "a_step_entry_functional_fallback": return "No se pudo completar defecto funcional: plantilla no disponible, se envio el contenido fijo";
             case "a_step_entry_sn_empty": return "(Sin SN aun: escanee o escriba, aparece aqui)";
             case "a_step_entry_no_photo": return "Sin foto aun";
             case "a_step_entry_photo_ready": return "Foto lista";
