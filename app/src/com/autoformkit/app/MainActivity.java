@@ -45,6 +45,7 @@ import android.widget.AdapterView;
 import android.widget.ArrayAdapter;
 import android.widget.BaseAdapter;
 import android.widget.Button;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -208,6 +209,8 @@ public class MainActivity extends Activity {
     private String pendingAStepEntryPhotoOutputPath = "";
     private Uri pendingAStepEntryPhotoOutputUri;
     private boolean aStepEntrySubmitting = false;
+    // 报废录入「加功能不良」勾选：提交时把功能不良一并勾上、操作内容由未做任何操作换成检测。每次提交成功后复位。
+    private boolean aStepEntryFunctionalDefect = false;
 
     private TextView loginStatus;
     private TextView updateChannelText;
@@ -235,6 +238,7 @@ public class MainActivity extends Activity {
     private TextView aStepEntrySnDisplay;
     private TextView aStepEntryPhotoText;
     private LinearLayout aStepEntryPhotoList;
+    private CheckBox aStepEntryFunctionalCheck;
     private TextView photoPrompt;
     private TextView summaryText;
     private TextView logText;
@@ -847,6 +851,13 @@ public class MainActivity extends Activity {
         TextView verdict = text(t("a_step_entry_verdict"), 12, false);
         verdict.setTextColor(0xFF92400E);
         submitPanel.addView(verdict);
+        aStepEntryFunctionalCheck = new CheckBox(this);
+        aStepEntryFunctionalCheck.setText(t("a_step_entry_functional"));
+        aStepEntryFunctionalCheck.setTextSize(13);
+        aStepEntryFunctionalCheck.setTextColor(0xFF334155);
+        aStepEntryFunctionalCheck.setChecked(aStepEntryFunctionalDefect);
+        aStepEntryFunctionalCheck.setOnCheckedChangeListener((btn, checked) -> aStepEntryFunctionalDefect = checked);
+        submitPanel.addView(aStepEntryFunctionalCheck);
         submitPanel.addView(button(t("a_step_entry_submit"), v -> submitAStepEntry()));
         root.addView(submitPanel);
 
@@ -1096,6 +1107,7 @@ public class MainActivity extends Activity {
             return;
         }
         final String sn = aStepEntrySn;
+        final boolean functionalDefect = aStepEntryFunctionalDefect;
         aStepEntrySubmitting = true;
         showSubmitLoading(1);
         setSubmitProgressMessage(formatSubmitProgressUnit(1, 1, sn));
@@ -1124,8 +1136,9 @@ public class MainActivity extends Activity {
                 // payload from ITS panel-editable fixed values; otherwise fall back to the hardcoded verdict.
                 JSONObject defProfile = defectiveProfileFor(profile);
                 JSONObject payload = (defProfile != null)
-                    ? buildDefectiveProfilePayload(defProfile, sn, imageUrls)
-                    : buildAStepEntryRejectPayload(aClassStepTemplate(api, 1), sn, imageUrls);
+                    ? buildDefectiveProfilePayload(defProfile, sn, imageUrls, functionalDefect)
+                    : buildAStepEntryRejectPayload(aClassStepTemplate(api, 1), sn, imageUrls, functionalDefect);
+                if (functionalDefect) applyFunctionalDefectOverrides(defProfile, payload);
                 submitAutoStepPayload(api, payload, sn + " " + t("a_step_one"));
             } catch (Exception exc) {
                 error = conciseError(exc);
@@ -1140,6 +1153,9 @@ public class MainActivity extends Activity {
                     for (String p : photos) deleteFileQuietly(p);
                     aStepEntryPhotos.clear();
                     aStepEntrySn = "";
+                    // 功能不良是逐台的判定，提交完成即复位，避免带到下一台。
+                    aStepEntryFunctionalDefect = false;
+                    if (aStepEntryFunctionalCheck != null) aStepEntryFunctionalCheck.setChecked(false);
                     refreshAStepEntryUi();
                     if (aStepEntrySnEdit != null) {
                         aStepEntrySnEdit.setText("");
@@ -1197,7 +1213,7 @@ public class MainActivity extends Activity {
         return new ArrayList<>(java.util.Arrays.asList(out));
     }
 
-    private JSONObject buildAStepEntryRejectPayload(JSONObject template, String sn, String imageUrls) throws JSONException {
+    private JSONObject buildAStepEntryRejectPayload(JSONObject template, String sn, String imageUrls, boolean functionalDefect) throws JSONException {
         JSONObject data = new JSONObject();
         JSONArray fields = templateFields(template);
         boolean hasSn = false;
@@ -1217,7 +1233,7 @@ public class MainActivity extends Activity {
                 if (!imageUrls.isEmpty() && isOptionalDefectivePhotoField(field)) data.put(name, imageUrls);
                 continue;
             }
-            Object value = aStepEntryFieldValue(field);
+            Object value = aStepEntryFieldValue(field, functionalDefect);
             if (value != null) data.put(name, value);
         }
         if (!hasSn) data.put("sn", sn);
@@ -1278,7 +1294,7 @@ public class MainActivity extends Activity {
     // Build the 报废 payload straight from a 不良品 profile's PANEL-EDITABLE fixed values: 不良品 结果
     // (gradeMap) + 外观检测状况/不通过原因/是否进行下一步 (choiceFields) + 操作内容 (operationFields) +
     // 不良品照片 (photoSlots). Editing the profile in the panel changes exactly what this submits.
-    private JSONObject buildDefectiveProfilePayload(JSONObject prof, String sn, String imageUrls) throws JSONException {
+    private JSONObject buildDefectiveProfilePayload(JSONObject prof, String sn, String imageUrls, boolean functionalDefect) throws JSONException {
         JSONObject data = new JSONObject();
         JSONObject snFields = prof.optJSONObject("snFields");
         String snField = snFields != null ? snFields.optString("primary", "sn") : "sn";
@@ -1296,7 +1312,11 @@ public class MainActivity extends Activity {
             JSONObject f = choices.optJSONObject(i);
             if (f == null || !f.optBoolean("visible", true)) continue;
             String fid = f.optString("field", "");
-            if (!fid.isEmpty() && f.has("value")) data.put(fid, f.get("value"));
+            if (fid.isEmpty() || !f.has("value")) continue;
+            Object value = f.get("value");
+            // 勾了「加功能不良」：多选字段（不通过原因类）的选项里若有功能不良项，补勾进提交值。
+            if (functionalDefect) value = withFunctionalDefectChoice(f, value);
+            data.put(fid, value);
         }
         // operationFields — 操作内容
         JSONArray ops = prof.optJSONArray("operationFields");
@@ -1304,7 +1324,15 @@ public class MainActivity extends Activity {
             JSONObject f = ops.optJSONObject(i);
             if (f == null) continue;
             String fid = f.optString("field", "");
-            if (!fid.isEmpty() && f.has("value")) data.put(fid, f.get("value"));
+            if (fid.isEmpty() || !f.has("value")) continue;
+            Object value = f.get("value");
+            // 勾了「加功能不良」：面板固定值里有检测类条目就只报检测（未做任何操作不再上报）。
+            // 固定值里没有检测项时只能保持面板原值——已发布的 profile 不带完整选项表，无从取检测的真实值。
+            if (functionalDefect) {
+                JSONArray detectOnly = detectOnlyOperationValue(value);
+                if (detectOnly != null) value = detectOnly;
+            }
+            data.put(fid, value);
         }
         // photoSlots — all 报废 photos into the defective photo slot(s) (usually just 不良品照片); the
         // optional 机器电量 lives in optionalSlots, not here, so it stays empty (选填不传).
@@ -1325,23 +1353,75 @@ public class MainActivity extends Activity {
         return payload;
     }
 
+    // 「加功能不良」勾选时：多选 choiceField 的 options 里有功能不良项就补进提交数组（已有则不重复）。
+    // 单选不动（那是面板定死的判定，替换会破坏面板契约）；返回新数组，绝不改动 profile 缓存里的原值。
+    private Object withFunctionalDefectChoice(JSONObject field, Object value) throws JSONException {
+        if (!(value instanceof JSONArray)) return value;
+        JSONArray options = field.optJSONArray("options");
+        if (options == null || options.length() == 0) return value;
+        JSONObject pick = findAStepEntryOption(options, "functional");
+        if (pick == null) return value;
+        Object pickValue = pick.has("value") ? pick.get("value") : pick.optString("label", "");
+        JSONArray current = (JSONArray) value;
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < current.length(); i++) {
+            if (String.valueOf(current.opt(i)).equals(String.valueOf(pickValue))) return value;
+            out.put(current.opt(i));
+        }
+        out.put(pickValue);
+        return out;
+    }
+
+    // 「加功能不良」勾选时：从操作内容固定值（条目即选项文案）里筛出检测类条目；没有则返回 null 保持原值。
+    private JSONArray detectOnlyOperationValue(Object value) {
+        if (!(value instanceof JSONArray)) return null;
+        JSONArray all = (JSONArray) value;
+        JSONArray detect = new JSONArray();
+        for (int i = 0; i < all.length(); i++) {
+            String s = String.valueOf(all.opt(i)).toLowerCase(java.util.Locale.US);
+            if (s.contains("检测") || s.contains("检查") || s.contains("detect") || s.contains("inspect") || s.contains("test")) detect.put(all.opt(i));
+        }
+        return detect.length() > 0 ? detect : null;
+    }
+
+    // 面板可配置模块：profile 里可选的 functionalDefect.data —— 勾选「加功能不良」提交时，把这里
+    // 列出的字段值原样覆盖进 payload.data（例如不良原因数组补上功能不良、操作内容换成 ["检测"]）。
+    // 配了它就以面板为准（内置启发式先算、再被覆盖），没配就纯走启发式。这样勾选提交什么只需在
+    // 面板 JSON 编辑器里改 profile 并发布，App 无需重新打包。优先读 -defective profile 上的配置，
+    // 它没有再读机型自己 profile 上的（两条提交路径都生效）。
+    private void applyFunctionalDefectOverrides(JSONObject defProfile, JSONObject payload) throws JSONException {
+        JSONObject cfg = defProfile != null ? defProfile.optJSONObject("functionalDefect") : null;
+        if (cfg == null && profile != null) cfg = profile.optJSONObject("functionalDefect");
+        JSONObject overrides = cfg == null ? null : cfg.optJSONObject("data");
+        JSONObject data = payload.optJSONObject("data");
+        if (overrides == null || data == null) return;
+        JSONArray names = overrides.names();
+        for (int i = 0; names != null && i < names.length(); i++) {
+            String key = names.optString(i);
+            if (!key.isEmpty()) data.put(key, overrides.get(key));
+        }
+    }
+
     // Decide each step-one field's value by the OPTIONS the field actually offers (title-agnostic).
     // Earlier this matched on field titles, which silently missed the 不良品 verdict field when its
     // title didn't contain the expected words; matching on the available options is unambiguous.
-    private Object aStepEntryFieldValue(JSONObject field) throws JSONException {
+    private Object aStepEntryFieldValue(JSONObject field, boolean functionalDefect) throws JSONException {
         // 报废走「外观不良」路径：功能测试不做 → 功能测试状况类字段不提交（真实报废单里没有它），
         // 否则它也是「通过/不通过」单选，会被下面的 fail 规则误填成「不通过」。用中文 title 判断——
         // 不能用 en_title，因为『外观测试不通过结果』字段的英文标题里也含 "function test"，会误伤退货结果字段。
+        // 勾了「加功能不良」也一样跳过：那只改不良原因勾选和操作内容，不动功能测试字段。
         if (field.optString("title", "").contains("功能测试")) return null;
         JSONArray options = field.optJSONArray("option_list");
         if (options == null || options.length() == 0) options = field.optJSONArray("optionList");
         if (options == null || options.length() == 0) return null;
 
         // 1) Defect REASON: a field offering 划痕/脏污 → multi-select all such defects.
+        //    勾了「加功能不良」时把功能不良也一并勾上（该字段没有这一项就照旧）。
         if (findAStepEntryOption(options, "scratch") != null || findAStepEntryOption(options, "dirt") != null) {
             JSONArray picked = new JSONArray();
             addAStepEntryOptionMatches(picked, field, options, "scratch");
             addAStepEntryOptionMatches(picked, field, options, "dirt");
+            if (functionalDefect) addAStepEntryOptionMatches(picked, field, options, "functional");
             if (picked.length() > 0) return picked;
         }
         // 2) Quality verdict: any field offering a 不良品 option (this is the one that was being missed).
@@ -1350,7 +1430,8 @@ public class MainActivity extends Activity {
         if (option == null) option = findAStepEntryOption(options, "fail");
         // 4) Repair result: 无法维修.
         if (option == null) option = findAStepEntryOption(options, "unrepairable");
-        // 5) Operation: 未做任何操作.
+        // 5) Operation: 未做任何操作；勾了「加功能不良」则换成检测。
+        if (option == null && functionalDefect) option = findAStepEntryOption(options, "detect");
         if (option == null) option = findAStepEntryOption(options, "no_op");
         if (option == null) {
             // Not a verdict-bearing field. Fall back to the auto step-one default so any incidental
@@ -1404,6 +1485,12 @@ public class MainActivity extends Activity {
             case "no_op": // 未做任何操作 / 无操作
                 return text.contains("未做") || text.contains("无操作") || text.contains("未操作") || text.contains("不操作")
                     || text.contains("no operation") || text.contains("no action") || text.contains("none");
+            case "functional": // 功能不良 / 功能故障 —— 只认「功能+坏」组合，避免误勾「功能正常/功能测试通过」类选项
+                return text.contains("功能不良") || text.contains("功能故障") || text.contains("功能异常")
+                    || text.contains("malfunction")
+                    || (text.contains("function") && (text.contains("defect") || text.contains("fail") || text.contains("bad")));
+            case "detect": // 检测 / 检查 —— 与良品流程 optionMatches 的 detect 同款
+                return text.contains("检测") || text.contains("检查") || text.contains("detect") || text.contains("inspect") || text.contains("test");
             default:
                 return false;
         }
@@ -8439,6 +8526,7 @@ public class MainActivity extends Activity {
             case "delete_photo": return "\u5220\u9664";
             case "a_step_entry_submit": return "提交报废录入";
             case "a_step_entry_verdict": return "\u56fa\u5b9a\u63d0\u4ea4\u5185\u5bb9\uff1a\u5916\u89c2\u4e0d\u901a\u8fc7 \u00b7 \u5212\u75d5 \u00b7 \u810f\u6c61 \u00b7 \u65e0\u6cd5\u7ef4\u4fee \u00b7 \u4e0d\u826f\u54c1 \u00b7 \u672a\u505a\u4efb\u4f55\u64cd\u4f5c";
+            case "a_step_entry_functional": return "\u52a0\u529f\u80fd\u4e0d\u826f\uff08\u64cd\u4f5c\u6362\u6210\u68c0\u6d4b\uff09";
             case "a_step_entry_sn_empty": return "\uff08\u672a\u5f55\u5165 SN\uff0c\u626b\u7801\u6216\u624b\u8f93\u540e\u663e\u793a\u5728\u6b64\uff09";
             case "a_step_entry_no_photo": return "\u5c1a\u672a\u62cd\u7167";
             case "a_step_entry_photo_ready": return "\u7167\u7247\u5df2\u5c31\u7eea";
@@ -8780,6 +8868,7 @@ public class MainActivity extends Activity {
             case "delete_photo": return "Delete";
             case "a_step_entry_submit": return "Submit scrap entry";
             case "a_step_entry_verdict": return "Fixed payload: appearance fail · scratch · dirt · unrepairable · defective · no operation";
+            case "a_step_entry_functional": return "Add functional defect (operation: detection)";
             case "a_step_entry_sn_empty": return "(No SN yet — scan or type, it shows here)";
             case "a_step_entry_no_photo": return "No photo yet";
             case "a_step_entry_photo_ready": return "Photo ready";
@@ -9121,6 +9210,7 @@ public class MainActivity extends Activity {
             case "delete_photo": return "Eliminar";
             case "a_step_entry_submit": return "Enviar descarte";
             case "a_step_entry_verdict": return "Envio fijo: apariencia no apta · rayon · suciedad · irreparable · defectuoso · sin operacion";
+            case "a_step_entry_functional": return "Agregar defecto funcional (operacion: deteccion)";
             case "a_step_entry_sn_empty": return "(Sin SN aun: escanee o escriba, aparece aqui)";
             case "a_step_entry_no_photo": return "Sin foto aun";
             case "a_step_entry_photo_ready": return "Foto lista";
