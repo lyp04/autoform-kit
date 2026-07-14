@@ -2,7 +2,11 @@ package com.autoformkit.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Notification;
+import android.app.NotificationChannel;
+import android.app.NotificationManager;
 import android.content.ActivityNotFoundException;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageInfo;
@@ -265,10 +269,12 @@ final class UpdateManager {
         new Thread(() -> {
             try {
                 File apk = new File(updateDir(), update.apkAsset);
-                downloadAsset(update.apkUrl, apk);
+                downloadAsset(update.apkUrl, apk, (done, total) -> notifyDownloadProgress(update, done, total));
+                notifyDownloadDone(update);
                 validateDownload(update, apk);
                 activity.runOnUiThread(() -> requestInstall(apk));
             } catch (Exception exc) {
+                cancelDownloadNotification();
                 activity.runOnUiThread(() -> {
                     if (!activityAlive()) return;
                     new AlertDialog.Builder(activity)
@@ -279,6 +285,80 @@ final class UpdateManager {
                 });
             }
         }, "update-download").start();
+    }
+
+    // ===== 下载进度通知：常驻进度条（静默通道），完成后换成可滑走的「下载完成」。 =====
+    private static final String DOWNLOAD_CHANNEL_ID = "update_download";
+    private static final int DOWNLOAD_NOTIFICATION_ID = 1002;
+    private long lastProgressNotifyMs = 0;
+    private int lastProgressPercent = -1;
+
+    private NotificationManager notificationManager() {
+        return (NotificationManager) activity.getSystemService(Context.NOTIFICATION_SERVICE);
+    }
+
+    private Notification.Builder downloadNotificationBuilder() {
+        if (Build.VERSION.SDK_INT >= 26) {
+            NotificationChannel channel = new NotificationChannel(
+                DOWNLOAD_CHANNEL_ID,
+                s("更新下载", "Update download", "Descarga de actualización"),
+                NotificationManager.IMPORTANCE_LOW);
+            channel.setShowBadge(false);
+            notificationManager().createNotificationChannel(channel);
+            return new Notification.Builder(activity, DOWNLOAD_CHANNEL_ID);
+        }
+        return new Notification.Builder(activity);
+    }
+
+    private void notifyDownloadProgress(UpdateInfo update, long done, long total) {
+        // 节流：进度没变不刷；变了也至少间隔 300ms（100% 除外），避免通知风暴。
+        int percent = total > 0 ? (int) (done * 100 / total) : -1;
+        long now = System.currentTimeMillis();
+        if (percent < 0) {
+            if (now - lastProgressNotifyMs < 500) return;
+        } else {
+            if (percent == lastProgressPercent) return;
+            if (now - lastProgressNotifyMs < 300 && percent < 100) return;
+        }
+        lastProgressPercent = percent;
+        lastProgressNotifyMs = now;
+        Notification.Builder builder = downloadNotificationBuilder()
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(s("正在下载更新 ", "Downloading update ", "Descargando actualización ") + update.versionName)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true);
+        if (percent >= 0) {
+            builder.setProgress(100, percent, false)
+                .setContentText(percent + "% · " + (done / (1024 * 1024)) + "MB / " + (total / (1024 * 1024)) + "MB");
+        } else {
+            builder.setProgress(0, 0, true)
+                .setContentText((done / (1024 * 1024)) + "MB");
+        }
+        try {
+            notificationManager().notify(DOWNLOAD_NOTIFICATION_ID, builder.build());
+        } catch (Exception ignored) {
+            // 无通知权限等情况：进度通知只是锦上添花，绝不影响下载本身。
+        }
+    }
+
+    private void notifyDownloadDone(UpdateInfo update) {
+        Notification.Builder builder = downloadNotificationBuilder()
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle(s("更新下载完成 ", "Update downloaded ", "Actualización descargada ") + update.versionName)
+            .setContentText(s("等待安装", "Waiting to install", "Esperando instalación"))
+            .setOngoing(false)
+            .setAutoCancel(true);
+        try {
+            notificationManager().notify(DOWNLOAD_NOTIFICATION_ID, builder.build());
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void cancelDownloadNotification() {
+        try {
+            notificationManager().cancel(DOWNLOAD_NOTIFICATION_ID);
+        } catch (Exception ignored) {
+        }
     }
 
     private void validateDownload(UpdateInfo update, File apk) throws Exception {
@@ -343,7 +423,11 @@ final class UpdateManager {
         }
     }
 
-    private void downloadAsset(String url, File outputFile) throws Exception {
+    private interface DownloadProgress {
+        void onProgress(long done, long total);
+    }
+
+    private void downloadAsset(String url, File outputFile, DownloadProgress progress) throws Exception {
         File dir = outputFile.getParentFile();
         if (dir != null && !dir.exists() && !dir.mkdirs()) {
             throw new IOException("Cannot create update directory.");
@@ -353,10 +437,20 @@ final class UpdateManager {
         }
         HttpURLConnection conn = openConnection(url, "application/octet-stream");
         try (InputStream input = responseStream(conn); FileOutputStream output = new FileOutputStream(outputFile)) {
+            // openConnection 已解析完重定向，这里是终点响应的长度；拿不到则 -1（走不定长进度）。
+            // 不用 getContentLengthLong()——它要 API 24，而 minSdk 是 23。
+            long total = -1;
+            try {
+                total = Long.parseLong(conn.getHeaderField("Content-Length"));
+            } catch (Exception ignored) {
+            }
+            long done = 0;
             byte[] buffer = new byte[8192];
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 output.write(buffer, 0, read);
+                done += read;
+                if (progress != null) progress.onProgress(done, total);
             }
         } finally {
             conn.disconnect();

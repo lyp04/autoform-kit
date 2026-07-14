@@ -18,8 +18,10 @@ import android.content.res.Configuration;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
+import android.graphics.Matrix;
 import android.graphics.Paint;
 import android.graphics.RectF;
+import android.media.ExifInterface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.graphics.Typeface;
@@ -209,10 +211,12 @@ public class MainActivity extends Activity {
     private String pendingAStepEntryPhotoOutputPath = "";
     private Uri pendingAStepEntryPhotoOutputUri;
     private boolean aStepEntrySubmitting = false;
-    // 报废录入「加功能不良」勾选：提交时把功能不良一并勾上、操作内容由未做任何操作换成检测。每次提交成功后复位。
+    // 报废录入「加功能不良」勾选：提交时把功能不良一并勾上、操作内容由未做任何操作换成检测。
+    // 勾一次一直有效（连续报废不用逐台再勾），退出报废录入页或重启 App 才复位。
     private boolean aStepEntryFunctionalDefect = false;
-    // 勾选「加功能不良」时按需拉取的 -defective 模板详情缓存（按模板 id），避免连续报废逐台重复请求。
-    private final Map<Integer, JSONObject> defectiveTemplateCache = new HashMap<>();
+    // 勾选「加功能不良」时按需拉取的 -defective 模板详情缓存（按模板 id）。勾选瞬间有后台预拉，
+    // 与提交线程并发写同一 key，用并发 Map。
+    private final Map<Integer, JSONObject> defectiveTemplateCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     private TextView loginStatus;
     private TextView updateChannelText;
@@ -767,6 +771,8 @@ public class MainActivity extends Activity {
             // different model than the form's. Drop the cache so the form re-fetches for its own profile.
             cachedAClassStepOneTemplate = null;
             cachedAClassStepTwoTemplate = null;
+            // 「加功能不良」只在报废录入页内保持，离开页面即复位。
+            aStepEntryFunctionalDefect = false;
             showFormPage(false);
         }));
         View spacer = new View(this);
@@ -832,6 +838,7 @@ public class MainActivity extends Activity {
         LinearLayout snActionRow = row();
         snActionRow.addView(button(t("scan_sn"), v -> startAStepEntryScan()));
         snActionRow.addView(button(t("add"), v -> applyTypedAStepEntrySn()));
+        snActionRow.addView(button(t("a_step_entry_clear_sn"), v -> clearAStepEntrySn()));
         capturePanel.addView(snActionRow);
         aStepEntrySnDisplay = text("", 20, true);
         aStepEntrySnDisplay.setTextColor(0xFF0F766E);
@@ -858,7 +865,11 @@ public class MainActivity extends Activity {
         aStepEntryFunctionalCheck.setTextSize(13);
         aStepEntryFunctionalCheck.setTextColor(0xFF334155);
         aStepEntryFunctionalCheck.setChecked(aStepEntryFunctionalDefect);
-        aStepEntryFunctionalCheck.setOnCheckedChangeListener((btn, checked) -> aStepEntryFunctionalDefect = checked);
+        aStepEntryFunctionalCheck.setOnCheckedChangeListener((btn, checked) -> {
+            aStepEntryFunctionalDefect = checked;
+            // 勾选瞬间就后台预拉 -defective 模板详情（带缓存），把首次提交要付的那次模板请求提前做掉。
+            if (checked) prefetchDefectiveTemplateDetail();
+        });
         submitPanel.addView(aStepEntryFunctionalCheck);
         submitPanel.addView(button(t("a_step_entry_submit"), v -> submitAStepEntry()));
         root.addView(submitPanel);
@@ -1158,9 +1169,6 @@ public class MainActivity extends Activity {
                     for (String p : photos) deleteFileQuietly(p);
                     aStepEntryPhotos.clear();
                     aStepEntrySn = "";
-                    // 功能不良是逐台的判定，提交完成即复位，避免带到下一台。
-                    aStepEntryFunctionalDefect = false;
-                    if (aStepEntryFunctionalCheck != null) aStepEntryFunctionalCheck.setChecked(false);
                     refreshAStepEntryUi();
                     if (aStepEntrySnEdit != null) {
                         aStepEntrySnEdit.setText("");
@@ -1184,7 +1192,7 @@ public class MainActivity extends Activity {
         if (n == 0) return new ArrayList<>();
         if (n == 1) {
             List<String> one = new ArrayList<>();
-            one.add(api.uploadImage(new File(paths.get(0)), namePrefix + "1.jpg"));
+            one.add(uploadCompressed(api, new File(paths.get(0)), namePrefix + "1.jpg"));
             return one;
         }
         final String[] out = new String[n];
@@ -1195,7 +1203,7 @@ public class MainActivity extends Activity {
             for (int i = 0; i < n; i++) {
                 final int idx = i;
                 futures.add(executor.submit(() -> {
-                    out[idx] = api.uploadImage(new File(paths.get(idx)), namePrefix + (idx + 1) + ".jpg");
+                    out[idx] = uploadCompressed(api, new File(paths.get(idx)), namePrefix + (idx + 1) + ".jpg");
                     return null;
                 }));
             }
@@ -1216,6 +1224,106 @@ public class MainActivity extends Activity {
             executor.shutdownNow();
         }
         return new ArrayList<>(java.util.Arrays.asList(out));
+    }
+
+    // 报废照片来自系统相机原图（动辄 3-12MB），原样上传是「提交慢」的大头。上传前压到长边 1920 /
+    // 质量 88（证据照片足够清晰，通常只剩几百 KB，快一个数量级）。压缩失败一律回退传原图，绝不丢单。
+    private static final int UPLOAD_MAX_EDGE = 1920;
+    private static final int UPLOAD_JPEG_QUALITY = 88;
+
+    private String uploadCompressed(Api api, File source, String uploadName) throws Exception {
+        File prepared = compressForUpload(source);
+        try {
+            return api.uploadImage(prepared, uploadName);
+        } finally {
+            if (!prepared.equals(source)) deleteFileQuietly(prepared.getAbsolutePath());
+        }
+    }
+
+    private File compressForUpload(File source) {
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(source.getAbsolutePath(), bounds);
+            int width = bounds.outWidth;
+            int height = bounds.outHeight;
+            if (width <= 0 || height <= 0) return source;
+            int rotation = exifRotationDegrees(source);
+            boolean fits = width <= UPLOAD_MAX_EDGE && height <= UPLOAD_MAX_EDGE;
+            // 已经小图且不需要转方向：原样上传，省一次重编码。
+            if (fits && rotation == 0 && source.length() <= 900 * 1024) return source;
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            // 先按 2 的幂粗采样到 ≤2×目标，再精确缩到长边 1920，画质比直接深采样好。
+            options.inSampleSize = sampleSize(width, height, UPLOAD_MAX_EDGE * 2, UPLOAD_MAX_EDGE * 2);
+            Bitmap bitmap = BitmapFactory.decodeFile(source.getAbsolutePath(), options);
+            if (bitmap == null) return source;
+            float scale = Math.min(1f, (float) UPLOAD_MAX_EDGE / Math.max(bitmap.getWidth(), bitmap.getHeight()));
+            if (scale < 1f || rotation != 0) {
+                Matrix matrix = new Matrix();
+                if (scale < 1f) matrix.postScale(scale, scale);
+                if (rotation != 0) matrix.postRotate(rotation);
+                Bitmap transformed = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+                if (transformed != bitmap) bitmap.recycle();
+                bitmap = transformed;
+            }
+            File dir = new File(getCacheDir(), "upload-tmp");
+            if (!dir.exists() && !dir.mkdirs()) {
+                bitmap.recycle();
+                return source;
+            }
+            File output = new File(dir, source.getName().replace(".jpg", "") + "-up.jpg");
+            try (FileOutputStream stream = new FileOutputStream(output)) {
+                bitmap.compress(Bitmap.CompressFormat.JPEG, UPLOAD_JPEG_QUALITY, stream);
+            }
+            bitmap.recycle();
+            // 罕见情况压完反而更大（如源图本就高压缩），传原图。
+            if (output.length() <= 0 || output.length() >= source.length()) {
+                deleteFileQuietly(output.getAbsolutePath());
+                return source;
+            }
+            return output;
+        } catch (Throwable error) {
+            Diagnostics.append(this, "upload compress fallback: " + error);
+            return source;
+        }
+    }
+
+    private int exifRotationDegrees(File file) {
+        try {
+            ExifInterface exif = new ExifInterface(file.getAbsolutePath());
+            switch (exif.getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
+                case ExifInterface.ORIENTATION_ROTATE_90: return 90;
+                case ExifInterface.ORIENTATION_ROTATE_180: return 180;
+                case ExifInterface.ORIENTATION_ROTATE_270: return 270;
+                default: return 0;
+            }
+        } catch (Exception exc) {
+            return 0;
+        }
+    }
+
+    // 勾选「加功能不良」瞬间后台预拉 -defective 模板详情进缓存；失败无所谓，提交时会正常再拉。
+    private void prefetchDefectiveTemplateDetail() {
+        JSONObject defProfile = defectiveProfileFor(profile);
+        JSONObject template = defProfile == null ? null : defProfile.optJSONObject("template");
+        int templateId = template == null ? 0 : template.optInt("id", 0);
+        if (templateId <= 0 || defectiveTemplateCache.containsKey(templateId)) return;
+        String token = savedToken();
+        if (token.isEmpty() || !backendConfigured()) return;
+        new Thread(() -> {
+            try {
+                Api api = new Api(apiBase(), token, webFingerprint(), webOrigin(), webReferer(), endpoints());
+                JSONObject detail = loadTemplateDetail(api, templateId);
+                if (detail != null) defectiveTemplateCache.put(templateId, detail);
+            } catch (Exception ignored) {
+            }
+        }, "defective-template-prefetch").start();
+    }
+
+    private void clearAStepEntrySn() {
+        aStepEntrySn = "";
+        if (aStepEntrySnEdit != null) aStepEntrySnEdit.setText("");
+        refreshAStepEntryUi();
     }
 
     private JSONObject buildAStepEntryRejectPayload(JSONObject template, String sn, String imageUrls, boolean functionalDefect) throws JSONException {
@@ -8583,6 +8691,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_verdict": return "\u56fa\u5b9a\u63d0\u4ea4\u5185\u5bb9\uff1a\u5916\u89c2\u4e0d\u901a\u8fc7 \u00b7 \u5212\u75d5 \u00b7 \u810f\u6c61 \u00b7 \u65e0\u6cd5\u7ef4\u4fee \u00b7 \u4e0d\u826f\u54c1 \u00b7 \u672a\u505a\u4efb\u4f55\u64cd\u4f5c";
             case "a_step_entry_functional": return "\u52a0\u529f\u80fd\u4e0d\u826f\uff08\u64cd\u4f5c\u6362\u6210\u68c0\u6d4b\uff09";
             case "a_step_entry_functional_fallback": return "\u529f\u80fd\u4e0d\u826f\u8865\u9f50\u5931\u8d25\uff1a\u6a21\u677f\u8be6\u60c5\u4e0d\u53ef\u7528\uff0c\u672c\u5355\u6309\u539f\u56fa\u5b9a\u5185\u5bb9\u63d0\u4ea4";
+            case "a_step_entry_clear_sn": return "\u6e05\u9664SN";
             case "a_step_entry_sn_empty": return "\uff08\u672a\u5f55\u5165 SN\uff0c\u626b\u7801\u6216\u624b\u8f93\u540e\u663e\u793a\u5728\u6b64\uff09";
             case "a_step_entry_no_photo": return "\u5c1a\u672a\u62cd\u7167";
             case "a_step_entry_photo_ready": return "\u7167\u7247\u5df2\u5c31\u7eea";
@@ -8926,6 +9035,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_verdict": return "Fixed payload: appearance fail · scratch · dirt · unrepairable · defective · no operation";
             case "a_step_entry_functional": return "Add functional defect (operation: detection)";
             case "a_step_entry_functional_fallback": return "Functional-defect fill failed: template detail unavailable, submitted fixed content as-is";
+            case "a_step_entry_clear_sn": return "Clear SN";
             case "a_step_entry_sn_empty": return "(No SN yet — scan or type, it shows here)";
             case "a_step_entry_no_photo": return "No photo yet";
             case "a_step_entry_photo_ready": return "Photo ready";
@@ -9269,6 +9379,7 @@ public class MainActivity extends Activity {
             case "a_step_entry_verdict": return "Envio fijo: apariencia no apta · rayon · suciedad · irreparable · defectuoso · sin operacion";
             case "a_step_entry_functional": return "Agregar defecto funcional (operacion: deteccion)";
             case "a_step_entry_functional_fallback": return "No se pudo completar defecto funcional: plantilla no disponible, se envio el contenido fijo";
+            case "a_step_entry_clear_sn": return "Borrar SN";
             case "a_step_entry_sn_empty": return "(Sin SN aun: escanee o escriba, aparece aqui)";
             case "a_step_entry_no_photo": return "Sin foto aun";
             case "a_step_entry_photo_ready": return "Foto lista";
