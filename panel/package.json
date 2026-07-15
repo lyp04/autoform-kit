@@ -6,7 +6,8 @@
   "description": "Backend-gated Cloudflare Worker + SPA for authoring form profiles and publishing them to a catalog repo.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "deploy": "wrangler deploy",
+    "test": "node --test"
   },
   "devDependencies": {
     "wrangler": "^4.104.0"

@@ -24,17 +24,32 @@ function buildNonNewPerGrade(field) {
 }
 
 const DEFECTIVE_RE = /不良|报废|報廢|次品|残次|defective|scrap|reject/i;
-// 全新机 = brand-new tier (labeled …全新机/全新, sometimes "N类"). Product owner: "不管 N，只看 ABC 和不
-// 良品" — the app has 3 grade slots, so we drop 全新机 and keep the 九五/九成/五成 (A类/B类/C类) grades.
-const BRAND_NEW_RE = /全新/;
+// 全新机 = brand-new tier. Backends are inconsistent here: some call it 全新机, while others only
+// say N类 / Class N. It must never occupy the app's A slot — doing so shifts A→B and B→C and makes an
+// operator's A selection submit the N option. Keep this deliberately stricter than a bare /N/: model
+// names and SKUs routinely contain that letter, so N is a grade only when paired with a grade marker.
+const BRAND_NEW_RE = /全新|(?:^|[^a-z])n\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*n(?:$|[^a-z])/i;
+const BRAND_NEW_SKU_RE = /(?:^|[-_])n$/i;
+const EXPLICIT_GRADE_RE = {
+  A: /(?:^|[^a-z])a\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*a(?:$|[^a-z])/i,
+  B: /(?:^|[^a-z])b\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*b(?:$|[^a-z])/i,
+  C: /(?:^|[^a-z])c\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*c(?:$|[^a-z])/i
+};
+function optionText(o) {
+  return `${o.name || ""} ${o.en_name || ""}`;
+}
+function explicitGrade(o) {
+  const text = optionText(o);
+  return Object.keys(EXPLICIT_GRADE_RE).find((grade) => EXPLICIT_GRADE_RE[grade].test(text)) || "";
+}
 function isDefectiveText(s) {
   return DEFECTIVE_RE.test(String(s || ""));
 }
 function isDefectiveOption(o) {
-  return DEFECTIVE_RE.test(`${o.name || ""} ${o.en_name || ""}`);
+  return DEFECTIVE_RE.test(optionText(o));
 }
 function isBrandNewOption(o) {
-  return BRAND_NEW_RE.test(`${o.name || ""} ${o.en_name || ""}`);
+  return BRAND_NEW_RE.test(optionText(o)) || BRAND_NEW_SKU_RE.test(String(o.value || "").trim());
 }
 // 判定条件:一个模版的翻新结果选项若「全是不良品」(没有任何良品档),它就是【不良品表单】。这类表单的
 // 「不良品照片」是它的主图、必须保留;良品表单才要把这张跨分支的「不良品照片」挡在外面。
@@ -43,28 +58,39 @@ function isDefectiveOnlyTemplate(retread) {
   return opts.length > 0 && opts.every((o) => isDefectiveOption(o));
 }
 
-// 良品表单 and 不良品表单 are SEPARATE templates. A form's grades are its NON-defective options
-// (全新机 / 九五新 / 九成新 …), mapped POSITIONALLY to A/B/C in listed best→worst order — so a leading
-// 全新机(N) lands on A (per product owner). A template whose ONLY options are defective IS a 不良品表单:
-// then the defective option(s) become the grade (A). This keeps a stray 不良品 out of a good form (it
-// lives in its own 不良品 template) while leaving a pure 不良品 form submittable through the same
-// gradeMap[grade].value path the app/submission already use.
+// 良品表单 and 不良品表单 are SEPARATE templates. For a good form, drop both N/全新 and defective
+// options. Prefer explicit A类/B类/C类 labels over backend order; use position only for legacy labels
+// such as 九五成新/九成新/五成新 that carry no class letter. A pure defective template remains a
+// single-A form so it can use the same gradeMap[grade].value submission path.
 function buildGradeMap(retread) {
   const opts = (retread.option_list || []).filter((o) => o && o.value != null);
   if (!opts.length) return {};
-  // Grades = non-defective, non-全新机 options mapped positionally to A/B/C (so 九五→A, 九成→B, 五成→C).
-  // Fallbacks keep a form from becoming gradeless if it happens to only offer 全新机 (+不良品).
-  const graded = opts.filter((o) => !isDefectiveOption(o) && !isBrandNewOption(o));
-  const nonDefective = opts.filter((o) => !isDefectiveOption(o));
-  const chosen = graded.length ? graded : (nonDefective.length ? nonDefective : opts);
   const keys = ["A", "B", "C"];
+  const defectiveOnly = opts.every((o) => isDefectiveOption(o));
+  const chosen = defectiveOnly
+    ? opts
+    : opts.filter((o) => !isDefectiveOption(o) && !isBrandNewOption(o));
   const map = {};
-  chosen.slice(0, keys.length).forEach((o, i) => {
-    map[keys[i]] = {
+  const put = (grade, o) => {
+    map[grade] = {
       field: retread.field,
-      label: o.name || o.en_name || keys[i],
+      label: o.name || o.en_name || grade,
       value: { sku: o.value, name: o.name || o.en_name || o.value, num: o.num || 1 }
     };
+  };
+
+  // Explicit labels win even when the backend reorders its options.
+  chosen.forEach((o) => {
+    const grade = explicitGrade(o);
+    if (grade && !map[grade]) put(grade, o);
+  });
+
+  // Positional fallback is only for options with no explicit grade marker. Never recycle a duplicate
+  // explicit B option into an empty C slot.
+  const unlabeled = chosen.filter((o) => !explicitGrade(o));
+  const openKeys = keys.filter((grade) => !map[grade]);
+  unlabeled.slice(0, openKeys.length).forEach((o, i) => {
+    put(openKeys[i], o);
   });
   return map;
 }

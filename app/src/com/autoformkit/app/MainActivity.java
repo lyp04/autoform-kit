@@ -115,6 +115,16 @@ public class MainActivity extends Activity {
     private static final long ROUND_LEDGER_RETAIN_MS = 3L * 24 * 60 * 60 * 1000; // keep the last 3 days of rounds
     private static final String LAST_PROFILE_ID_KEY = "last_profile_id";
     private static final String DAILY_STATS_PREFIX = "daily_stats_";
+    // Catalogs may come from an older panel version or a hand-edited profile. Grade labels are the
+    // last line of defence: recover A/B/C from an explicitly labelled entry even if it sits under the
+    // wrong key, and never let N/全新 leave the device as A/B/C.
+    private static final Pattern BRAND_NEW_GRADE_PATTERN = Pattern.compile(
+        "全新|(?:^|[^A-Z])N\\s*[-_ ]?\\s*(?:类|級|级|CLASS|GRADE)|(?:CLASS|GRADE|类|級|级)\\s*[-_ ]?\\s*N(?:$|[^A-Z])",
+        Pattern.CASE_INSENSITIVE);
+    private static final Pattern BRAND_NEW_SKU_PATTERN = Pattern.compile("(?:^|[-_])N$", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EXPLICIT_GRADE_PATTERN = Pattern.compile(
+        "(?:^|[^A-Z])([ABC])\\s*[-_ ]?\\s*(?:类|級|级|CLASS|GRADE)|(?:CLASS|GRADE|类|級|级)\\s*[-_ ]?\\s*([ABC])(?:$|[^A-Z])",
+        Pattern.CASE_INSENSITIVE);
     private static final String PENDING_PHOTO_INDEX_KEY = "pending_photo_index";
     private static final String PENDING_PHOTO_SIDE_KEY = "pending_photo_side";
     private static final String PENDING_PHOTO_PATH_KEY = "pending_photo_path";
@@ -5488,16 +5498,13 @@ public class MainActivity extends Activity {
             if (e.getKey() != null && !e.getKey().isEmpty()) data.put(e.getKey(), e.getValue());
         }
 
-        // Grade is optional: a profile without a (non-empty) gradeMap — e.g. a model that isn't
-        // A/B/C graded — simply omits the grade field instead of crashing. Graded profiles behave
-        // exactly as before.
+        // Resolve now, but write LAST after all other profile-driven fields. This both prevents a
+        // duplicated field id from overwriting the grade and lets the resolver repair an old shifted
+        // map such as {A:N, B:A, C:B} by using the entry explicitly labelled A.
         JSONObject gradeMap = profile.optJSONObject("gradeMap");
+        JSONObject gradeForSubmission = null;
         if (gradeMap != null && gradeMap.length() > 0) {
-            String gradeKey = gradeMap.has(unit.grade) ? unit.grade : firstGradeKey();
-            JSONObject grade = gradeMap.optJSONObject(gradeKey);
-            if (grade != null) {
-                data.put(grade.getString("field"), grade.get("value"));
-            }
+            gradeForSubmission = resolveGradeForSubmission(gradeMap, unit.grade);
         }
 
         JSONArray slotDefs = photoSlots();
@@ -5565,6 +5572,12 @@ public class MainActivity extends Activity {
             data.put(group.getString("field"), materialPayload);
         }
 
+        // Grade is optional for truly ungraded profiles. For graded profiles, the resolved value is
+        // deliberately applied last so no conditional/choice/material field can silently replace it.
+        if (gradeForSubmission != null) {
+            data.put(gradeForSubmission.getString("field"), gradeForSubmission.get("value"));
+        }
+
         JSONObject payload = new JSONObject();
         JSONObject template = profile.getJSONObject("template");
         payload.put("template_id", template.getInt("id"));
@@ -5573,6 +5586,67 @@ public class MainActivity extends Activity {
         payload.put("data", data);
         payload.put("video_data_id", "");
         return payload;
+    }
+
+    private JSONObject resolveGradeForSubmission(JSONObject gradeMap, String requestedGrade) throws JSONException {
+        String requested = requestedGrade == null ? "" : requestedGrade.trim().toUpperCase(java.util.Locale.US);
+        if (!"A".equals(requested) && !"B".equals(requested) && !"C".equals(requested)) {
+            throw new JSONException("等级配置错误：待提交等级不是 A/B/C（" + requested + "）");
+        }
+
+        JSONObject keyed = gradeMap.optJSONObject(requested);
+        JSONObject labelledMatch = null;
+        String labelledKey = "";
+        java.util.Iterator<String> keys = gradeMap.keys();
+        while (keys.hasNext()) {
+            String key = keys.next();
+            JSONObject candidate = gradeMap.optJSONObject(key);
+            if (candidate == null || !requested.equals(explicitGradeOf(candidate))) continue;
+            labelledMatch = candidate;
+            labelledKey = key;
+            if (requested.equals(key)) break;
+        }
+
+        if (labelledMatch != null) {
+            if (!requested.equals(labelledKey)) {
+                Diagnostics.append(this, "grade map recovered requested=" + requested + " from key=" + labelledKey);
+            }
+            return labelledMatch;
+        }
+        if (keyed == null) {
+            throw new JSONException("等级配置错误：找不到 " + requested + " 类提交值");
+        }
+
+        String text = gradeEntryText(keyed);
+        if (BRAND_NEW_GRADE_PATTERN.matcher(text).find() || isBrandNewGradeSku(keyed)) {
+            throw new JSONException("等级配置错误：" + requested + " 类指向了 N/全新档，已阻止提交");
+        }
+        String explicit = explicitGradeOf(keyed);
+        if (!explicit.isEmpty() && !requested.equals(explicit)) {
+            throw new JSONException("等级配置错误：" + requested + " 类实际指向 " + explicit + " 类，已阻止提交");
+        }
+        // Legacy labels such as 九五成新 and single-SKU models have no explicit class marker. They are
+        // safe to keep using by key; only positive evidence of N/mismatch is blocked.
+        return keyed;
+    }
+
+    private String explicitGradeOf(JSONObject gradeEntry) {
+        Matcher matcher = EXPLICIT_GRADE_PATTERN.matcher(gradeEntryText(gradeEntry));
+        if (!matcher.find()) return "";
+        String grade = matcher.group(1) != null ? matcher.group(1) : matcher.group(2);
+        return grade == null ? "" : grade.toUpperCase(java.util.Locale.US);
+    }
+
+    private String gradeEntryText(JSONObject gradeEntry) {
+        if (gradeEntry == null) return "";
+        JSONObject value = gradeEntry.optJSONObject("value");
+        return gradeEntry.optString("label", "") + " " + (value == null ? "" : value.optString("name", ""));
+    }
+
+    private boolean isBrandNewGradeSku(JSONObject gradeEntry) {
+        JSONObject value = gradeEntry == null ? null : gradeEntry.optJSONObject("value");
+        String sku = value == null ? "" : value.optString("sku", "").trim();
+        return BRAND_NEW_SKU_PATTERN.matcher(sku).find();
     }
 
     /** Slot mode: upload each box's photos and return fieldId -> uploaded URLs (insertion order). */

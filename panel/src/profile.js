@@ -1,6 +1,23 @@
 export const GRADES = Object.freeze(["A", "B", "C"]);
 export const PHOTO_ORDERS = Object.freeze(["fronts_then_backs", "front_back_per_unit"]);
 
+const BRAND_NEW_GRADE_RE = /全新|(?:^|[^a-z])n\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*n(?:$|[^a-z])/i;
+const BRAND_NEW_SKU_RE = /(?:^|[-_])n$/i;
+const EXPLICIT_GRADE_RE = {
+  A: /(?:^|[^a-z])a\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*a(?:$|[^a-z])/i,
+  B: /(?:^|[^a-z])b\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*b(?:$|[^a-z])/i,
+  C: /(?:^|[^a-z])c\s*[-_ ]?\s*(?:类|級|级|class|grade)|(?:class|grade|类|級|级)\s*[-_ ]?\s*c(?:$|[^a-z])/i
+};
+
+function submittedGradeText(item) {
+  return `${item?.label || ""} ${item?.value?.name || ""}`;
+}
+
+function explicitSubmittedGrade(item) {
+  const text = submittedGradeText(item);
+  return GRADES.find((grade) => EXPLICIT_GRADE_RE[grade].test(text)) || "";
+}
+
 export function normalizeSn(value) {
   return String(value || "")
     .trim()
@@ -43,6 +60,17 @@ export function validateFormProfile(profile) {
       requireString(item?.field, `gradeMap.${grade}.field`, errors);
       if (!("value" in item)) {
         errors.push(`gradeMap.${grade}.value is required`);
+      }
+      // A/B/C are the only operator-selectable grades. Publishing N/全新 under one of those keys is
+      // data loss, not a harmless label issue, so reject it before any device can sync the catalog.
+      const text = submittedGradeText(item);
+      const sku = String(item?.value?.sku || "").trim();
+      if (BRAND_NEW_GRADE_RE.test(text) || BRAND_NEW_SKU_RE.test(sku)) {
+        errors.push(`gradeMap.${grade} points to an N/brand-new option`);
+      }
+      const explicit = explicitSubmittedGrade(item);
+      if (explicit && explicit !== grade) {
+        errors.push(`gradeMap.${grade} points to an explicit ${explicit} option`);
       }
     }
   }
