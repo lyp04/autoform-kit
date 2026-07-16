@@ -20,7 +20,8 @@ export const SYSTEM_PROMPT = [
   "5. 默认生成【标准翻新表单】：photoSlots 只放常规会拍的照片（外观/配件类），minPhotos 按 required（必填=1、选填=0）、maxPhotos 按 maxCount；gradeMap 只含 A/B/C（不含『全新』『不良品』）。【不要】把只在特定结果下才出现的条件照片（如『不良品照片』）或非必填附加照片（如机器电量）放进标准表单。拿不准就不放。",
   "6. 不良品和 A/B/C 各自【独立成表】，互不混。当用户要【不良品/报废表单】时：photoSlots 放不良品相关照片框，gradeMap 用 retread_result 里『不良品』那个选项（单一），id 加 -defective 后缀、displayName 体现『不良品』。",
   "7. 照片框 title 用简短易懂的中文（如『外观照片』『配件照片』），但 field id 一律原样。",
-  "8. 只输出 JSON 对象。"
+  "8. previousStepTemplates、autoCreatePreviousSteps、gradeASpecialHandling 是安全敏感的 App 运行配置，AI 不得新增、删除或修改，必须原样保留。",
+  "9. 只输出 JSON 对象。"
 ].join("\n");
 
 export async function callLLM({ baseUrl, apiKey, model, system, user, temperature = 0.2 }) {

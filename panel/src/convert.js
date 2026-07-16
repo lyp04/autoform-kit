@@ -7,6 +7,8 @@
 //     and gradeMap is omitted.
 // The produced object is a draft the admin then edits in the panel before publishing.
 
+import { preserveRuntimeProfileConfig } from "./profile.js";
+
 function optionValues(field) {
   return (field.option_list || []).map((o) => o.value);
 }
@@ -263,5 +265,5 @@ export function templateToProfile(template, seed = {}) {
     uiColor: seed.uiColor || "#0F766E"
   };
   if (graded) profile.gradeMap = buildGradeMap(retread);
-  return profile;
+  return preserveRuntimeProfileConfig(profile, seed);
 }

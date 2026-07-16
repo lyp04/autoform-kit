@@ -208,7 +208,7 @@ public class FailureReporter {
     /**
      * Caller-thread-safe: only cheap, allocation-only work happens here (fingerprint
      * + dedup check + ctx copy). Everything that can touch the network or block —
-     * DNS probes, file IO, GitHub upload — is handed off to {@code uploadExecutor}.
+     * DNS probes, file IO, and webhook delivery — is handed off to {@code uploadExecutor}.
      * Safe to call from the main thread, including the uncaught exception handler.
      */
     public void report(String stage, String errCode, String subphase, String message,
@@ -219,13 +219,10 @@ public class FailureReporter {
             String dnsTarget = dnsTargetFrom(ctx, throwable);
             boolean isDns = isDnsStage(stage, errCode, ctx, throwable);
 
-            LinkedHashMap<String, String> stable = new LinkedHashMap<>();
-            stable.put("device_model", Build.MODEL);
-            stable.put("android_sdk", String.valueOf(Build.VERSION.SDK_INT));
-            stable.put("app_version", BuildConfig.VERSION_NAME);
-            stable.put("git_head", BuildConfig.GIT_HEAD);
-            if (!dnsTarget.isEmpty()) stable.put("dns_target", dnsTarget);
-            String fp = Fingerprint.compute(stage, errCode, subphase, stable);
+            // Device/build metadata belongs in ctx (added below), not in identity. Otherwise every
+            // app upgrade or Android/device change splits the same root failure into a new family.
+            String fp = Fingerprint.computeFailure(
+                    stage, errCode, subphase, isDns ? dnsTarget : "");
 
             Long lastSeen = lastSeenByFp.get(fp);
             if (lastSeen != null && now - lastSeen < DEDUP_WINDOW_MS) {
@@ -289,7 +286,10 @@ public class FailureReporter {
             String e = errCode.toLowerCase(Locale.US);
             if (e.contains("unknown_host") || e.contains("dns")) return true;
         }
-        if (ctx != null && ctx.containsKey("dns_target")) return true;
+        if (ctx != null) {
+            String target = ctx.get("dns_target");
+            if (target != null && !target.trim().isEmpty()) return true;
+        }
         for (Throwable t = throwable; t != null; t = t.getCause()) {
             if (t instanceof UnknownHostException) return true;
             String msg = t.getMessage();

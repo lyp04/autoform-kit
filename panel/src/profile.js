@@ -53,6 +53,30 @@ export function validateFormProfile(profile) {
   if (profile.defaultPhotoOrder) {
     validateOneOf(profile.defaultPhotoOrder, PHOTO_ORDERS, "defaultPhotoOrder", errors);
   }
+  validatePreviousStepConfig(profile.previousStepTemplates, "previousStepTemplates", errors, true);
+  if (profile.autoCreatePreviousSteps !== undefined) {
+    const cfg = profile.autoCreatePreviousSteps;
+    if (!isPlainObject(cfg)) {
+      errors.push("autoCreatePreviousSteps must be an object");
+    } else {
+      if (cfg.enabled !== undefined && typeof cfg.enabled !== "boolean") {
+        errors.push("autoCreatePreviousSteps.enabled must be a boolean");
+      }
+      if (cfg.grades !== undefined) {
+        if (!Array.isArray(cfg.grades)) {
+          errors.push("autoCreatePreviousSteps.grades must be an array");
+        } else {
+          cfg.grades.forEach((grade, i) =>
+            validateOneOf(grade, GRADES, `autoCreatePreviousSteps.grades[${i}]`, errors));
+        }
+      }
+      // enabled defaults to true in the app. The ids may live here or in the mapping-only module;
+      // the app resolves previousStepTemplates first, then falls back to this object.
+      if (cfg.enabled !== false && !hasPreviousStepIds(profile.previousStepTemplates)) {
+        validatePreviousStepConfig(cfg, "autoCreatePreviousSteps", errors, false);
+      }
+    }
+  }
   if (profile.gradeMap) {
     for (const grade of Object.keys(profile.gradeMap)) {
       validateOneOf(grade, GRADES, `gradeMap.${grade}`, errors);
@@ -167,6 +191,46 @@ function requireString(value, path, errors) {
   if (typeof value !== "string" || value.trim() === "") {
     errors.push(`${path} is required`);
   }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function validatePreviousStepConfig(value, path, errors, optional) {
+  if (value === undefined && optional) return;
+  if (!isPlainObject(value)) {
+    errors.push(`${path} must be an object`);
+    return;
+  }
+  for (const key of ["step1TemplateId", "step2TemplateId"]) {
+    if (!Number.isInteger(value[key]) || value[key] <= 0) {
+      errors.push(`${path}.${key} must be a positive integer`);
+    }
+  }
+}
+
+function hasPreviousStepIds(value) {
+  return isPlainObject(value)
+    && Number.isInteger(value.step1TemplateId) && value.step1TemplateId > 0
+    && Number.isInteger(value.step2TemplateId) && value.step2TemplateId > 0;
+}
+
+/**
+ * AI edits operate on the whole profile and can otherwise silently drop, invent, or alter app-only
+ * modules that do not correspond to backend form fields. Keep these safety-sensitive modules
+ * exactly as they were; the operator changes them through the structured editor or advanced JSON.
+ */
+export function preserveRuntimeProfileConfig(next, current) {
+  if (!isPlainObject(next) || !isPlainObject(current)) return next;
+  for (const key of ["previousStepTemplates", "autoCreatePreviousSteps", "gradeASpecialHandling"]) {
+    if (Object.prototype.hasOwnProperty.call(current, key)) {
+      next[key] = JSON.parse(JSON.stringify(current[key]));
+    } else {
+      delete next[key];
+    }
+  }
+  return next;
 }
 
 // Lenient validator for an optional {en,es} sibling map. undefined/null -> OK (zh-only is valid).

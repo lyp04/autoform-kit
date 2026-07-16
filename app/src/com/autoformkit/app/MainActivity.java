@@ -1136,6 +1136,7 @@ public class MainActivity extends Activity {
         setSubmitProgressMessage(formatSubmitProgressUnit(1, 1, sn));
         new Thread(() -> {
             String error = null;
+            boolean sessionExpired = false;
             if (!backendConfigured()) {
                 runOnUiThread(() -> { aStepEntrySubmitting = false; hideSubmitLoading(); notifyBackendUnconfigured(); });
                 return;
@@ -1167,14 +1168,21 @@ public class MainActivity extends Activity {
                 if (functionalDefect) applyFunctionalDefectOverrides(defProfile, payload);
                 submitAutoStepPayload(api, payload, sn + " " + t("a_step_one"));
             } catch (Exception exc) {
-                error = conciseError(exc);
-                reportSubmitFailure(null, 0, exc);
+                if (BackendSessionErrors.isSessionInvalid(exc)) {
+                    sessionExpired = true;
+                } else {
+                    error = conciseError(exc);
+                    reportSubmitFailure(null, 0, exc);
+                }
             }
             final String finalError = error;
+            final boolean finalSessionExpired = sessionExpired;
             runOnUiThread(() -> {
                 aStepEntrySubmitting = false;
                 hideSubmitLoading();
-                if (finalError == null) {
+                if (finalSessionExpired) {
+                    handleRemoteLogout(true);
+                } else if (finalError == null) {
                     setSubmitProgress(1);
                     for (String p : photos) deleteFileQuietly(p);
                     aStepEntryPhotos.clear();
@@ -1899,12 +1907,21 @@ public class MainActivity extends Activity {
     // propagate=false: reacting to a peer that already logged us out — clear local only (R2, no echo).
     private void logoutToSettings(boolean propagate) {
         boolean had = !savedToken().isEmpty();
+        // Session expiry must never clear an upload queue that exists only in memory. Force the
+        // draft to disk synchronously before clearing it; if that rare disk commit fails, keep the
+        // in-memory units intact while still clearing the invalid login.
+        boolean queueSafeToClear = units.isEmpty() || saveDraft(true);
         SecureTokenStore.clear(prefs);
         prefs.edit()
             .remove("userName")
             .remove("recognizeTextUrl")
             .apply();
-        units.clear();
+        if (queueSafeToClear) {
+            units.clear();
+        } else {
+            Diagnostics.append(this, "Logout kept in-memory queue because durable draft save failed");
+        }
+        draftPromptShown = false; // offer the just-saved queue again after re-login
         cachedMissingMaterialCodes.clear();
         notifiedMissingMaterialCodes.clear();
         scanPrecheckMissingCounts.clear();
@@ -3693,6 +3710,7 @@ public class MainActivity extends Activity {
             }
             boolean success = false;
             boolean abortedForPrinter = false;
+            boolean sessionExpiredDuringSubmit = false;
             int removedDuringSubmit = 0;
             int submittedSoFar = 0;
             int consecutiveFailures = 0;
@@ -3705,7 +3723,6 @@ public class MainActivity extends Activity {
                 if (!abortedForPrinter) {
                 runWithSubmissionNetworkRetry(() -> refreshProfileMaterials(api), "");
                 List<UnitRecord> queue = new ArrayList<>(units);
-                boolean hasSubmittedUnitInBatch = false;
                 int position = 0;
                 for (UnitRecord unit : queue) {
                     position++;
@@ -3717,6 +3734,7 @@ public class MainActivity extends Activity {
                     }
                     int upcomingIndex = submittedSoFar + 1;
                     setSubmitProgressMessage(formatSubmitProgressUnit(upcomingIndex, totalSubmittable, unit.sn));
+                    boolean submittedThisUnit = false;
                     try {
                         final UnitRecord currentUnit = unit;
                         final int currentPosition = position;
@@ -3726,7 +3744,7 @@ public class MainActivity extends Activity {
                         } finally {
                             currentDnsContext.remove();
                         }
-                        hasSubmittedUnitInBatch = true;
+                        submittedThisUnit = true;
                         submittedSoFar++;
                         setSubmitProgress(submittedSoFar);
                         if (removeSubmittedUnitFromQueue(unit)) removedDuringSubmit++;
@@ -3738,6 +3756,19 @@ public class MainActivity extends Activity {
                         // record this unit locally: submit OK; printed unless inline-confirm gave up on its label
                         roundLedger.add(ledgerUnit(currentUnit.sn, true, !inlineFailedSns.contains(currentUnit.sn), currentUnit.grade));
                     } catch (Exception exc) {
+                        if (BackendSessionErrors.isSessionInvalid(exc)) {
+                            // submitUnit already returned OK, but auth expired while checking its label.
+                            // The unit has intentionally left the upload queue; persist it as submitted
+                            // + print-unconfirmed so re-login reconciliation can find it instead of
+                            // silently losing it from both the draft and the local ledger.
+                            if (submittedThisUnit) {
+                                roundLedger.add(ledgerUnit(unit.sn, true, false, unit.grade));
+                                appendLog("session expired during print confirmation; ledger kept unconfirmed sn="
+                                        + unit.sn);
+                            }
+                            sessionExpiredDuringSubmit = true;
+                            break; // the whole token is invalid; do not fail/report every remaining unit
+                        }
                         String message = conciseError(exc);
                         errors.add(unitLogLine(unit, message));
                         appendUnitLog(unit, message);
@@ -3760,11 +3791,16 @@ public class MainActivity extends Activity {
                 success = errors.isEmpty();
                 }
             } catch (Exception exc) {
-                errors.add(t("submit_warmup_failed") + conciseError(exc));
-                reportSubmitFailure(null, 0, exc);
+                if (BackendSessionErrors.isSessionInvalid(exc)) {
+                    sessionExpiredDuringSubmit = true;
+                } else {
+                    errors.add(t("submit_warmup_failed") + conciseError(exc));
+                    reportSubmitFailure(null, 0, exc);
+                }
             } finally {
                 boolean finalSuccess = success;
                 boolean finalAborted = abortedForPrinter;
+                boolean finalSessionExpired = sessionExpiredDuringSubmit;
                 int finalSubmittedSoFar = submittedSoFar;
                 int finalRemovedDuringSubmit = removedDuringSubmit;
                 int finalSubmitted = submittedSoFar;
@@ -3773,6 +3809,10 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> {
                     submitting = false;
                     hideSubmitLoading();
+                    if (finalSessionExpired) {
+                        handleRemoteLogout(true);
+                        return;
+                    }
                     if (finalAborted) {
                         toast(t("submit_cancelled_printer_offline"));
                         return;
@@ -3835,7 +3875,7 @@ public class MainActivity extends Activity {
 
     // Returns true to go ahead with the batch. If the cloud box is not online, asks the operator
     // (proceed anyway vs fix the printer first) so we don't dump a whole batch into a dead printer.
-    private boolean ensureCloudPrinterReady(Api api) {
+    private boolean ensureCloudPrinterReady(Api api) throws BackendSessionErrors.SessionInvalidException {
         String note;
         try {
             JSONObject st = api.cloudPrinterState();
@@ -3845,6 +3885,8 @@ public class MainActivity extends Activity {
             }
             note = Api.isSuccess(st) ? t("printer_offline") : Api.apiErrorMessage(st);
         } catch (Exception e) {
+            BackendSessionErrors.SessionInvalidException invalid = BackendSessionErrors.find(e);
+            if (invalid != null) throw invalid;
             note = t("printer_check_failed") + conciseError(e);
         }
         // Printer not confirmed online before a batch — log + report so we have a trail if it causes 丢单.
@@ -4259,7 +4301,8 @@ public class MainActivity extends Activity {
     // Called inline during the submit loop, right after a unit submits. Polls for that unit's label to
     // resolve and reprints it (in order) if it failed, up to AUTO_REPRINT_ROUNDS. SNs that still fail
     // are collected so the batch can report them once at the end.
-    private void confirmPrintInline(Api api, UnitRecord unit, List<String> failedSns) {
+    private void confirmPrintInline(Api api, UnitRecord unit, List<String> failedSns)
+            throws BackendSessionErrors.SessionInvalidException {
         if (unit == null || unit.sn == null || unit.sn.isEmpty()) return;
         String sn = unit.sn;
         boolean confirmedPrinted = false; // only a real status==1 clears this — everything else is a potential lost unit
@@ -4279,14 +4322,23 @@ public class MainActivity extends Activity {
                     if (id > 0) {
                         reprints++;
                         appendUnitLog(unit, t("inline_reprint_log") + reprints);
-                        try { api.labelPrinterRetry(id); } catch (Exception ignored) {}
+                        try {
+                            api.labelPrinterRetry(id);
+                        } catch (Exception error) {
+                            BackendSessionErrors.SessionInvalidException invalid =
+                                    BackendSessionErrors.find(error);
+                            if (invalid != null) throw invalid;
+                        }
                     }
                 }
                 // status 3 (ongoing) or just reprinted -> keep polling for it to finish
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
-        } catch (Exception ignored) {}
+        } catch (Exception error) {
+            BackendSessionErrors.SessionInvalidException invalid = BackendSessionErrors.find(error);
+            if (invalid != null) throw invalid;
+        }
         // CRITICAL: never silently pass a unit we could not confirm as printed. The old code only counted
         // status==2 as failed, so an offline printer (job never created -> latestPrintJobForSn always null)
         // slipped through reported as nothing — the exact "lost half the batch, nobody noticed" failure.
@@ -4313,9 +4365,9 @@ public class MainActivity extends Activity {
         return best;
     }
 
-    // One merged report per batch for labels that still failed after inline reprints. The reporter
-    // fingerprints by stage/errCode (no SN), so repeats PATCH the SAME GitHub issue (count + timestamps)
-    // instead of spawning duplicates; FailureReporter auto-attaches the recent in-app log + diagnostics.
+    // One merged report per batch for labels that remain unconfirmed after inline checks. The stable
+    // stage/errCode fingerprint lets the webhook receiver group repeats; FailureReporter also performs
+    // short in-process dedup and attaches the recent in-app log + diagnostics.
     private void reportInlinePrintFailures(List<String> sns) {
         if (sns == null || sns.isEmpty()) return;
         String snList = join(sns, ", ");
@@ -4468,14 +4520,9 @@ public class MainActivity extends Activity {
                 }
             }
         }
-        if (throwable != null) {
-            Map<String, String> ctx = FailureReporter.ctx(
-                    "sn", unit == null || unit.sn == null ? "" : unit.sn,
-                    "position", String.valueOf(position),
-                    "dns_target", extractDnsTarget(throwable));
-            FailureReporter.get().report("dns", "unknown_host", "api_request",
-                    throwable.getMessage(), ctx, throwable);
-        }
+        // This method runs on every inner retry. Do not file a failure here: a later retry may (and
+        // often does) succeed. The affected unit remains visible in the final operator dialog; only
+        // an exception that ultimately escapes the retry path is eligible for reportSubmitFailure.
     }
 
     private void reportSubmitFailure(UnitRecord unit, int position, Throwable throwable) {
@@ -4489,10 +4536,11 @@ public class MainActivity extends Activity {
             stage = "submit";
         }
         String errCode = throwable.getClass().getSimpleName();
+        String dnsTarget = "dns".equals(stage) ? extractDnsTarget(throwable) : "";
         Map<String, String> ctx = FailureReporter.ctx(
                 "sn", unit == null || unit.sn == null ? "" : unit.sn,
                 "position", String.valueOf(position),
-                "dns_target", extractDnsTarget(throwable));
+                "dns_target", dnsTarget);
         FailureReporter.get().report(stage, errCode, "submit_unit",
                 throwable.getMessage(), ctx, throwable);
     }
@@ -4933,14 +4981,26 @@ public class MainActivity extends Activity {
     }
 
     private int knownAClassStepTemplateId(int currentTemplateId, int processStep) {
-        // Config-driven module: a profile may carry its own previous-step template ids.
+        // Mapping-only config is deliberately separate from autoCreatePreviousSteps: the standalone
+        // "first-step entry" screen also needs step 1's template, but merely identifying that
+        // template must not opt every grade-A unit into automatic previous-step creation.
+        JSONObject templateIds = profile == null ? null : profile.optJSONObject("previousStepTemplates");
+        if (templateIds != null) {
+            int configured = processStep == 1 ? templateIds.optInt("step1TemplateId", 0)
+                : (processStep == 2 ? templateIds.optInt("step2TemplateId", 0) : 0);
+            if (configured > 0) return configured;
+        }
+
+        // The auto-create module may also carry its own previous-step template ids.
         JSONObject cfg = autoPreviousStepsConfig();
         if (cfg != null) {
             int configured = processStep == 1 ? cfg.optInt("step1TemplateId", 0)
                 : (processStep == 2 ? cfg.optInt("step2TemplateId", 0) : 0);
             if (configured > 0) return configured;
         }
-        return 0;
+        // Catalog profiles created before that module existed carry no ids. Retain the verified
+        // production mappings from anker-autoupdate as a compatibility fallback (not a guess).
+        return PreviousStepTemplateHints.forProcessStep(currentTemplateId, processStep);
     }
 
     private void addNearbyAClassTemplateCandidates(List<JSONObject> candidates, Set<Integer> seen, int processStep) {
@@ -7031,21 +7091,27 @@ public class MainActivity extends Activity {
         return draft;
     }
 
-    private void saveDraft() {
+    private boolean saveDraft() {
+        return saveDraft(false);
+    }
+
+    private boolean saveDraft(boolean durable) {
         try {
             String profileId = currentProfileId();
-            if (profileId.isEmpty()) return;
+            if (profileId.isEmpty()) return false;
             JSONObject store = loadDraftStore();
             JSONObject drafts = draftMap(store);
             if (!hasUnsubmittedUnits()) {
                 drafts.remove(profileId);
-                writeDraftStore(store);
-                return;
+                writeDraftStore(store, durable);
+                return true;
             }
             drafts.put(profileId, buildDraftJson(profileId));
-            writeDraftStore(store);
+            writeDraftStore(store, durable);
+            return true;
         } catch (Exception exc) {
             appendLog(t("draft_save_failed") + exc.getMessage());
+            return false;
         }
     }
 
@@ -7263,13 +7329,25 @@ public class MainActivity extends Activity {
     }
 
     private void writeDraftStore(JSONObject store) throws JSONException {
+        writeDraftStore(store, false);
+    }
+
+    private void writeDraftStore(JSONObject store, boolean durable) throws JSONException {
         JSONObject drafts = draftMap(store);
+        SharedPreferences.Editor editor;
         if (drafts.length() <= 0) {
-            prefs.edit().remove(DRAFT_STORE_KEY).remove(DRAFT_KEY).apply();
-            return;
+            editor = prefs.edit().remove(DRAFT_STORE_KEY).remove(DRAFT_KEY);
+        } else {
+            store.put("version", 2);
+            editor = prefs.edit().putString(DRAFT_STORE_KEY, store.toString()).remove(DRAFT_KEY);
         }
-        store.put("version", 2);
-        prefs.edit().putString(DRAFT_STORE_KEY, store.toString()).remove(DRAFT_KEY).apply();
+        if (durable) {
+            if (!editor.commit()) {
+                throw new IllegalStateException("draft SharedPreferences commit failed");
+            }
+        } else {
+            editor.apply();
+        }
     }
 
     private boolean hasUnsubmittedUnits() {
@@ -10108,6 +10186,8 @@ public class MainActivity extends Activity {
                 JSONObject body;
                 try {
                     body = readJson(conn);
+                } catch (BackendSessionErrors.SessionInvalidException invalid) {
+                    return AuthState.INVALID;
                 } catch (Exception parse) {
                     return AuthState.UNKNOWN;
                 }
@@ -10360,23 +10440,45 @@ public class MainActivity extends Activity {
         JSONObject readJson(HttpURLConnection conn) throws Exception {
             int status = conn.getResponseCode();
             InputStream input = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
-            if (input == null) throw new IOException("HTTP " + status);
+            if (input == null) {
+                if (BackendSessionErrors.isInvalidHttpStatus(status)) {
+                    throw new BackendSessionErrors.SessionInvalidException("HTTP " + status);
+                }
+                if (isTransientHttpStatus(status)) {
+                    throw new TransientHttpException("HTTP " + status + " gateway error");
+                }
+                throw new IOException("HTTP " + status);
+            }
             ByteArrayOutputStream output = new ByteArrayOutputStream();
             byte[] buffer = new byte[4096];
             int read;
             while ((read = input.read(buffer)) >= 0) output.write(buffer, 0, read);
             String text = output.toString("UTF-8");
-            try {
-                return new JSONObject(text);
-            } catch (JSONException exc) {
-                // A flaky gateway/upstream (e.g. nginx "502 Bad Gateway") serves an HTML error page,
-                // not JSON. Treat 502/503/504 as transient so withTransientRetry retries it instead of
-                // failing the submit; a persistent gateway error still surfaces (as a network failure).
-                if (status == 502 || status == 503 || status == 504) {
-                    throw new TransientHttpException("HTTP " + status + " gateway error: " + conciseText(text));
-                }
-                throw new IOException("Response is not JSON: " + conciseText(text));
+            String snippet = conciseText(text);
+            if (BackendSessionErrors.isInvalidHttpStatus(status)) {
+                throw new BackendSessionErrors.SessionInvalidException(
+                        "HTTP " + status + (snippet.isEmpty() ? "" : ": " + snippet));
             }
+            // Classify gateway failures by status before JSON parsing. nginx may return HTML, while
+            // another proxy may return JSON; both are the same transient 502/503/504 incident.
+            if (isTransientHttpStatus(status)) {
+                throw new TransientHttpException(
+                        "HTTP " + status + " gateway error: " + snippet);
+            }
+            try {
+                JSONObject body = new JSONObject(text);
+                if (!isSuccess(body) && (BackendSessionErrors.isInvalidApiCode(body.opt("code"))
+                        || BackendSessionErrors.isInvalidMessage(body.toString()))) {
+                    throw new BackendSessionErrors.SessionInvalidException(apiErrorMessage(body));
+                }
+                return body;
+            } catch (JSONException exc) {
+                throw new IOException("Response is not JSON: " + snippet);
+            }
+        }
+
+        static boolean isTransientHttpStatus(int status) {
+            return status == 502 || status == 503 || status == 504;
         }
 
         static String conciseText(String text) {

@@ -425,6 +425,7 @@ function renderForm(){
   tg.appendChild(hint); s1.appendChild(tg); s1.appendChild(settingsPanel(p)); box.appendChild(s1);
 
   box.appendChild(snPluginsEditor(p));
+  box.appendChild(previousStepTemplatesEditor(p));
   box.appendChild(resultPhotosEditor(p));
 
   (p.materialGroups||[]).forEach((g)=>{
@@ -499,6 +500,38 @@ function swField(labelText,checked,on){
   w.appendChild(t); w.appendChild(sw); return w;
 }
 function syncDraftTextarea(p){ $("draft").value=JSON.stringify(p,null,2); }
+
+// Exact template ids for the standalone first-step entry and optional automatic previous-step flow.
+// This is mapping-only: turning it on does not enable automatic creation for grade A units.
+function previousStepTemplatesEditor(p){
+  const cfg=p.previousStepTemplates;
+  const s=sec("前两步模板（高级）","明确填写后端第 1/2 步模板 ID；不要按相邻编号猜。这里只负责定位模板，不会自动开启 A 类回补。");
+  s.appendChild(swField("使用显式模板 ID", !!cfg, on=>{
+    if(on){
+      const legacy=p.autoCreatePreviousSteps||{};
+      p.previousStepTemplates={
+        step1TemplateId:Number.isInteger(legacy.step1TemplateId)?legacy.step1TemplateId:0,
+        step2TemplateId:Number.isInteger(legacy.step2TemplateId)?legacy.step2TemplateId:0
+      };
+    } else delete p.previousStepTemplates;
+    syncDraftTextarea(p); renderForm();
+  }));
+  if(cfg){
+    const row=document.createElement("div"); row.className="slot"; row.style.marginTop="10px";
+    row.appendChild(field("第 1 步模板 ID", templateIdCtl(cfg.step1TemplateId, v=>{ cfg.step1TemplateId=v; syncDraftTextarea(p); })));
+    row.appendChild(field("第 2 步模板 ID", templateIdCtl(cfg.step2TemplateId, v=>{ cfg.step2TemplateId=v; syncDraftTextarea(p); })));
+    const note=document.createElement("div"); note.className="muted"; note.style.cssText="flex-basis:100%;font-size:12px";
+    note.textContent="两项都必须是后端确认过的正整数；未填完整时发布校验会拦截。";
+    row.appendChild(note); s.appendChild(row);
+  }
+  return s;
+}
+function templateIdCtl(val,on){
+  const i=document.createElement("input"); i.type="number"; i.className="num"; i.min="1";
+  i.value=Number.isInteger(val)&&val>0?String(val):"";
+  i.oninput=()=>{ const n=Number.parseInt(i.value,10); on(Number.isInteger(n)&&n>0?n:0); };
+  return i;
+}
 
 // SN scan fields, modeled as editable PLUGINS: each scan box can be renamed, marked required, and have
 // its 搜索🔍 / 扫码⊡ icons toggled. Forms without a base-station / color-box just delete those boxes.

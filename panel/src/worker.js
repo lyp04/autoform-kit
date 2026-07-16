@@ -5,7 +5,7 @@
 
 // Relative import of the shared profile validator (a plain ESM module with no deps) so the panel
 // bundles standalone with `npx wrangler`, without an npm workspace install.
-import { validateFormProfile } from "./profile.js";
+import { preserveRuntimeProfileConfig, validateFormProfile } from "./profile.js";
 // Only verifyToken is used now: the browser talks to the backend directly for login/captcha/template
 // reads (the CF egress IP may be blocked for the login endpoint), so the Worker no longer proxies those.
 import { verifyToken } from "./backend.js";
@@ -118,14 +118,15 @@ async function handleApi(request, env, url) {
     const template = b.template || null; // the browser fetches templateDetail directly and passes it inline
     const draft = b.draft || (template ? templateToProfile(template) : null);
     if (!draft) return json({ error: "需要 draft 或 template" }, 400);
-    const { profile, violations } = await aiRefineProfile({
+    const refined = await aiRefineProfile({
       baseUrl: env.AI_BASE_URL,
       apiKey: env.AI_API_KEY,
       model: env.AI_MODEL,
       user: aiUserPrompt(template || {}, draft, b.instructions),
       allowed: allowedRefs(template, draft)
     });
-    return json({ profile, violations });
+    const profile = preserveRuntimeProfileConfig(refined.profile, draft);
+    return json({ profile, violations: refined.violations });
   }
 
   if (path === "/api/publish" && request.method === "POST") {

@@ -8,7 +8,7 @@ import java.util.Map;
 /**
  * Stable 8-hex-char hash of (stage + errCode + subphase + stable ctx keys). Identical
  * failures across devices/runs collapse to the same fingerprint so the reporter can
- * dedup into one Issue with append-only comments.
+ * deduplicate and downstream receivers can group them as one failure family.
  *
  * <p>Volatile fields (timestamps, exact SSIDs, attempt counters, MAC tails) must NOT
  * be in the fingerprint — pass only the stable subset via {@code stableCtx}.
@@ -38,5 +38,19 @@ public final class Fingerprint {
         } catch (NoSuchAlgorithmException ignored) {
             return Integer.toHexString(seed.toString().hashCode() & 0xffffffff);
         }
+    }
+
+    /**
+     * Fingerprint a runtime failure using only root-cause identity. App/device/build metadata stays
+     * in the report context for diagnosis, but must not split one problem after an upgrade. DNS is
+     * the sole contextual discriminator because different failing hosts are different incidents.
+     */
+    public static String computeFailure(String stage, String errCode, String subphase,
+                                        String dnsTarget) {
+        LinkedHashMap<String, String> stable = new LinkedHashMap<>();
+        if (dnsTarget != null && !dnsTarget.isEmpty()) {
+            stable.put("dns_target", dnsTarget);
+        }
+        return compute(stage, errCode, subphase, stable);
     }
 }
