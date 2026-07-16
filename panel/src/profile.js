@@ -59,9 +59,7 @@ export function validateFormProfile(profile) {
     if (!isPlainObject(cfg)) {
       errors.push("autoCreatePreviousSteps must be an object");
     } else {
-      if (cfg.enabled !== undefined && typeof cfg.enabled !== "boolean") {
-        errors.push("autoCreatePreviousSteps.enabled must be a boolean");
-      }
+      if (typeof cfg.enabled !== "boolean") errors.push("autoCreatePreviousSteps.enabled must be a boolean");
       if (cfg.grades !== undefined) {
         if (!Array.isArray(cfg.grades)) {
           errors.push("autoCreatePreviousSteps.grades must be an array");
@@ -70,10 +68,18 @@ export function validateFormProfile(profile) {
             validateOneOf(grade, GRADES, `autoCreatePreviousSteps.grades[${i}]`, errors));
         }
       }
-      // enabled defaults to true in the app. The ids may live here or in the mapping-only module;
-      // the app resolves previousStepTemplates first, then falls back to this object.
-      if (cfg.enabled !== false && !hasPreviousStepIds(profile.previousStepTemplates)) {
-        validatePreviousStepConfig(cfg, "autoCreatePreviousSteps", errors, false);
+      if (cfg.enabled === true && (!Array.isArray(cfg.grades) || cfg.grades.length === 0)) {
+        errors.push("autoCreatePreviousSteps.grades must contain at least one grade when enabled");
+      }
+      for (const key of ["step1TemplateId", "step2TemplateId"]) {
+        if (Object.prototype.hasOwnProperty.call(cfg, key)) {
+          errors.push(`autoCreatePreviousSteps.${key} belongs in previousStepTemplates`);
+        }
+      }
+      // Template identity and trigger policy are separate responsibilities. Automatic creation
+      // requires the mapping-only module; autoCreatePreviousSteps never carries template ids.
+      if (cfg.enabled === true && profile.previousStepTemplates === undefined) {
+        validatePreviousStepConfig(undefined, "previousStepTemplates", errors, false);
       }
     }
   }
@@ -208,12 +214,6 @@ function validatePreviousStepConfig(value, path, errors, optional) {
       errors.push(`${path}.${key} must be a positive integer`);
     }
   }
-}
-
-function hasPreviousStepIds(value) {
-  return isPlainObject(value)
-    && Number.isInteger(value.step1TemplateId) && value.step1TemplateId > 0
-    && Number.isInteger(value.step2TemplateId) && value.step2TemplateId > 0;
 }
 
 /**

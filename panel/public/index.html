@@ -157,12 +157,16 @@
       <label>通知 Webhook（留空则不发）</label>
       <input id="notifyWebhookInput" placeholder="https://hooks.example.com/services/…" />
       <label>高级：后端接口路径 (JSON)</label>
-      <textarea id="endpointsInput" spellcheck="false" placeholder='{ "login": "/account/adminLogin" }' style="min-height:150px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
+      <textarea id="endpointsInput" spellcheck="false" placeholder='{ "login": "/auth/login" }' style="min-height:150px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
+      <label>会话失效业务码 (JSON 数组)</label>
+      <textarea id="sessionInvalidCodesInput" spellcheck="false" placeholder='[90001, "SESSION_REVOKED"]' style="min-height:90px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
+      <label>会话失效文案特征 (JSON 字符串数组)</label>
+      <textarea id="sessionInvalidMessagesInput" spellcheck="false" placeholder='["signed in on another workstation"]' style="min-height:90px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
       <div class="row" style="margin-top:10px;align-items:center">
         <button id="saveNotifyBtn" class="sm" type="button">保存</button>
         <span id="notifyMsg" class="muted" style="flex:1"></span>
       </div>
-      <div class="muted" style="font-size:12px;margin-top:8px">这些设置驱动 App：后端接口路径 (endpoints)、自更新仓库 (updateOwner/updateRepo)、可选的 Web Origin/Referer 请求头；留空则用默认值。后端地址 / 品牌名留空则用服务端默认。通知的测试发送请在 App 内进行（浏览器直接发会被 CORS 拦截）。</div>
+      <div class="muted" style="font-size:12px;margin-top:8px">这些设置驱动 App：后端接口路径 (endpoints)、会话失效业务码 / 文案特征、自更新仓库 (updateOwner/updateRepo)、可选的 Web Origin/Referer 请求头。会话文案按不区分大小写的子串匹配，不是正则表达式。通知的测试发送请在 App 内进行。</div>
     </div>
   </div>
 </dialog>
@@ -221,6 +225,7 @@ async function backend(path, { method="GET", query, body, token } = {}) {
   if (query) for (const [k,v] of Object.entries(query)) if (v!=null && v!=="") url.searchParams.set(k, v);
   const headers = { "Accept":"application/json, text/plain, */*" };
   if (token) headers["Authorization"] = "Bearer " + token;
+  headers["X-Browser-Fingerprint"] = FP;
   let payload;
   if (body) { payload = new URLSearchParams(body).toString(); headers["Content-Type"]="application/x-www-form-urlencoded; charset=utf-8"; }
   const res = await fetch(url, { method, headers, body: payload });
@@ -264,14 +269,14 @@ $("tokenBtn").onclick = async () => {
   try { const me=await backend(BACKEND_ENDPOINTS.userInfo, { token:t }); TOKEN=t; saveSession(t, me.userName||me.name||"(token)"); onLoggedIn(me.userName||me.name||"(token)"); }
   catch(e){ alert("token 无效或已过期：" + e.message); }
 };
-// —— 记住登录态（localStorage），直到被挤下线（40002）或 token 失效——刷新不再要求重登 ——
+// —— 记住登录态（localStorage），直到后端判定 token 失效——刷新不再要求重登 ——
 function saveSession(token, name){ try{ localStorage.setItem("backendToken", token); localStorage.setItem("backendName", name||""); }catch(e){} }
 function clearSession(){ try{ localStorage.removeItem("backendToken"); localStorage.removeItem("backendName"); }catch(e){} }
 async function restoreSession(){
   let t=""; try{ t=localStorage.getItem("backendToken")||""; }catch(e){}
   if(!t){ showLogin(); return; }
   TOKEN=t;
-  // 用浏览器自身(登录来源签名)验 userInfo：成功=仍在登录、直接进；失败(含被挤下线 40002)=清掉重登。
+  // 用浏览器自身（登录来源签名）验 userInfo：成功=仍在登录、直接进；失败=清掉重登。
   try{ const me=await backend(BACKEND_ENDPOINTS.userInfo, { token:t }); onLoggedIn(me.userName||me.name||localStorage.getItem("backendName")||"(已登录)"); }
   catch(e){ TOKEN=""; clearSession(); showLogin(); }
 }
@@ -502,18 +507,36 @@ function swField(labelText,checked,on){
 function syncDraftTextarea(p){ $("draft").value=JSON.stringify(p,null,2); }
 
 // Exact template ids for the standalone first-step entry and optional automatic previous-step flow.
-// This is mapping-only: turning it on does not enable automatic creation for grade A units.
+// Template selection and auto-create grades are explicit catalog data; the app never infers either.
 function previousStepTemplatesEditor(p){
   const cfg=p.previousStepTemplates;
-  const s=sec("前两步模板（高级）","明确填写后端第 1/2 步模板 ID；不要按相邻编号猜。这里只负责定位模板，不会自动开启 A 类回补。");
+  const auto=p.autoCreatePreviousSteps;
+  const s=sec("前置步骤模板（高级）","明确填写后端第 1/2 步模板 ID；不要按相邻编号猜。模板定位和自动补录是两个独立设置。");
   s.appendChild(swField("使用显式模板 ID", !!cfg, on=>{
     if(on){
       const legacy=p.autoCreatePreviousSteps||{};
+      const legacyIds=Number.isInteger(legacy.step1TemplateId)&&legacy.step1TemplateId>0
+        &&Number.isInteger(legacy.step2TemplateId)&&legacy.step2TemplateId>0;
       p.previousStepTemplates={
         step1TemplateId:Number.isInteger(legacy.step1TemplateId)?legacy.step1TemplateId:0,
         step2TemplateId:Number.isInteger(legacy.step2TemplateId)?legacy.step2TemplateId:0
       };
-    } else delete p.previousStepTemplates;
+      // Profiles from older panels stored template identity and trigger policy in one object. When
+      // the operator enables the explicit mapping editor, migrate that object atomically so the
+      // modern validator never leaves stale template-id fields behind.
+      if(legacyIds){
+        const available=["A","B","C"].filter(g=>p.gradeMap&&p.gradeMap[g]);
+        const selected=Array.isArray(legacy.grades)?legacy.grades.filter(g=>available.includes(g)):[];
+        if(legacy.enabled===false) delete p.autoCreatePreviousSteps;
+        else p.autoCreatePreviousSteps={
+          enabled:true,
+          grades:selected.length?selected:(available.includes("A")?["A"]:(available.length?[available[0]]:[]))
+        };
+      }
+    } else {
+      delete p.previousStepTemplates;
+      delete p.autoCreatePreviousSteps;
+    }
     syncDraftTextarea(p); renderForm();
   }));
   if(cfg){
@@ -522,6 +545,45 @@ function previousStepTemplatesEditor(p){
     row.appendChild(field("第 2 步模板 ID", templateIdCtl(cfg.step2TemplateId, v=>{ cfg.step2TemplateId=v; syncDraftTextarea(p); })));
     const note=document.createElement("div"); note.className="muted"; note.style.cssText="flex-basis:100%;font-size:12px";
     note.textContent="两项都必须是后端确认过的正整数；未填完整时发布校验会拦截。";
+    row.appendChild(note); s.appendChild(row);
+  }
+  const autoEnabled=!!auto && auto.enabled===true;
+  s.appendChild(swField("自动补录前置步骤", autoEnabled, on=>{
+    if(on){
+      if(!p.previousStepTemplates){
+        p.previousStepTemplates={
+          step1TemplateId:Number.isInteger(auto&&auto.step1TemplateId)?auto.step1TemplateId:0,
+          step2TemplateId:Number.isInteger(auto&&auto.step2TemplateId)?auto.step2TemplateId:0
+        };
+      }
+      const available=["A","B","C"].filter(g=>p.gradeMap&&p.gradeMap[g]);
+      const selected=Array.isArray(auto&&auto.grades)?auto.grades.filter(g=>available.includes(g)):[];
+      p.autoCreatePreviousSteps={enabled:true,grades:selected.length?selected:(available.length?[available[0]]:[])};
+    } else delete p.autoCreatePreviousSteps;
+    syncDraftTextarea(p); renderForm();
+  }));
+  if(autoEnabled){
+    const row=document.createElement("div"); row.className="slot"; row.style.marginTop="10px";
+    const available=["A","B","C"].filter(g=>p.gradeMap&&p.gradeMap[g]);
+    if(!available.length){
+      const warning=document.createElement("div"); warning.className="err";
+      warning.textContent="当前表单没有可选等级，无法启用自动补录。"; row.appendChild(warning);
+    } else {
+      available.forEach(grade=>{
+        const label=document.createElement("label"); label.className="row"; label.style.cssText="margin:0 14px 0 0;gap:6px";
+        const cb=document.createElement("input"); cb.type="checkbox";
+        cb.checked=Array.isArray(auto.grades)&&auto.grades.includes(grade);
+        cb.onchange=()=>{
+          const selected=new Set(Array.isArray(auto.grades)?auto.grades:[]);
+          if(cb.checked) selected.add(grade); else selected.delete(grade);
+          auto.grades=["A","B","C"].filter(g=>selected.has(g));
+          syncDraftTextarea(p);
+        };
+        label.appendChild(cb); label.appendChild(document.createTextNode(grade+" 等级")); row.appendChild(label);
+      });
+    }
+    const note=document.createElement("div"); note.className="muted"; note.style.cssText="flex-basis:100%;font-size:12px";
+    note.textContent="必须至少选一个等级；App 只对这里显式选中的等级执行按配置自动补录。连续预检确认缺步骤后，操作员手动拍运行图触发的修复是独立安全网。";
     row.appendChild(note); s.appendChild(row);
   }
   return s;
@@ -712,6 +774,12 @@ function openGlobalSettings(){
   $("webRefererInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.webReferer) || "";
   const ep = (CATALOG_SETTINGS && CATALOG_SETTINGS.endpoints) || {};
   $("endpointsInput").value = (ep && Object.keys(ep).length) ? JSON.stringify(ep, null, 2) : "";
+  const invalidCodes = Array.isArray(CATALOG_SETTINGS && CATALOG_SETTINGS.sessionInvalidCodes)
+    ? CATALOG_SETTINGS.sessionInvalidCodes : [];
+  const invalidMessages = Array.isArray(CATALOG_SETTINGS && CATALOG_SETTINGS.sessionInvalidMessagePatterns)
+    ? CATALOG_SETTINGS.sessionInvalidMessagePatterns : [];
+  $("sessionInvalidCodesInput").value = invalidCodes.length ? JSON.stringify(invalidCodes, null, 2) : "";
+  $("sessionInvalidMessagesInput").value = invalidMessages.length ? JSON.stringify(invalidMessages, null, 2) : "";
   const dlg=$("globalSettingsDlg");
   if(dlg.showModal) dlg.showModal(); else dlg.setAttribute("open","");
 }
@@ -728,6 +796,21 @@ $("saveOrderBtn").onclick = async () => {
   } catch (e) { $("orderMsg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
   finally { btn.disabled=false; btn.textContent=lbl; }
 };
+function parseSettingsArray(inputId, label, allowNumbers) {
+  const raw=$(inputId).value.trim();
+  if (!raw) return [];
+  let values;
+  try { values=JSON.parse(raw); }
+  catch (e) { throw new Error(label+" JSON 解析失败："+e.message); }
+  if (!Array.isArray(values)) throw new Error(label+"必须是 JSON 数组");
+  values.forEach((value, i) => {
+    const validType = typeof value==="string" || (allowNumbers && typeof value==="number" && Number.isFinite(value));
+    if (!validType || (typeof value==="string" && !value.trim())) {
+      throw new Error(label+"["+i+"] 必须是非空"+(allowNumbers?"字符串或数字":"字符串"));
+    }
+  });
+  return values;
+}
 $("saveNotifyBtn").onclick = async () => {
   const notifyWebhook=$("notifyWebhookInput").value.trim();
   const backendApiBase=$("backendApiBaseInput").value.trim();
@@ -747,10 +830,17 @@ $("saveNotifyBtn").onclick = async () => {
       $("notifyMsg").innerHTML='<span class="err">接口路径必须是一个 JSON 对象</span>'; return;
     }
   }
+  let sessionInvalidCodes, sessionInvalidMessagePatterns;
+  try {
+    sessionInvalidCodes=parseSettingsArray("sessionInvalidCodesInput", "会话失效业务码", true);
+    sessionInvalidMessagePatterns=parseSettingsArray("sessionInvalidMessagesInput", "会话失效文案特征", false);
+  } catch (e) {
+    $("notifyMsg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return;
+  }
   const btn=$("saveNotifyBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("notifyMsg").textContent="";
   try {
-    await api("/api/settings", { method:"POST", body:{ notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints } });
-    CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints });
+    await api("/api/settings", { method:"POST", body:{ notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints, sessionInvalidCodes, sessionInvalidMessagePatterns } });
+    CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, webOrigin, webReferer, endpoints, sessionInvalidCodes, sessionInvalidMessagePatterns });
     $("notifyMsg").innerHTML='<span class="ok">✅ 已保存</span>';
   } catch (e) { $("notifyMsg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
   finally { btn.disabled=false; btn.textContent=lbl; }

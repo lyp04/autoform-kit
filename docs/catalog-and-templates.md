@@ -16,6 +16,20 @@
 - 一个表单模板描述「一张表单」：它的标识（如 id / 名称）、操作员要完成的若干步骤 / 字段（例如文本输入、拍照步骤等），以及用于显示的标签（可含多语言）。
 - 一个目录里可以有多个表单模板，分别对应不同的产品 / 工序 / 场景。
 
+## 职责边界与敏感配置
+
+- App 只负责通用的扫码、拍照、字段渲染、提交和错误处理。
+- Panel / catalog profile 负责具体的 `template`、`gradeMap`、`previousStepTemplates`、`autoCreatePreviousSteps` 等业务配置。
+- 真实产品名、SKU、模板 ID、仓库 ID 等应留在你的私有目录中，不要提交到公开源码或文档。
+
+### 前置步骤模板
+
+如果某表单需要补录前置步骤，请在面板的表单设置中填写第 1 / 2 步的**精确模板 ID**。两个 ID 必须都是正整数，且详情接口返回的步骤号应与配置一致。App 不根据相邻 ID、产品名、SKU 或 SN 相似度猜测模板。
+
+从旧版本升级时，请先为需要此功能的 profile 补齐 `previousStepTemplates.step1TemplateId` 和 `step2TemplateId`，再在面板显式启用自动补录并至少选一个等级。对应 JSON 必须是 `autoCreatePreviousSteps: { "enabled": true, "grades": ["A"] }` 这类明确配置；只有旧 `gradeASpecialHandling` 标记、只有模板 ID，或缺少 `grades` 都不会触发。没有精确配置时，App 会明确报错并停止，不会选择一个“看起来相似”的模板。
+
+这与“预检后人工确认修复”是两条不同路径：非 A 等级连续预检确认前置步骤确实缺失后，操作员继续并手动拍摄运行图，App 可以执行一次显式修复；它不是按等级隐式开启的自动补录。两条路径都只从 `previousStepTemplates` 读取精确 ID，缺少映射时都会明确报错。
+
 ---
 
 ## 在面板里管理

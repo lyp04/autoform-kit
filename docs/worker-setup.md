@@ -70,6 +70,8 @@ AI_MODEL         = "openai/gpt-4o-mini"
 wrangler secret put GITHUB_TOKEN
 wrangler secret put AI_API_KEY
 wrangler secret put CATALOG_READ_KEY
+# 可选：仅当 Worker 校验 token 时后端会返回特定非成功码
+wrangler secret put BACKEND_SESSION_PROOF_CODES
 ```
 
 | Secret | 作用 |
@@ -77,6 +79,7 @@ wrangler secret put CATALOG_READ_KEY
 | `GITHUB_TOKEN` | 前置条件里创建的 GitHub fine-grained token（对目录仓库有 **Contents 读写**）。面板用它读写你的目录仓库。 |
 | `AI_API_KEY` | AI 服务的 API Key，用于发布时自动翻译 / 精简标签。若不使用 AI 功能可跳过。 |
 | `CATALOG_READ_KEY` | **访问密钥**。App 读取目录时必须携带它，用于给目录读取「上门禁」。请妥善保管，并把**同一个值**填进 App 设置里（见 [connect-app.md](./connect-app.md)）。 |
+| `BACKEND_SESSION_PROOF_CODES` | 可选。若 Worker 用后端查询登录态时，合法新会话会返回某个非成功业务码，可填 JSON 数组（如 `["SESSION_PROOF"]`）或逗号分隔列表。仅能填“确实证明 token 刚经合法登录”的码；普通错误码绝不能放宽。 |
 
 > 面板**没有**单独的登录口令 / 密码这类密钥。面板网页后台的门槛就是**后端登录本身**：管理员用后端账号登录（账号 + 密码 + 验证码）后，拿到的 token 就是唯一凭证（详见第 5、7 步）。
 
@@ -100,8 +103,8 @@ const BACKEND_BASE = "https://backend.example.com/api";
 
 ```js
 const BACKEND_ENDPOINTS = {
-  captcha: "account/getCaptcha",
-  login: "account/adminLogin",
+  captcha: "auth/captcha",
+  login: "auth/login",
   // …按你的后端调整
 };
 ```

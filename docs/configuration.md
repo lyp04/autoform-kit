@@ -11,7 +11,9 @@
 | 通知 Webhook（notifyWebhook，可选） | 接收「错误 / 事件」通知的地址；App 会向它 POST 一段文本消息。留空则不发通知。 | `https://hooks.example.com/t/xxxxxxxx` |
 | 自更新源（updateOwner / updateRepo） | App 检查 / 下载新版本 APK 的**公开** GitHub 仓库（owner + repo），公开仓库不需要 token。 | `your-name` / `your-app-releases` |
 | Origin / Referer（webOrigin / webReferer，可选） | 若你的后端要求登录请求带特定的 `Origin` / `Referer` 头，在这里填；留空则不发这两个头。 | `https://backend.example.com` |
-| 接口路径（endpoints，可选，高级） | 一段 JSON，覆盖 App 调用后端时用的接口路径（登录、验证码、提交、模板等）。留空则用内置默认值。 | `{ "login": "/account/adminLogin" }` |
+| 接口路径（endpoints，可选，高级） | 一段 JSON，覆盖 App 调用后端时用的接口路径（登录、验证码、提交、模板等）。 | `{ "login": "/auth/login" }` |
+| 会话失效业务码（sessionInvalidCodes，可选） | 后端用于表示 token 不再可用的数字 / 字符串码。 | `[90001, "SESSION_REVOKED"]` |
+| 会话失效文案特征（sessionInvalidMessagePatterns，可选） | 后端无稳定业务码时的文案子串，不区分大小写匹配。 | `["signed in on another workstation"]` |
 
 ---
 
@@ -31,3 +33,6 @@
 - **品牌名**：仅界面展示，可随时改。
 - **自更新源**：填一个**公开**仓库，App 从它的 Releases 拉正式版 APK。切勿在此填需要 token 的私有仓库。
 - **接口路径（endpoints）**：只有当你的后端接口路径和内置默认值不同才需要填。格式是 `{ "逻辑名": "/你的/路径" }`，只覆盖你写出来的那几个，其余仍用默认。面板网页自己登录用的路径另见 `panel/public/index.html` 顶部的 `BACKEND_BASE` / `BACKEND_ENDPOINTS`。
+- **会话失效信号**：App 内置通用 HTTP `401/403`、`session expired`、`token invalid` 等判断；你后端特有的业务码和文案必须在这里配置。文案项是普通子串（不是正则表达式）。命中后 App 会清理无效会话并弹出重新登录提示。
+
+> 这些值可能暴露内部后端、仓库和业务结构。请把真实域名、API 路径、GitHub 仓库名、业务码等只保存在你的部署配置 / 私有目录中，并在生产环境设置 `CATALOG_READ_KEY`；不要把它们提交回公开仓库。

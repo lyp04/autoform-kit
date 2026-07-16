@@ -19,11 +19,11 @@ public class FingerprintTest {
     @Test
     public void dnsTargetRemainsAStableRootCauseDiscriminator() {
         String api = Fingerprint.computeFailure("dns", "unknown_host", "api_request",
-                "api2.besender.com");
+                "api.backend.example");
         String control = Fingerprint.computeFailure("dns", "unknown_host", "api_request",
                 "dns.google");
         assertNotEquals(api, control);
         assertEquals(api, Fingerprint.computeFailure("dns", "unknown_host", "api_request",
-                "api2.besender.com"));
+                "api.backend.example"));
     }
 }

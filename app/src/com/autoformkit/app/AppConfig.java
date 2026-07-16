@@ -15,7 +15,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 
 /**
- * Panel-provided backend configuration ({@code backendApiBase}, {@code notifyWebhook}, {@code brand}).
+ * Panel-provided backend configuration (base URL, endpoints, session policy, notifications, brand).
  *
  * <p>The app is deliberately backend-agnostic: it has NO built-in server. A user points it at a
  * form system by entering a <b>panel address</b> (+ access key) in Settings, stored in the app's
@@ -108,7 +108,7 @@ public final class AppConfig {
         return value.isEmpty() ? def : value;
     }
 
-    /** Cached panel config JSON ({@code {backendApiBase,notifyWebhook,brand}}), or null if absent/corrupt. */
+    /** Cached panel config JSON, or null if absent/corrupt. */
     static JSONObject load(Context context) {
         try {
             File file = cacheFile(context);
@@ -156,7 +156,10 @@ public final class AppConfig {
             || !json.optString("webOrigin", "").trim().isEmpty()
             || !json.optString("webReferer", "").trim().isEmpty()
             || !json.optString("updateOwner", "").trim().isEmpty()
-            || !json.optString("updateRepo", "").trim().isEmpty();
+            || !json.optString("updateRepo", "").trim().isEmpty()
+            || json.optJSONObject("endpoints") != null
+            || json.optJSONArray("sessionInvalidCodes") != null
+            || json.optJSONArray("sessionInvalidMessagePatterns") != null;
     }
 
     private static void notify(Listener listener, JSONObject result) {

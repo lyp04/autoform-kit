@@ -10,6 +10,14 @@ Operators on a shop floor or out in the field open the app, sign in, and work th
 
 > Every hostname, repo name, key, token, and form label in this repo and its docs is a placeholder — swap in your own.
 
+## Configuration boundary
+
+The public app is a generic runtime; deployment-specific business knowledge belongs to the panel and
+the private catalog. Keep real product/customer/company names, internal hosts and API paths, repository
+names, template and warehouse IDs, SKUs, and backend-specific session codes/messages out of this
+repository. In particular, previous-step templates must be configured with exact IDs in each profile;
+the app intentionally does not infer them from a product name, serial-number prefix, or nearby ID.
+
 ## Features
 
 - Forms are defined in the panel and pushed to every device — no new app build to change a form.
@@ -109,6 +117,10 @@ Issues and pull requests are welcome. Please keep changes focused and describe t
 操作员打开 App、登录，然后照着表单一步步来：扫序列号、按要求拍照、填字段、提交。表单长什么样不写死在 App 里，而是从面板下发——改一次，所有设备下次同步就更新了。登录和提交走你自己的后端，autoform-kit 不带后端。
 
 > 仓库和文档里出现的主机名、仓库名、密钥、token、表单标签都是占位示例，换成你自己的。
+
+### 配置边界
+
+公开仓库中的 App 只是通用运行时；具体业务知识应由面板和私有目录管理。真实产品 / 客户 / 公司名、内部域名与 API 路径、仓库名、模板号、仓库号、SKU、后端特有的会话失效码 / 文案都不应写入本仓库。前置步骤模板必须在 profile 中填精确 ID；App 不会根据产品名、SN 前缀或相邻编号猜测。
 
 ### 功能
 

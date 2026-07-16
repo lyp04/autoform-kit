@@ -5,9 +5,10 @@
 // Cloudflare egress IP), while token-authenticated reads work from anywhere. The remaining exports
 // mirror those browser-side calls for reuse and testing.
 
-function apiHeaders(token) {
+function apiHeaders(token, fingerprint) {
   const headers = { Accept: "application/json, text/plain, */*" };
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (fingerprint) headers["X-Browser-Fingerprint"] = String(fingerprint);
   return headers;
 }
 
@@ -15,14 +16,14 @@ function apiBase(env) {
   return (env.BACKEND_API_BASE || "https://backend.example.com/api").replace(/\/+$/, "");
 }
 
-async function apiJson(base, path, { method = "GET", query, body, token } = {}) {
+async function apiJson(base, path, { method = "GET", query, body, token, fingerprint } = {}) {
   const url = new URL(path.replace(/^\/+/, ""), `${base}/`);
   if (query) {
     for (const [k, v] of Object.entries(query)) {
       if (v !== undefined && v !== null && v !== "") url.searchParams.set(k, String(v));
     }
   }
-  const headers = apiHeaders(token);
+  const headers = apiHeaders(token, fingerprint);
   let payload;
   if (body) {
     payload = new URLSearchParams(body).toString();
@@ -86,24 +87,37 @@ export async function login(env, { account, password, captcha, client }) {
   return { token, userName };
 }
 
+function configuredSessionProofCodes(env) {
+  const raw = String(env.BACKEND_SESSION_PROOF_CODES || "").trim();
+  if (!raw) return new Set();
+  let values;
+  try {
+    const parsed = JSON.parse(raw);
+    values = Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    values = raw.split(",");
+  }
+  return new Set(values.map((value) => String(value).trim()).filter(Boolean));
+}
+
 /** Confirm a token came from a real backend login before letting it publish.
  *
- *  Some backends enforce single sign-on: when this call is made from a different device signature
- *  than the one that logged in, the backend force-logs-out the token and returns a "logged in
- *  elsewhere" code (40002). The panel can trip this — the browser logs in directly (its own
- *  signature) and the Worker verifies (a different signature). Crucially, 40002 only comes back for
- *  a token that WAS a real, freshly-logged-in session; a fake/expired token returns an
- *  unauthenticated error (e.g. code 500) instead. So we accept success OR 40002 as proof of a valid
- *  login, and reject everything else. */
+ *  A backend may return a non-success business code when the browser-created session is probed from
+ *  the Worker. Deployers can list codes that still prove a freshly authenticated token in the
+ *  BACKEND_SESSION_PROOF_CODES secret (JSON array or comma-separated string). The generic kit ships
+ *  no backend-specific code. */
 export async function verifyToken(env, token, fingerprint) {
   if (!token || String(token).trim().length < 20) throw new Error("backend token is not valid");
   const base = apiBase(env);
-  const r = await apiJson(base, "/users/userInfo", { token });
+  const r = await apiJson(base, "/users/userInfo", { token, fingerprint });
   if (isSuccess(r.body)) {
     const data = apiData(r.body) || {};
     return { userName: data.userName || data.name || "", raw: data };
   }
-  if (r.body && Number(r.body.code) === 40002) return { userName: "", raw: {}, kicked: true };
+  const proofCodes = configuredSessionProofCodes(env);
+  if (r.body && proofCodes.has(String(r.body.code).trim())) {
+    return { userName: "", raw: {}, sessionProof: true };
+  }
   throw new Error("backend token is not valid");
 }
 
@@ -113,6 +127,7 @@ export async function listTemplates(env, { token, fingerprint, keyword = "" }) {
   // portability. A keyword search returns all matches anyway.
   const r = await apiJson(base, "/retread/myTemplateListPage", {
     token,
+    fingerprint,
     query: { page: 1, keyword }
   });
   if (!isSuccess(r.body)) throw new Error(`listTemplates failed: ${apiError(r)}`);
@@ -128,7 +143,9 @@ export async function listTemplates(env, { token, fingerprint, keyword = "" }) {
 
 export async function templateDetail(env, { token, fingerprint, id }) {
   const base = apiBase(env);
-  const r = await apiJson(base, "/retread/templateDetail", { token, query: { id } });
+  const r = await apiJson(base, "/retread/templateDetail", {
+    token, fingerprint, query: { id }
+  });
   if (!isSuccess(r.body)) throw new Error(`templateDetail ${id} failed: ${apiError(r)}`);
   return apiData(r.body);
 }

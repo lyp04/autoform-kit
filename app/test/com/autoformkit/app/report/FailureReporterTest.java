@@ -21,9 +21,9 @@ public class FailureReporterTest {
     @Test
     public void realDnsTargetOrUnknownHostStillTriggersDiagnostics() {
         Map<String, String> ctx = new LinkedHashMap<>();
-        ctx.put("dns_target", "api2.besender.com");
+        ctx.put("dns_target", "api.backend.example");
         assertTrue(FailureReporter.isDnsStage("submit", "IOException", ctx, null));
         assertTrue(FailureReporter.isDnsStage("submit", "IOException", null,
-                new UnknownHostException("api2.besender.com")));
+                new UnknownHostException("api.backend.example")));
     }
 }

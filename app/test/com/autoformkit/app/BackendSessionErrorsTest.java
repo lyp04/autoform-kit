@@ -6,26 +6,35 @@ import static org.junit.Assert.assertTrue;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.Arrays;
 
 public class BackendSessionErrorsTest {
     @Test
-    public void recognizesForcedOfflineResponseFromIssue12() {
+    public void recognizesGenericAndPanelConfiguredSessionSignals() {
+        BackendSessionErrors.Policy policy = new BackendSessionErrors.Policy(
+                Arrays.asList(90001, "SESSION_REVOKED"),
+                Arrays.asList("signed in on another workstation", "access revoked by administrator"));
+
         assertTrue(BackendSessionErrors.isInvalidMessage(
-                "您的帐号在另一个地点登录，您已被强制下线，如非您本人操作，建议您修改账号密码。"));
-        assertTrue(BackendSessionErrors.isInvalidMessage("Session expired; please log in again"));
+                "This account was signed in on another workstation.", policy));
+        assertTrue(BackendSessionErrors.isInvalidMessage("Session expired; please log in again", policy));
         assertTrue(BackendSessionErrors.isInvalidHttpStatus(401));
         assertTrue(BackendSessionErrors.isInvalidHttpStatus(403));
-        assertTrue(BackendSessionErrors.isInvalidApiCode(40002));
-        assertTrue(BackendSessionErrors.isInvalidApiCode("40002"));
+        assertTrue(BackendSessionErrors.isInvalidApiCode(90001, policy));
+        assertTrue(BackendSessionErrors.isInvalidApiCode("90001", policy));
+        assertTrue(BackendSessionErrors.isInvalidApiCode("SESSION_REVOKED", policy));
     }
 
     @Test
     public void doesNotTreatOrdinaryLoginOrBusinessErrorsAsSessionKick() {
-        assertFalse(BackendSessionErrors.isInvalidMessage("登录失败：验证码错误"));
-        assertFalse(BackendSessionErrors.isInvalidMessage("Image upload failed: file too large"));
+        BackendSessionErrors.Policy policy = BackendSessionErrors.Policy.empty();
+        assertFalse(BackendSessionErrors.isInvalidMessage("Login failed: captcha is incorrect", policy));
+        assertFalse(BackendSessionErrors.isInvalidMessage("Image upload failed: file too large", policy));
+        assertFalse(BackendSessionErrors.isInvalidMessage(
+                "This account was signed in on another workstation.", policy));
         assertFalse(BackendSessionErrors.isInvalidHttpStatus(400));
         assertFalse(BackendSessionErrors.isInvalidHttpStatus(500));
-        assertFalse(BackendSessionErrors.isInvalidApiCode(30002));
+        assertFalse(BackendSessionErrors.isInvalidApiCode(90001, policy));
     }
 
     @Test

@@ -762,7 +762,7 @@ public class MainActivity extends Activity {
     // picks the model, scans/types ONE SN, takes ONE photo, then submits a single A-class step-one
     // record carrying the fixed "外观不良/报废" verdict — 外观不通过 / 划痕 / 脏污 / 无法维修 /
     // 不良品 / 未做任何操作. It reuses the current login session and the same step-one template
-    // discovery as autoCreateGradeAPreviousSteps, but fills the FAIL options instead of PASS.
+    // loading as the configured auto-create flow, but fills the FAIL options instead of PASS.
 
     private void showAStepEntryPage() {
         if (savedToken().isEmpty()) {
@@ -3910,16 +3910,10 @@ public class MainActivity extends Activity {
         b.show();
     }
 
-    // TEMP DIAGNOSTIC (not for beta): dump raw API responses to logcat tag PRINTDIAG so we can see
-    // the real refurb-record vs print-job shapes against live operator data, then design correctly.
-    // ===== Cloud-box print reconciliation & reprint (the "丢单" safety net) =====
-    // Validated 2026-06-01 against live operator data:
-    //  - getUserMessageList is scoped to the logged-in operator; for a refurb operator every item is a
-    //    cloud-box label print where order_no == the machine SN (e.g. AOTDH11F12600634).
-    //  - cloudPrinterState returns the operator's bound refurb printer {id,name,status}. We filter the
-    //    list to type==1 (label prints) AND that printer's id, so other projects'/printers' jobs
-    //    (warehouse, shipping, UGREEN handled by other users) can never appear.
-    //  - retreadResultTodayDetailList returns 500 via the API, so it is NOT used.
+    // ===== Label-print reconciliation & reprint safety net =====
+    // The message list is scoped to the logged-in operator and print jobs are matched by the submitted
+    // serial number. Printer status is also restricted to the operator's bound label printer so jobs
+    // from unrelated workflows cannot enter this reconciliation view.
 
     private void showPrintReconcileDialog() {
         if (savedToken().isEmpty()) {
@@ -4679,7 +4673,7 @@ public class MainActivity extends Activity {
                 throw new IOException(unit.sn + " " + t("a_step_photo_required"));
             }
             appendUnitLog(unit, t("a_steps_creating"));
-            autoCreateGradeAPreviousSteps(api, unit);
+            autoCreatePreviousSteps(api, unit);
             for (int attempt = 1; attempt <= 3; attempt++) {
                 Thread.sleep(1500);
                 body = previousStepsResponse(api, unit);
@@ -4899,7 +4893,7 @@ public class MainActivity extends Activity {
         runOnUiThread(this::refreshFormUi);
     }
 
-    private void autoCreateGradeAPreviousSteps(Api api, UnitRecord unit) throws Exception {
+    private void autoCreatePreviousSteps(Api api, UnitRecord unit) throws Exception {
         String photoUrl = api.uploadImage(new File(unit.aStepPhotoPath), unit.sn + "-a-step.jpg");
         JSONObject stepOne = aClassStepTemplate(api, 1);
         JSONObject stepTwo = aClassStepTemplate(api, 2);
@@ -4913,7 +4907,7 @@ public class MainActivity extends Activity {
         if (processStep == 1 && cachedAClassStepOneTemplate != null) return cachedAClassStepOneTemplate;
         if (processStep == 2 && cachedAClassStepTwoTemplate != null) return cachedAClassStepTwoTemplate;
 
-        JSONObject detail = findAClassStepTemplate(api, processStep);
+        JSONObject detail = configuredPreviousStepTemplate(api, processStep);
         if (detail == null) {
             throw new IOException(t("a_step_template_missing") + processStep);
         }
@@ -4922,68 +4916,24 @@ public class MainActivity extends Activity {
         return detail;
     }
 
-    private JSONObject findAClassStepTemplate(Api api, int processStep) throws Exception {
-        List<JSONObject> candidates = new ArrayList<>();
-        Set<Integer> seen = new HashSet<>();
-        addKnownAClassTemplateCandidate(candidates, seen, processStep);
-        addNearbyAClassTemplateCandidates(candidates, seen, processStep);
-        JSONObject best = null;
-        int bestScore = Integer.MIN_VALUE;
-        for (String keyword : aClassTemplateKeywords()) {
-            if (keyword.isEmpty()) continue;
-            JSONObject body = api.getJson(AppConfig.endpoint(this, "templateList", "/retread/myTemplateListPage"), "page=1&pageSize=100&keyword=" + enc(keyword) + "&status=1");
-            if (!Api.isSuccess(body)) continue;
-            JSONArray items = arrayFromApiData(Api.apiData(body));
-            for (int i = 0; i < items.length(); i++) {
-                JSONObject item = items.optJSONObject(i);
-                if (item == null) continue;
-                int id = optIntAny(item, "id", "template_id", "templateId");
-                if (id <= 0 || seen.contains(id)) continue;
-                seen.add(id);
-                int listedStep = optIntAny(item, "process_id", "processId", "step");
-                if (listedStep > 0 && listedStep != processStep) continue;
-                candidates.add(item);
-            }
+    private JSONObject configuredPreviousStepTemplate(Api api, int processStep) throws Exception {
+        int id = configuredPreviousStepTemplateId(processStep);
+        if (id <= 0) return null;
+        JSONObject detail = loadTemplateDetail(api, id);
+        if (detail == null) return null;
+        int configuredStep = optIntAny(detail, "process_id", "processId", "step");
+        if (configuredStep > 0 && configuredStep != processStep) {
+            Diagnostics.append(this, "Configured previous-step template has wrong process: requested="
+                + processStep + " id=" + id + " actual=" + configuredStep);
+            return null;
         }
-
-        for (JSONObject candidate : candidates) {
-            int id = optIntAny(candidate, "id", "template_id", "templateId");
-            JSONObject detail = loadTemplateDetail(api, id);
-            if (detail == null) continue;
-            int score = templateCandidateScore(candidate, detail, processStep);
-            Diagnostics.append(this, "A class step template candidate step=" + processStep
-                + " id=" + id
-                + " process=" + optIntAny(detail, "process_id", "processId", "step")
-                + " score=" + score);
-            if (score < 80) continue;
-            if (score > bestScore) {
-                best = detail;
-                bestScore = score;
-            }
-            if (bestScore >= 220) break;
-        }
-        return best;
+        return detail;
     }
 
-    private void addKnownAClassTemplateCandidate(List<JSONObject> candidates, Set<Integer> seen, int processStep) {
-        JSONObject current = profile == null ? null : profile.optJSONObject("template");
-        int currentId = current == null ? 0 : optIntAny(current, "id", "template_id", "templateId");
-        int id = knownAClassStepTemplateId(currentId, processStep);
-        if (id <= 0 || seen.contains(id)) return;
-        try {
-            JSONObject item = new JSONObject();
-            item.put("id", id);
-            item.put("_known", true);
-            candidates.add(item);
-            seen.add(id);
-        } catch (JSONException ignored) {
-        }
-    }
-
-    private int knownAClassStepTemplateId(int currentTemplateId, int processStep) {
+    private int configuredPreviousStepTemplateId(int processStep) {
         // Mapping-only config is deliberately separate from autoCreatePreviousSteps: the standalone
         // "first-step entry" screen also needs step 1's template, but merely identifying that
-        // template must not opt every grade-A unit into automatic previous-step creation.
+        // template must not opt any unit into automatic previous-step creation.
         JSONObject templateIds = profile == null ? null : profile.optJSONObject("previousStepTemplates");
         if (templateIds != null) {
             int configured = processStep == 1 ? templateIds.optInt("step1TemplateId", 0)
@@ -4991,38 +4941,7 @@ public class MainActivity extends Activity {
             if (configured > 0) return configured;
         }
 
-        // The auto-create module may also carry its own previous-step template ids.
-        JSONObject cfg = autoPreviousStepsConfig();
-        if (cfg != null) {
-            int configured = processStep == 1 ? cfg.optInt("step1TemplateId", 0)
-                : (processStep == 2 ? cfg.optInt("step2TemplateId", 0) : 0);
-            if (configured > 0) return configured;
-        }
-        // Catalog profiles created before that module existed carry no ids. Retain the verified
-        // production mappings from anker-autoupdate as a compatibility fallback (not a guess).
-        return PreviousStepTemplateHints.forProcessStep(currentTemplateId, processStep);
-    }
-
-    private void addNearbyAClassTemplateCandidates(List<JSONObject> candidates, Set<Integer> seen, int processStep) {
-        JSONObject current = profile == null ? null : profile.optJSONObject("template");
-        int currentId = current == null ? 0 : optIntAny(current, "id", "template_id", "templateId");
-        int currentStep = current == null ? 0 : optIntAny(current, "process_id", "processId", "step");
-        if (currentId <= 0) return;
-        if (currentStep <= processStep) currentStep = 4;
-        addAClassTemplateCandidate(candidates, seen, currentId - (currentStep - processStep));
-        addAClassTemplateCandidate(candidates, seen, currentId - (4 - processStep));
-    }
-
-    private void addAClassTemplateCandidate(List<JSONObject> candidates, Set<Integer> seen, int id) {
-        if (id <= 0 || seen.contains(id)) return;
-        try {
-            JSONObject item = new JSONObject();
-            item.put("id", id);
-            item.put("_nearby", true);
-            candidates.add(item);
-            seen.add(id);
-        } catch (JSONException ignored) {
-        }
+        return 0;
     }
 
     private JSONObject loadTemplateDetail(Api api, int id) throws Exception {
@@ -5030,81 +4949,10 @@ public class MainActivity extends Activity {
         JSONObject body = api.getJson(AppConfig.endpoint(this, "templateDetail", "/retread/templateDetail"), "id=" + id);
         JSONObject detail = Api.apiDataObject(body);
         if (!Api.isSuccess(body) || detail == null) {
-            Diagnostics.append(this, "A class step template detail failed id=" + id + " error=" + Api.apiErrorMessage(body));
+            Diagnostics.append(this, "Template detail failed id=" + id + " error=" + Api.apiErrorMessage(body));
             return null;
         }
         return detail;
-    }
-
-    private List<String> aClassTemplateKeywords() {
-        LinkedHashSet<String> values = new LinkedHashSet<>();
-        JSONObject template = profile == null ? null : profile.optJSONObject("template");
-        if (template != null) values.add(template.optString("sku", ""));
-        if (profile != null) {
-            values.add(profile.optString("searchText", ""));
-            values.add(profile.optString("model", ""));
-            values.add(profile.optString("displayName", ""));
-        }
-        List<String> out = new ArrayList<>();
-        for (String value : values) {
-            String text = value == null ? "" : value.trim();
-            if (!text.isEmpty()) out.add(text);
-        }
-        return out;
-    }
-
-    private int templateCandidateScore(JSONObject item, JSONObject detail, int processStep) {
-        int score = 0;
-        JSONObject current = profile == null ? null : profile.optJSONObject("template");
-        String currentSku = current == null ? "" : current.optString("sku", "");
-        int currentWarehouse = current == null ? 0 : current.optInt("warehouseId", 0);
-        String sku = Api.firstNonEmpty(detail.optString("sku", ""), item.optString("sku", ""));
-        if (!currentSku.isEmpty() && currentSku.equals(sku)) score += 120;
-        int warehouse = optIntAny(detail, "warehouse_id", "warehouseId");
-        if (warehouse <= 0) warehouse = optIntAny(item, "warehouse_id", "warehouseId");
-        if (currentWarehouse > 0 && currentWarehouse == warehouse) score += 10;
-        int step = optIntAny(detail, "process_id", "processId", "step");
-        if (step > 0 && step != processStep) return -1000;
-        if (step == processStep) score += 100;
-        if (item.optBoolean("_known", false)) score += 300;
-        if (item.optBoolean("_nearby", false)) score += 20;
-        JSONArray fields = templateFields(detail);
-        if (processStep == 1 && hasUploadTemplateField(fields)) score += 15;
-        if (processStep == 1 && hasOptionTemplateField(fields)) score += 10;
-        if (processStep == 2 && !hasUploadTemplateField(fields)) score += 10;
-        if (processStep == 2 && fields.length() <= 3) score += 10;
-        if (hasMainSubmitTemplateField(fields)) score -= 120;
-        return score;
-    }
-
-    private boolean hasUploadTemplateField(JSONArray fields) {
-        for (int i = 0; i < fields.length(); i++) {
-            JSONObject field = fields.optJSONObject(i);
-            if (field != null && isUploadField(field)) return true;
-        }
-        return false;
-    }
-
-    private boolean hasOptionTemplateField(JSONArray fields) {
-        for (int i = 0; i < fields.length(); i++) {
-            JSONObject field = fields.optJSONObject(i);
-            if (field == null) continue;
-            JSONArray options = field.optJSONArray("option_list");
-            if (options == null || options.length() == 0) options = field.optJSONArray("optionList");
-            if (options != null && options.length() > 0) return true;
-        }
-        return false;
-    }
-
-    private boolean hasMainSubmitTemplateField(JSONArray fields) {
-        for (int i = 0; i < fields.length(); i++) {
-            JSONObject field = fields.optJSONObject(i);
-            if (field == null) continue;
-            String type = field.optString("type", "");
-            String typeName = field.optString("type_name", "");
-            if ("retread_result".equals(type) || "part".equals(type) || "parts".equals(typeName)) return true;
-        }
-        return false;
     }
 
     private JSONObject buildAutoStepPayload(JSONObject template, UnitRecord unit, String imageUrl, int processStep) throws JSONException {
@@ -6042,7 +5890,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean shouldShowAStepPhotoBox() {
-        return nextAStepPhotoUnit() != null || (usesGradeASpecialHandling() && hasGrade("A") && "A".equals(selectedGrade()));
+        return nextAStepPhotoUnit() != null || gradeTriggersAutoPreviousSteps(selectedGrade());
     }
 
     private UnitRecord nextAStepPhotoUnit() {
@@ -6053,47 +5901,39 @@ public class MainActivity extends Activity {
     }
 
     private boolean needsPreviousStepPhoto(UnitRecord unit) {
-        return unit != null && (unitTriggersAutoPreviousSteps(unit) || unit.stepPhotoRequired);
+        return previousStepCreationTriggered(unit);
     }
 
     private boolean canAutoCreatePreviousSteps(UnitRecord unit) {
-        return needsPreviousStepPhoto(unit);
+        return previousStepCreationTriggered(unit);
     }
 
-    /** Profile's auto-previous-steps module config, or null when the profile doesn't opt in. */
-    private JSONObject autoPreviousStepsConfig() {
-        JSONObject cfg = profile == null ? null : profile.optJSONObject("autoCreatePreviousSteps");
-        return (cfg != null && cfg.optBoolean("enabled", true)) ? cfg : null;
-    }
-
-    /**
-     * Whether a unit should auto-create previous steps. Config-driven when the profile declares
-     * {@code autoCreatePreviousSteps} (fires for its {@code grades}, default ["A"]); otherwise falls
-     * back to the profile's {@code gradeASpecialHandling} opt-in (grade A) so existing profiles are
-     * unchanged.
-     */
+    /** Whether a unit should auto-create previous steps, solely from the profile's explicit module. */
     private boolean unitTriggersAutoPreviousSteps(UnitRecord unit) {
-        if (unit == null) return false;
-        JSONObject cfg = autoPreviousStepsConfig();
-        if (cfg != null) {
-            JSONArray grades = cfg.optJSONArray("grades");
-            if (grades == null || grades.length() == 0) {
-                return "A".equals(unit.grade);
-            }
-            for (int i = 0; i < grades.length(); i++) {
-                if (grades.optString(i).equals(unit.grade)) return true;
-            }
-            return false;
+        return unit != null && gradeTriggersAutoPreviousSteps(unit.grade);
+    }
+
+    private boolean gradeTriggersAutoPreviousSteps(String grade) {
+        JSONObject cfg = profile == null ? null : profile.optJSONObject("autoCreatePreviousSteps");
+        JSONArray configuredGrades = cfg == null ? null : cfg.optJSONArray("grades");
+        List<String> grades = new ArrayList<>();
+        for (int i = 0; configuredGrades != null && i < configuredGrades.length(); i++) {
+            grades.add(configuredGrades.optString(i, ""));
         }
-        return usesGradeASpecialHandling() && "A".equals(unit.grade);
+        return PreviousStepTriggers.configuredAutoCreate(
+            cfg == null ? null : cfg.opt("enabled"), grades, grade);
+    }
+
+    private boolean previousStepCreationTriggered(UnitRecord unit) {
+        return unit != null && PreviousStepTriggers.shouldCreate(
+            unitTriggersAutoPreviousSteps(unit), unit.stepPhotoRequired);
     }
 
     private boolean isGradeASpecialUnit(UnitRecord unit) {
         return unit != null && usesGradeASpecialHandling() && "A".equals(unit.grade);
     }
 
-    /** Whether the active profile opts into grade-A special handling (auto previous steps, step
-     *  photos, restricted non-new reasons) via its {@code gradeASpecialHandling} flag. */
+    /** Whether the active profile opts into grade-A reason filtering via its legacy flag. */
     private boolean usesGradeASpecialHandling() {
         return profile != null && profile.optBoolean("gradeASpecialHandling", false);
     }
@@ -7709,8 +7549,8 @@ public class MainActivity extends Activity {
         for (String grade : new String[]{"A", "B", "C"}) {
             if (hasGrade(grade)) return grade;
         }
-        // No grade defined (ungraded profile): empty, not "A" — otherwise an ungraded
-        // unit would look like an A-class unit and wrongly trigger the A-step previous-steps flow.
+        // No grade defined (ungraded profile): empty, so it cannot match any explicitly configured
+        // autoCreatePreviousSteps grade.
         return "";
     }
 
@@ -7755,7 +7595,32 @@ public class MainActivity extends Activity {
             AppConfig.endpoint(e, "printerState", "/engineer/message/cloudPrinterState"),
             AppConfig.endpoint(e, "messageList", "/engineer/message/getUserMessageList"),
             AppConfig.endpoint(e, "labelRetry", "/engineer/message/labelPrinterRetry"),
-            AppConfig.endpoint(e, "uploadFile", "/images/uploadFile"));
+            AppConfig.endpoint(e, "uploadFile", "/images/uploadFile"),
+            sessionInvalidPolicy());
+    }
+
+    /** Backend-specific auth codes/messages belong to panel config, never to the generic app. */
+    private BackendSessionErrors.Policy sessionInvalidPolicy() {
+        JSONArray codes = appConfig == null ? null : appConfig.optJSONArray("sessionInvalidCodes");
+        JSONArray patterns = appConfig == null ? null : appConfig.optJSONArray("sessionInvalidMessagePatterns");
+        if (codes == null && catalogSettings != null) {
+            codes = catalogSettings.optJSONArray("sessionInvalidCodes");
+        }
+        if (patterns == null && catalogSettings != null) {
+            patterns = catalogSettings.optJSONArray("sessionInvalidMessagePatterns");
+        }
+
+        List<Object> codeValues = new ArrayList<>();
+        for (int i = 0; codes != null && i < codes.length(); i++) {
+            Object value = codes.opt(i);
+            if (value != null && value != JSONObject.NULL) codeValues.add(value);
+        }
+        List<String> messageValues = new ArrayList<>();
+        for (int i = 0; patterns != null && i < patterns.length(); i++) {
+            String value = patterns.optString(i, "").trim();
+            if (!value.isEmpty()) messageValues.add(value);
+        }
+        return new BackendSessionErrors.Policy(codeValues, messageValues);
     }
 
     // ---- Panel backend configuration -----------------------------------------------------------
@@ -7940,7 +7805,7 @@ public class MainActivity extends Activity {
                 for (int j = 0; materials != null && j < materials.length(); j++) {
                     JSONObject material = materials.getJSONObject(j);
                     if (code.equals(material.optString("code"))) {
-                        // 物料 name 已含料号（如「滚刷 毛刷 | T2351V11-92」），不再附 (code)——
+                        // 物料 name 已含料号（如「滚刷 毛刷 | SAMPLE-PART-01」），不再附 (code)——
                         // 那是带 MR_ 前缀的同一料号，重复。en/es 走 nameI18n 兄弟映射，缺失回退 zh name。
                         String name = localized(material, "name", "nameI18n");
                         return name.isEmpty() ? code : name;
@@ -8125,7 +7990,13 @@ public class MainActivity extends Activity {
             round.put("units", arr);
             JSONArray ledger = loadLedgerArray();
             ledger.put(round);
-            prefs.edit().putString(ROUND_LEDGER_KEY, pruneLedger(ledger, now).toString()).apply();
+            // This runs on the submit worker, so a synchronous disk commit does not block the UI. It
+            // closes the crash window between removing an uploaded unit from the queue and recording
+            // its label as confirmed/unconfirmed for post-login reconciliation.
+            if (!prefs.edit().putString(
+                    ROUND_LEDGER_KEY, pruneLedger(ledger, now).toString()).commit()) {
+                throw new IllegalStateException("round ledger SharedPreferences commit failed");
+            }
         } catch (Exception exc) {
             appendLog("round ledger save failed: " + exc.getMessage());
         }
@@ -9018,7 +8889,7 @@ public class MainActivity extends Activity {
             case "a_steps_created": return "\u524d\u4e24\u6b65\u5df2\u8865\u5f55\u3002";
             case "a_step_one": return "\u7b2c\u4e00\u6b65";
             case "a_step_two": return "\u7b2c\u4e8c\u6b65";
-            case "a_step_template_missing": return "\u627e\u4e0d\u5230\u524d\u4e24\u6b65\u6b65\u9aa4\u6a21\u677f: ";
+            case "a_step_template_missing": return "\u524d\u7f6e\u6b65\u9aa4\u6a21\u677f\u672a\u914d\u7f6e\u6216\u65e0\u6cd5\u8bfb\u53d6\uff0c\u8bf7\u5728\u9762\u677f\u586b\u5199\u51c6\u786e\u7684\u6a21\u677f ID\u3002\u6b65\u9aa4: ";
             case "a_step_template_failed": return "\u524d\u4e24\u6b65\u6b65\u9aa4\u6a21\u677f\u83b7\u53d6\u5931\u8d25: ";
             case "duplicate_check_failed": return "重复 SN 检查失败: ";
             case "need_one_sn": return "至少需要一个 SN。";
@@ -9362,7 +9233,7 @@ public class MainActivity extends Activity {
             case "a_steps_created": return "Step 1/2 records created.";
             case "a_step_one": return "Step 1";
             case "a_step_two": return "Step 2";
-            case "a_step_template_missing": return "Cannot find step 1/2 template: ";
+            case "a_step_template_missing": return "Previous-step template is missing or invalid; configure its exact ID in the panel. Step: ";
             case "a_step_template_failed": return "Failed to load step 1/2 template: ";
             case "duplicate_check_failed": return "Duplicate check failed: ";
             case "need_one_sn": return "At least one SN is required.";
@@ -9706,7 +9577,7 @@ public class MainActivity extends Activity {
             case "a_steps_created": return "Pasos 1/2 creados.";
             case "a_step_one": return "Paso 1";
             case "a_step_two": return "Paso 2";
-            case "a_step_template_missing": return "No se encontro plantilla de pasos 1/2: ";
+            case "a_step_template_missing": return "Falta la plantilla del paso anterior o no es valida; configure su ID exacto en el panel. Paso: ";
             case "a_step_template_failed": return "No se pudo cargar plantilla de pasos 1/2: ";
             case "duplicate_check_failed": return "Error al revisar duplicado: ";
             case "need_one_sn": return "Se requiere al menos un SN.";
@@ -10070,9 +9941,11 @@ public class MainActivity extends Activity {
             final String messageList;
             final String labelRetry;
             final String uploadFile;
+            final BackendSessionErrors.Policy sessionInvalidPolicy;
 
             Endpoints(String captcha, String loginVerify, String login, String userInfo,
-                      String printerState, String messageList, String labelRetry, String uploadFile) {
+                      String printerState, String messageList, String labelRetry, String uploadFile,
+                      BackendSessionErrors.Policy sessionInvalidPolicy) {
                 this.captcha = captcha;
                 this.loginVerify = loginVerify;
                 this.login = login;
@@ -10081,6 +9954,8 @@ public class MainActivity extends Activity {
                 this.messageList = messageList;
                 this.labelRetry = labelRetry;
                 this.uploadFile = uploadFile;
+                this.sessionInvalidPolicy = sessionInvalidPolicy == null
+                    ? BackendSessionErrors.Policy.empty() : sessionInvalidPolicy;
             }
 
             /** The current backend paths — used when no panel override exists, so behavior is unchanged. */
@@ -10093,7 +9968,8 @@ public class MainActivity extends Activity {
                     "/engineer/message/cloudPrinterState",
                     "/engineer/message/getUserMessageList",
                     "/engineer/message/labelPrinterRetry",
-                    "/images/uploadFile");
+                    "/images/uploadFile",
+                    BackendSessionErrors.Policy.empty());
             }
         }
 
@@ -10192,9 +10068,8 @@ public class MainActivity extends Activity {
                     return AuthState.UNKNOWN;
                 }
                 if (isSuccess(body)) return AuthState.VALID;
-                String text = body == null ? "" : body.toString().toLowerCase(java.util.Locale.US);
-                if (text.contains("unauth") || text.contains("登录") || text.contains("登陆")
-                        || text.contains("token") || text.contains("expire") || text.contains("401")) {
+                String text = body == null ? "" : body.toString();
+                if (BackendSessionErrors.isInvalidMessage(text, endpoints.sessionInvalidPolicy)) {
                     return AuthState.INVALID;
                 }
                 return AuthState.UNKNOWN;
@@ -10467,8 +10342,10 @@ public class MainActivity extends Activity {
             }
             try {
                 JSONObject body = new JSONObject(text);
-                if (!isSuccess(body) && (BackendSessionErrors.isInvalidApiCode(body.opt("code"))
-                        || BackendSessionErrors.isInvalidMessage(body.toString()))) {
+                if (!isSuccess(body) && (BackendSessionErrors.isInvalidApiCode(
+                            body.opt("code"), endpoints.sessionInvalidPolicy)
+                        || BackendSessionErrors.isInvalidMessage(
+                            body.toString(), endpoints.sessionInvalidPolicy))) {
                     throw new BackendSessionErrors.SessionInvalidException(apiErrorMessage(body));
                 }
                 return body;

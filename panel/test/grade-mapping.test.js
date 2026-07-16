@@ -6,11 +6,11 @@ import { validateFormProfile } from "../src/profile.js";
 
 function templateWithGrades(options) {
   return {
-    id: 2352,
-    name: "T2352",
+    id: 2001,
+    name: "Sample Model",
     process_id: 4,
-    sku: "RV_T2352111",
-    warehouse_id: 6,
+    sku: "SAMPLE-SKU",
+    warehouse_id: 1,
     field_list: [
       {
         field: "grade-field",
@@ -27,15 +27,15 @@ function option(name, value) {
 
 test("converter drops an N-class option instead of shifting it into A", () => {
   const profile = templateToProfile(templateWithGrades([
-    option("T2352黑色N类", "RV_T2352111"),
-    option("T2352黑色A类-九五成新", "RV_T2352111-F1"),
-    option("T2352黑色B类-九成新", "RV_T2352111-F0"),
-    option("T2352黑色C类-五成新", "RV_T2352111-F")
+    option("示例机型N类", "SAMPLE-SKU"),
+    option("示例机型A类-九五成新", "SAMPLE-SKU-A"),
+    option("示例机型B类-九成新", "SAMPLE-SKU-B"),
+    option("示例机型C类-五成新", "SAMPLE-SKU-C")
   ]));
 
-  assert.equal(profile.gradeMap.A.value.sku, "RV_T2352111-F1");
-  assert.equal(profile.gradeMap.B.value.sku, "RV_T2352111-F0");
-  assert.equal(profile.gradeMap.C.value.sku, "RV_T2352111-F");
+  assert.equal(profile.gradeMap.A.value.sku, "SAMPLE-SKU-A");
+  assert.equal(profile.gradeMap.B.value.sku, "SAMPLE-SKU-B");
+  assert.equal(profile.gradeMap.C.value.sku, "SAMPLE-SKU-C");
 });
 
 test("explicit A/B/C labels win over backend option order", () => {
@@ -53,13 +53,13 @@ test("explicit A/B/C labels win over backend option order", () => {
 
 test("an N SKU is excluded even when its label does not say N or 全新", () => {
   const profile = templateToProfile(templateWithGrades([
-    option("新品档", "RV_T2352111-N"),
-    option("A类", "RV_T2352111-F1"),
-    option("B类", "RV_T2352111-F0"),
-    option("C类", "RV_T2352111-F")
+    option("新品档", "SAMPLE-SKU-N"),
+    option("A类", "SAMPLE-SKU-A"),
+    option("B类", "SAMPLE-SKU-B"),
+    option("C类", "SAMPLE-SKU-C")
   ]));
 
-  assert.equal(profile.gradeMap.A.value.sku, "RV_T2352111-F1");
+  assert.equal(profile.gradeMap.A.value.sku, "SAMPLE-SKU-A");
 });
 
 test("legacy freshness-only labels still use their listed order", () => {
@@ -89,13 +89,13 @@ test("validator rejects N options and explicit grade/key mismatches", () => {
     gradeMap: {
       A: {
         field: "grade-field",
-        label: "T2352 N类-全新机",
-        value: { sku: "N-SKU", name: "T2352 N类-全新机", num: 1 }
+        label: "Sample Model N类-全新机",
+        value: { sku: "N-SKU", name: "Sample Model N类-全新机", num: 1 }
       },
       B: {
         field: "grade-field",
-        label: "T2352 C类-五成新",
-        value: { sku: "C-SKU", name: "T2352 C类-五成新", num: 1 }
+        label: "Sample Model C类-五成新",
+        value: { sku: "C-SKU", name: "Sample Model C类-五成新", num: 1 }
       }
     }
   };
@@ -112,7 +112,7 @@ test("validator rejects an N SKU even when the label is ambiguous", () => {
     displayName: "N SKU",
     searchText: "N SKU",
     gradeMap: {
-      A: { field: "grade", label: "新品档", value: { sku: "RV_T2352111-N", name: "新品档" } }
+      A: { field: "grade", label: "新品档", value: { sku: "SAMPLE-SKU-N", name: "新品档" } }
     }
   });
   assert.deepEqual(errors, ["gradeMap.A points to an N/brand-new option"]);
@@ -124,8 +124,8 @@ test("validator accepts unlabeled legacy and single-SKU profiles", () => {
     displayName: "Legacy",
     searchText: "Legacy",
     gradeMap: {
-      A: { field: "grade", label: "Omni C20九五成新", value: { sku: "F1", name: "Omni C20九五成新" } },
-      B: { field: "grade", label: "M14 PLUS", value: { sku: "M14", name: "M14 PLUS" } }
+      A: { field: "grade", label: "Widget Alpha 九五成新", value: { sku: "F1", name: "Widget Alpha 九五成新" } },
+      B: { field: "grade", label: "Widget Beta", value: { sku: "WIDGET-BETA", name: "Widget Beta" } }
     }
   });
 

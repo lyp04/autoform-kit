@@ -24,6 +24,17 @@ function auth(request) {
   return { token, fingerprint };
 }
 
+function validSessionInvalidCodes(value) {
+  return Array.isArray(value) && value.every((item) =>
+    (typeof item === "string" && item.trim() !== "")
+    || (typeof item === "number" && Number.isFinite(item)));
+}
+
+function validSessionInvalidMessagePatterns(value) {
+  return Array.isArray(value)
+    && value.every((item) => typeof item === "string" && item.trim() !== "");
+}
+
 /** Publish-readiness check. Grade is optional (a profile may have no gradeMap); photos may be
  *  expressed as photoSlots (v2) or legacy uploadFields. validateFormProfile already tolerates a
  *  missing gradeMap, so we add only the submit-time requirements here. */
@@ -207,7 +218,21 @@ async function handleApi(request, env, url) {
     if (typeof b.updateRepo === "string") settings.updateRepo = b.updateRepo;
     if (typeof b.webOrigin === "string") settings.webOrigin = b.webOrigin;
     if (typeof b.webReferer === "string") settings.webReferer = b.webReferer;
-    if (b.endpoints && typeof b.endpoints === "object") settings.endpoints = b.endpoints;
+    if (b.endpoints && typeof b.endpoints === "object" && !Array.isArray(b.endpoints)) {
+      settings.endpoints = b.endpoints;
+    }
+    if (Object.prototype.hasOwnProperty.call(b, "sessionInvalidCodes")) {
+      if (!validSessionInvalidCodes(b.sessionInvalidCodes)) {
+        return json({ error: "sessionInvalidCodes must be an array of non-empty strings or numbers" }, 400);
+      }
+      settings.sessionInvalidCodes = b.sessionInvalidCodes;
+    }
+    if (Object.prototype.hasOwnProperty.call(b, "sessionInvalidMessagePatterns")) {
+      if (!validSessionInvalidMessagePatterns(b.sessionInvalidMessagePatterns)) {
+        return json({ error: "sessionInvalidMessagePatterns must be an array of non-empty strings" }, 400);
+      }
+      settings.sessionInvalidMessagePatterns = b.sessionInvalidMessagePatterns;
+    }
     settings.updatedAt = new Date().toISOString();
     const result = await publishCatalog(env, finalProfiles, { publicUrl: env.PUBLIC_URL || url.origin, settings });
     return json({ ok: true, version: result.version });
@@ -257,6 +282,10 @@ export default {
           webOrigin: settings.webOrigin || "",
           webReferer: settings.webReferer || "",
           endpoints: settings.endpoints || {},
+          sessionInvalidCodes: Array.isArray(settings.sessionInvalidCodes)
+            ? settings.sessionInvalidCodes : [],
+          sessionInvalidMessagePatterns: Array.isArray(settings.sessionInvalidMessagePatterns)
+            ? settings.sessionInvalidMessagePatterns : [],
           updatedAt: settings.updatedAt || ""
         });
       }
