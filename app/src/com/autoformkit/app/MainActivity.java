@@ -1940,11 +1940,21 @@ public class MainActivity extends Activity {
      * Clears the pending flag, logs out locally, and returns to the login page with a notice.
      */
     private void handleRemoteLogout(boolean firstHand) {
+        handleRemoteLogout(firstHand, Collections.emptyList());
+    }
+
+    private void handleRemoteLogout(boolean firstHand, List<String> unconfirmedPrintSns) {
         prefs.edit().remove(SessionEventReceiver.PENDING_LOGOUT_KEY).apply();
         boolean had = !savedToken().isEmpty();
+        boolean hasUnconfirmedPrints = unconfirmedPrintSns != null && !unconfirmedPrintSns.isEmpty();
         logoutToSettings(firstHand);
-        if (had) {
-            alert(t("session_expired_title"), t("session_expired_detail"));
+        if (PrintConfirmationRules.shouldShowSessionExpiredNotice(had, hasUnconfirmedPrints)) {
+            String message = t("session_expired_detail");
+            if (hasUnconfirmedPrints) {
+                message += "\n\n" + t("inline_unconfirmed_prefix") + unconfirmedPrintSns.size()
+                    + "\n" + join(unconfirmedPrintSns, ", ");
+            }
+            alert(t("session_expired_title"), message);
         }
     }
 
@@ -2832,6 +2842,8 @@ public class MainActivity extends Activity {
             return;
         }
         try {
+            int[] slotStepBeforeSave = "slot".equals(pendingPhotoSide) ? nextSlotStep() : null;
+            boolean nextSlotAlreadyStarted = "slot".equals(pendingPhotoSide) && slotHasAnyPhotos(1);
             UnitRecord unit = units.get(pendingPhotoIndex);
             if ("front".equals(pendingPhotoSide)) {
                 unit.frontPhoto = path;
@@ -2848,10 +2860,20 @@ public class MainActivity extends Activity {
                 photos.add(path);
             }
             Diagnostics.append(this, "Photo saved for SN=" + unit.sn + " side=" + pendingPhotoSide + " path=" + path + " bytes=" + photoFile.length());
-            if (!isSlotMode() && !"supplemental".equals(pendingPhotoSide)) {
+            if ("slot".equals(pendingPhotoSide)) {
+                int[] slotStepAfterSave = nextSlotStep();
+                if (PhotoTransitionRules.shouldShowSlotTransitionNotice(
+                    photoOrder, slotStepBeforeSave, slotStepAfterSave, nextSlotAlreadyStarted)) {
+                    alert(t("photo_notice"), photoSlotTransitionNotice(
+                        slotTitleForStep(slotStepBeforeSave),
+                        slotTitleForStep(slotStepAfterSave)));
+                }
+            } else if (!isSlotMode() && !"supplemental".equals(pendingPhotoSide)) {
                 PhotoStep next = nextPhotoStep();
                 if (next != null && next.frontsCompleteTransition) {
-                    alert(t("photo_notice"), t("start_back_photos"));
+                    alert(t("photo_notice"), photoSlotTransitionNotice(
+                        legacyPhotoSlotTitle(0, "front"),
+                        legacyPhotoSlotTitle(1, "back")));
                 }
             }
             refreshFormUi();
@@ -3716,6 +3738,7 @@ public class MainActivity extends Activity {
             int consecutiveFailures = 0;
             List<String> errors = new ArrayList<>();
             List<String> inlineFailedSns = new ArrayList<>();
+            List<UnitRecord> deferredNoJobUnits = new ArrayList<>();
             List<JSONObject> roundLedger = new ArrayList<>(); // per-unit outcome (submit + print) for the local ledger
             try {
                 Api api = new Api(apiBase(), token, webFingerprint(), webOrigin(), webReferer(), endpoints());
@@ -3752,9 +3775,15 @@ public class MainActivity extends Activity {
                         // Confirm this unit's label printed; reprint inline (in order) before the next unit.
                         // Done here — not at the end — so reprinted labels stay in sequence. Also serves
                         // as the inter-unit spacing (replaces the old fixed wait).
-                        confirmPrintInline(api, currentUnit, inlineFailedSns);
-                        // record this unit locally: submit OK; printed unless inline-confirm gave up on its label
-                        roundLedger.add(ledgerUnit(currentUnit.sn, true, !inlineFailedSns.contains(currentUnit.sn), currentUnit.grade));
+                        PrintConfirmationRules.Result printResult = confirmPrintInline(api, currentUnit, true);
+                        if (PrintConfirmationRules.shouldAlertAfterInline(printResult)) {
+                            inlineFailedSns.add(currentUnit.sn);
+                        } else if (PrintConfirmationRules.shouldDeferUntilBatchEnd(printResult)) {
+                            deferredNoJobUnits.add(currentUnit);
+                        }
+                        // Missing jobs stay unconfirmed in the ledger until the batch-end pass upgrades them.
+                        roundLedger.add(ledgerUnit(currentUnit.sn, true,
+                                printResult == PrintConfirmationRules.Result.PRINTED, currentUnit.grade));
                     } catch (Exception exc) {
                         if (BackendSessionErrors.isSessionInvalid(exc)) {
                             // submitUnit already returned OK, but auth expired while checking its label.
@@ -3785,8 +3814,24 @@ public class MainActivity extends Activity {
                         // keep going: one bad unit must not strand the rest of the batch
                     }
                 }
+                // A cloud-box job can appear after the per-unit confirmation window. Recheck missing
+                // jobs immediately after the final submission. Only SNs still missing then wait once
+                // (on this worker thread) for the 15-second grace period before the final alert check.
+                if (!sessionExpiredDuringSubmit && !deferredNoJobUnits.isEmpty()) {
+                    try {
+                        recheckDeferredPrintsAtBatchEnd(api, deferredNoJobUnits, inlineFailedSns, roundLedger);
+                    } catch (BackendSessionErrors.SessionInvalidException invalid) {
+                        sessionExpiredDuringSubmit = true;
+                    }
+                }
+                // Session expiry can interrupt the confirmation pass before deferred SNs reach the
+                // failure list. The round ledger already contains every successfully submitted unit,
+                // so merge all still-unconfirmed entries before reporting or returning to login.
+                mergeUnconfirmedRoundLedgerSns(roundLedger, inlineFailedSns);
                 // One merged report for the whole batch (not per-unit) so it stacks on a single issue.
-                if (!inlineFailedSns.isEmpty()) reportInlinePrintFailures(inlineFailedSns);
+                if (!inlineFailedSns.isEmpty()) {
+                    reportInlinePrintFailures(inlineFailedSns);
+                }
                 if (!roundLedger.isEmpty()) saveRoundToLedger(roundLedger);
                 success = errors.isEmpty();
                 }
@@ -3810,7 +3855,11 @@ public class MainActivity extends Activity {
                     submitting = false;
                     hideSubmitLoading();
                     if (finalSessionExpired) {
-                        handleRemoteLogout(true);
+                        String dnsWarning = buildDnsAffectedMessage();
+                        if (finalSubmitted > 0 || !finalErrors.isEmpty() || !finalInlineFailed.isEmpty()) {
+                            notifyRoundToNotify(false, finalSubmitted, finalErrors, finalInlineFailed, dnsWarning);
+                        }
+                        handleRemoteLogout(true, finalInlineFailed);
                         return;
                     }
                     if (finalAborted) {
@@ -4291,13 +4340,18 @@ public class MainActivity extends Activity {
     // the extra wait; a label that prints OK confirms on the first poll and the loop exits immediately.
     private static final int PRINT_CONFIRM_POLLS = 6;
     private static final long PRINT_CONFIRM_POLL_MS = 2500L;
+    // Missing jobs are checked immediately after the final submission. Only those still absent get
+    // this one batch-wide grace period, without adding the delay to an already reconciled batch.
+    private static final long FINAL_PRINT_RECHECK_DELAY_MS = 15000L;
 
     // Called inline during the submit loop, right after a unit submits. Polls for that unit's label to
-    // resolve and reprints it (in order) if it failed, up to AUTO_REPRINT_ROUNDS. SNs that still fail
-    // are collected so the batch can report them once at the end.
-    private void confirmPrintInline(Api api, UnitRecord unit, List<String> failedSns)
+    // resolve and reprints it (in order) if it failed, up to AUTO_REPRINT_ROUNDS. A job that never
+    // appears can be deferred to the batch-end pass instead of being reported prematurely.
+    private PrintConfirmationRules.Result confirmPrintInline(Api api, UnitRecord unit, boolean deferMissingJob)
             throws BackendSessionErrors.SessionInvalidException {
-        if (unit == null || unit.sn == null || unit.sn.isEmpty()) return;
+        if (unit == null || unit.sn == null || unit.sn.isEmpty()) {
+            return PrintConfirmationRules.Result.MISSING;
+        }
         String sn = unit.sn;
         boolean confirmedPrinted = false; // only a real status==1 clears this — everything else is a potential lost unit
         boolean jobEverSeen = false;      // distinguishes "printer offline, job never created" from "job exists but failed"
@@ -4333,14 +4387,112 @@ public class MainActivity extends Activity {
             BackendSessionErrors.SessionInvalidException invalid = BackendSessionErrors.find(error);
             if (invalid != null) throw invalid;
         }
-        // CRITICAL: never silently pass a unit we could not confirm as printed. The old code only counted
-        // status==2 as failed, so an offline printer (job never created -> latestPrintJobForSn always null)
-        // slipped through reported as nothing — the exact "lost half the batch, nobody noticed" failure.
-        // Now anything that isn't a confirmed status==1 is collected so the batch reports it and the
-        // operator is told which SNs to reprint/check.
-        if (!confirmedPrinted) {
-            failedSns.add(sn);
-            appendUnitLog(unit, jobEverSeen ? t("inline_reprint_gaveup") : t("inline_print_no_job"));
+        PrintConfirmationRules.Result result = PrintConfirmationRules.classify(confirmedPrinted, jobEverSeen);
+        if (result == PrintConfirmationRules.Result.FAILED) {
+            appendUnitLog(unit, t("inline_reprint_gaveup"));
+        } else if (result == PrintConfirmationRules.Result.MISSING) {
+            appendUnitLog(unit, deferMissingJob ? t("inline_print_deferred") : t("inline_print_no_job"));
+        }
+        return result;
+    }
+
+    // Recheck only the units whose print job never appeared inline. The first pass is immediate after
+    // the final submission. If any jobs are still missing, wait once for the whole batch on this worker
+    // thread, then check only that subset again. A late status==1 upgrades the in-memory ledger before
+    // it is persisted; a late failed/ongoing job re-enters the normal confirmation/reprint loop; only
+    // SNs still unconfirmed after the delayed pass reach the final batch alert.
+    private void recheckDeferredPrintsAtBatchEnd(Api api, List<UnitRecord> deferredUnits,
+                                                  List<String> failedSns, List<JSONObject> roundLedger)
+            throws BackendSessionErrors.SessionInvalidException {
+        if (deferredUnits == null || deferredUnits.isEmpty()) return;
+
+        List<UnitRecord> stillMissing = new ArrayList<>();
+        for (UnitRecord unit : deferredUnits) {
+            if (unit == null || unit.sn == null || unit.sn.isEmpty()) continue;
+            String sn = unit.sn;
+            setSubmitProgressMessage(t("final_print_recheck") + " " + sn);
+            PrintConfirmationRules.Result result = recheckDeferredPrintUnit(api, unit, false);
+            if (result == PrintConfirmationRules.Result.PRINTED) {
+                markRoundLedgerPrinted(roundLedger, sn);
+            } else if (PrintConfirmationRules.shouldWaitForDelayedBatchCheck(result)) {
+                stillMissing.add(unit);
+            } else if (!failedSns.contains(sn)) {
+                failedSns.add(sn);
+            }
+        }
+
+        if (stillMissing.isEmpty()) return;
+
+        setSubmitProgressMessage(t("final_print_recheck_wait"));
+        try {
+            Thread.sleep(FINAL_PRINT_RECHECK_DELAY_MS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+        }
+
+        for (UnitRecord unit : stillMissing) {
+            if (unit == null || unit.sn == null || unit.sn.isEmpty()) continue;
+            String sn = unit.sn;
+            setSubmitProgressMessage(t("final_print_recheck_after_wait") + " " + sn);
+            PrintConfirmationRules.Result result = recheckDeferredPrintUnit(api, unit, true);
+
+            if (result == PrintConfirmationRules.Result.PRINTED) {
+                markRoundLedgerPrinted(roundLedger, sn);
+            } else if (PrintConfirmationRules.shouldAlertAfterFinalBatchCheck(result)
+                    && !failedSns.contains(sn)) {
+                failedSns.add(sn);
+            }
+        }
+    }
+
+    private PrintConfirmationRules.Result recheckDeferredPrintUnit(Api api, UnitRecord unit,
+                                                                     boolean finalAttempt)
+            throws BackendSessionErrors.SessionInvalidException {
+        try {
+            JSONObject job = latestPrintJobForSn(api, unit.sn);
+            if (job == null) {
+                if (finalAttempt) appendUnitLog(unit, t("inline_print_no_job"));
+                return PrintConfirmationRules.Result.MISSING;
+            }
+            if (job.optInt("status", 0) == 1) {
+                appendUnitLog(unit, t("inline_print_late_confirmed"));
+                return PrintConfirmationRules.Result.PRINTED;
+            }
+            // The job appeared late but is failed/ongoing. Give the existing retry loop its normal
+            // opportunity instead of turning the late appearance into an immediate alert.
+            return confirmPrintInline(api, unit, !finalAttempt);
+        } catch (Exception error) {
+            BackendSessionErrors.SessionInvalidException invalid = BackendSessionErrors.find(error);
+            if (invalid != null) throw invalid;
+            if (finalAttempt) {
+                appendUnitLog(unit, t("print_reconcile_failed") + conciseError(error));
+            }
+            return PrintConfirmationRules.Result.MISSING;
+        }
+    }
+
+    private void markRoundLedgerPrinted(List<JSONObject> roundLedger, String sn) {
+        if (roundLedger == null || sn == null || sn.isEmpty()) return;
+        for (JSONObject unit : roundLedger) {
+            if (unit == null || !sn.equals(unit.optString("sn", ""))) continue;
+            if (!"ok".equals(unit.optString("submit", ""))) return;
+            try {
+                unit.put("printed", "ok");
+            } catch (JSONException ignored) {
+            }
+            return;
+        }
+    }
+
+    private void mergeUnconfirmedRoundLedgerSns(List<JSONObject> roundLedger, List<String> failedSns) {
+        if (roundLedger == null || failedSns == null) return;
+        for (JSONObject unit : roundLedger) {
+            if (unit == null || !PrintConfirmationRules.isSubmittedButUnconfirmed(
+                    unit.optString("submit", ""), unit.optString("printed", ""))) {
+                continue;
+            }
+            String sn = unit.optString("sn", "");
+            if (!sn.isEmpty() && !failedSns.contains(sn)) failedSns.add(sn);
         }
     }
 
@@ -4359,18 +4511,19 @@ public class MainActivity extends Activity {
         return best;
     }
 
-    // One merged report per batch for labels that remain unconfirmed after inline checks. The stable
+    // One merged report per batch for labels that remain unconfirmed after inline checks plus the
+    // final batch pass. The stable
     // stage/errCode fingerprint lets the webhook receiver group repeats; FailureReporter also performs
     // short in-process dedup and attaches the recent in-app log + diagnostics.
     private void reportInlinePrintFailures(List<String> sns) {
         if (sns == null || sns.isEmpty()) return;
         String snList = join(sns, ", ");
-        appendLog("PRINT FAILED after inline retry: " + snList);
+        appendLog("PRINT UNCONFIRMED after final batch check: " + snList);
         Map<String, String> ctx = FailureReporter.ctx(
                 "failed_count", String.valueOf(sns.size()),
                 "failed_sns", snList);
         FailureReporter.get().report("print", "label_failed_after_retry", "cloud_box",
-                "Labels still failed after " + AUTO_REPRINT_ROUNDS + " inline reprints: " + snList,
+                "Labels still unconfirmed after inline retries and final batch check: " + snList,
                 ctx, null);
     }
 
@@ -7476,6 +7629,37 @@ public class MainActivity extends Activity {
         return photos == null ? 0 : photos.size();
     }
 
+    private boolean slotHasAnyPhotos(int slotIndex) {
+        JSONArray slots = photoSlots();
+        JSONObject slot = slots == null ? null : slots.optJSONObject(slotIndex);
+        if (slot == null) return false;
+        String field = slot.optString("field");
+        for (UnitRecord unit : units) {
+            if (slotPhotoCount(unit, field) > 0) return true;
+        }
+        return false;
+    }
+
+    private String slotTitleForStep(int[] step) {
+        if (step == null || step.length < 2) return "";
+        JSONArray slots = photoSlots();
+        JSONObject slot = slots == null ? null : slots.optJSONObject(step[1]);
+        return slot == null ? "" : slotTitleForField(slot.optString("field"));
+    }
+
+    private String legacyPhotoSlotTitle(int slotIndex, String fallbackSide) {
+        JSONArray fields = profile == null ? null : profile.optJSONArray("uploadFields");
+        JSONObject field = fields == null ? null : fields.optJSONObject(slotIndex);
+        if (field == null) return sideName(fallbackSide);
+        String title = localized(field, "title", "titleI18n");
+        return title.isEmpty() ? sideName(fallbackSide) : title;
+    }
+
+    private String photoSlotTransitionNotice(String completedSlotTitle, String nextSlotTitle) {
+        return PhotoTransitionRules.formatSlotTransitionNotice(
+            t("photo_slot_transition"), completedSlotTitle, nextSlotTitle);
+    }
+
     /** First (unit, slotIndex) whose captured count is below the slot's minPhotos; null when all met. */
     private int[] nextSlotStep() {
         JSONArray slots = photoSlots();
@@ -8761,7 +8945,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "拍照没有返回文件";
             case "photo_full_file_missing": return "系统相机没有保存原图，请重拍或更换系统相机。";
             case "photo_notice": return "拍照提示";
-            case "start_back_photos": return "正面已拍完，开始拍反面。";
+            case "photo_slot_transition": return "%1$s已拍完，开始拍%2$s。";
             case "photo_save_failed": return "照片保存失败";
             case "no_sn": return "还没有 SN";
             case "payload_failed": return "Payload 生成失败";
@@ -8796,9 +8980,14 @@ public class MainActivity extends Activity {
             case "print_queue_failed": return "拉取打印队列失败：";
             case "print_reconcile_loading": return "正在拉取打印记录…";
             case "confirming_print": return "确认打印";
+            case "final_print_recheck_wait": return "仍有打印任务未查到，后台等待 15 秒后再查…";
+            case "final_print_recheck": return "批次提交完成，立即复查打印";
+            case "final_print_recheck_after_wait": return "等待后最终复查打印";
             case "inline_reprint_log": return "打印失败，补打第";
             case "inline_reprint_gaveup": return "补打3次仍失败，已记录上报";
+            case "inline_print_deferred": return "提交成功，暂未查到打印任务；先继续，批次结束后复查";
             case "inline_print_no_job": return "提交成功，但未查到打印任务（未确认出标签，可能离线或延迟）";
+            case "inline_print_late_confirmed": return "批次结束复查：已确认打印成功";
             case "inline_unconfirmed_prefix": return "⚠️ 以下台数未确认出标签，请尽快补打/核对，台数：";
             case "print_reconcile_failed": return "拉取打印记录失败：";
             case "print_recent_note": return "只显示最近的打印任务；下面列出失败/未完成的，可补打或查看标签。";
@@ -9105,7 +9294,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "Camera returned no file";
             case "photo_full_file_missing": return "The camera did not save the full-size photo. Retake it or switch camera apps.";
             case "photo_notice": return "Photo notice";
-            case "start_back_photos": return "All fronts are done. Start back photos.";
+            case "photo_slot_transition": return "%1$s is complete. Start %2$s.";
             case "photo_save_failed": return "Photo save failed";
             case "no_sn": return "No SN yet";
             case "payload_failed": return "Payload failed";
@@ -9140,9 +9329,14 @@ public class MainActivity extends Activity {
             case "print_queue_failed": return "Failed to load print queue: ";
             case "print_reconcile_loading": return "Loading print jobs…";
             case "confirming_print": return "Confirming print";
+            case "final_print_recheck_wait": return "Print jobs are still missing; waiting 15 seconds in the background before checking again…";
+            case "final_print_recheck": return "Batch submitted; checking prints now";
+            case "final_print_recheck_after_wait": return "Final print check after waiting";
             case "inline_reprint_log": return "print failed, reprint #";
             case "inline_reprint_gaveup": return "still failed after 3 reprints, logged";
+            case "inline_print_deferred": return "submitted OK, print job not visible yet; continuing and rechecking after the batch";
             case "inline_print_no_job": return "submitted OK, but no print job found (label unconfirmed — offline or delayed)";
+            case "inline_print_late_confirmed": return "final batch check: print confirmed";
             case "inline_unconfirmed_prefix": return "⚠️ Labels NOT confirmed printed — reprint/check these. Count: ";
             case "print_reconcile_failed": return "Failed to load print jobs: ";
             case "print_recent_note": return "Showing recent print jobs; failed/unfinished ones are listed below — reprint or view the label.";
@@ -9449,7 +9643,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "La cámara no devolvió archivo";
             case "photo_full_file_missing": return "La cámara no guardó la foto completa. Repítala o cambie la app de cámara.";
             case "photo_notice": return "Aviso de foto";
-            case "start_back_photos": return "Frentes completos. Empiece con reversos.";
+            case "photo_slot_transition": return "%1$s completado. Empiece con %2$s.";
             case "photo_save_failed": return "Error al guardar foto";
             case "no_sn": return "Aún no hay SN";
             case "payload_failed": return "Error al generar payload";
@@ -9484,9 +9678,14 @@ public class MainActivity extends Activity {
             case "print_queue_failed": return "Error al cargar cola: ";
             case "print_reconcile_loading": return "Cargando trabajos de impresión…";
             case "confirming_print": return "Confirmando impresión";
+            case "final_print_recheck_wait": return "Aún faltan trabajos; esperando 15 segundos en segundo plano antes de verificar de nuevo…";
+            case "final_print_recheck": return "Lote enviado; verificando impresiones ahora";
+            case "final_print_recheck_after_wait": return "Verificación final tras la espera";
             case "inline_reprint_log": return "impresión fallida, reimpresión #";
             case "inline_reprint_gaveup": return "sigue fallando tras 3 reimpresiones, registrado";
+            case "inline_print_deferred": return "envío correcto, trabajo aún no visible; se verificará al terminar el lote";
             case "inline_print_no_job": return "enviado OK, pero sin tarea de impresión (etiqueta no confirmada — sin conexión o retraso)";
+            case "inline_print_late_confirmed": return "verificación final: impresión confirmada";
             case "inline_unconfirmed_prefix": return "⚠️ Etiquetas SIN confirmar — reimprime/verifica. Cantidad: ";
             case "print_reconcile_failed": return "Error al cargar trabajos: ";
             case "print_recent_note": return "Mostrando trabajos recientes; los fallidos/sin terminar se listan abajo — reimprime o ver la etiqueta.";
