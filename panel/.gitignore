@@ -1,0 +1,5 @@
+# Deployment identity and non-secret Cloudflare vars belong only in the local config.
+wrangler.local.toml
+.dev.vars
+.wrangler/
+

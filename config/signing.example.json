@@ -1,0 +1,6 @@
+{
+  "keystore": "config/release.jks",
+  "keyAlias": "",
+  "storePassword": "",
+  "keyPassword": ""
+}

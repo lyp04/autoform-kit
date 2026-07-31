@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  public-surface:
+    name: Public surface · generic policy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Test the fail-closed public scanner
+        run: node tools/public-surface-audit-selftest.mjs
+      - name: Scan the publishable worktree with the generic policy
+        run: node tools/public-surface-audit.mjs --worktree
+
+  panel:
+    name: Panel · Node 22
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Install locked dependencies
+        run: npm ci
+      - name: Run panel tests
+        run: npm test
+
+  release-chain:
+    name: Release chain · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+      - name: Check release scripts and run the isolated release workflow
+        run: |
+          bash -n tools/publish-release.sh tools/private-release-chain-selftest.sh tools/release-workflow-selftest.sh
+          bash tools/release-workflow-selftest.sh
+
+  android:
+    name: Android · JDK 17
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v6
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Run unit tests, lint, and build debug APK
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug --no-daemon

@@ -1,0 +1,407 @@
+{
+  "version": 1,
+  "schemaVersion": 2,
+  "settings": {
+    "sampleCatalog": true,
+    "dailyStats": {
+      "scope": "all_profiles",
+      "groups": [
+        {
+          "id": "sample-ready-summary",
+          "label": "示例完成汇总",
+          "labelI18n": {
+            "en": "Sample ready total",
+            "es": "Total de ejemplo listo"
+          },
+          "uiColor": "#2563EB",
+          "resultKeys": [
+            "sample-ready"
+          ]
+        },
+        {
+          "id": "sample-review-summary",
+          "label": "示例复核汇总",
+          "labelI18n": {
+            "en": "Sample review total",
+            "es": "Total de revisión de ejemplo"
+          },
+          "uiColor": "#7C3AED",
+          "resultKeys": [
+            "sample-review"
+          ]
+        }
+      ]
+    }
+  },
+  "profiles": [
+    {
+      "id": "example-intake",
+      "pickerVisible": true,
+      "brand": "",
+      "model": "Example Intake",
+      "color": "",
+      "displayName": "Example Intake",
+      "searchText": "example intake",
+      "requiresSecondSn": false,
+      "snFields": {
+        "primary": "example_serial"
+      },
+      "snPlugins": [
+        {
+          "key": "primary",
+          "field": "example_serial",
+          "label": "示例编号",
+          "labelI18n": {
+            "en": "Example identifier",
+            "es": "Identificador de ejemplo"
+          },
+          "placeholder": "EXAMPLE-0001",
+          "required": true,
+          "search": true,
+          "scan": true,
+          "scanner": {
+            "autoTextMode": "fallback",
+            "rejectNumericOnly": false,
+            "preferredPrefixes": []
+          }
+        }
+      ],
+      "materialCodePattern": "",
+      "workflow": {
+        "compatibilityReviewed": true,
+        "previousSteps": {
+          "enabled": false,
+          "scanPrecheck": false,
+          "scanPrecheckExcludedResultKeys": [],
+          "triggerResultKeys": [],
+          "artifacts": [],
+          "legacyDraftArtifactKey": "",
+          "templates": [],
+          "identifierCorrection": {
+            "enabled": false,
+            "substitutions": [],
+            "resultKeys": [],
+            "applyAction": "block"
+          },
+          "identifierCasePolicy": "preserve",
+          "scanPrecheckPolicy": {
+            "maxMissingAttempts": 1,
+            "beforeLimitAction": "block",
+            "atLimitAction": "block"
+          },
+          "verifyAttempts": 1,
+          "verifyDelayMs": 0,
+          "recipeMaxAttempts": 1,
+          "recipeRetryDelayMs": 0
+        },
+        "photos": {
+          "includeOptionalSlots": false
+        },
+        "alternateEntries": {
+          "enabled": false,
+          "entries": []
+        },
+        "duplicateCheck": {
+          "enabled": false,
+          "agePolicy": {
+            "unit": "days",
+            "value": 0
+          },
+          "unknownDateAction": "block",
+          "recentAction": "block",
+          "eligibleAction": "block"
+        },
+        "printing": {
+          "enabled": false,
+          "preflightAction": "block",
+          "onUnconfirmed": "stop",
+          "batchEndRecheckMode": "deferred_missing_two_pass",
+          "unknownStatusPresentation": "distinct",
+          "manualReprintEnabled": false,
+          "manualReprintStatuses": [],
+          "manualReprintRequiresConfirmation": true,
+          "confirmationPolls": 1,
+          "confirmationPollIntervalMs": 250,
+          "maxAutoReprints": 0,
+          "finalRecheckDelayMs": 0
+        },
+        "materials": {
+          "refreshBeforeSubmit": false,
+          "missingRecovery": {
+            "enabled": false,
+            "localNotice": false
+          }
+        },
+        "submission": {
+          "maxAttempts": 1,
+          "retryDelayMs": 0,
+          "interUnitDelayMs": 0,
+          "roundLedgerRetentionDays": 1,
+          "maxConsecutiveFailures": 1,
+          "networkRetry": {
+            "maxAttempts": 0,
+            "baseDelayMs": 250,
+            "maxDelayMs": 250
+          }
+        },
+        "notifications": {
+          "submissionSummary": false
+        }
+      },
+      "defaultPhotoOrder": "fronts_then_backs",
+      "template": {
+        "id": 1001,
+        "step": 1,
+        "sku": "EXAMPLE_INTAKE",
+        "warehouseId": 1
+      },
+      "photoSlots": [
+        {
+          "field": "example_overview_photo",
+          "title": "示例全景照片",
+          "titleI18n": {
+            "en": "Example overview photo",
+            "es": "Foto general de ejemplo"
+          },
+          "minPhotos": 1,
+          "maxPhotos": 1,
+          "required": true,
+          "conditional": false
+        },
+        {
+          "field": "example_detail_photo",
+          "title": "示例细节照片",
+          "titleI18n": {
+            "en": "Example detail photo",
+            "es": "Foto de detalle de ejemplo"
+          },
+          "minPhotos": 1,
+          "maxPhotos": 1,
+          "required": true,
+          "conditional": false
+        }
+      ],
+      "gradeMap": {
+        "sample-ready": {
+          "field": "example_result",
+          "label": "示例完成",
+          "labelI18n": {
+            "en": "Sample ready",
+            "es": "Ejemplo listo"
+          },
+          "operatorLabel": "示例就绪",
+          "operatorLabelI18n": {
+            "en": "Sample ready",
+            "es": "Ejemplo listo"
+          },
+          "uiColor": "#2563EB",
+          "value": "SAMPLE_READY"
+        },
+        "sample-review": {
+          "field": "example_result",
+          "label": "示例复核",
+          "labelI18n": {
+            "en": "Sample review",
+            "es": "Revisión de ejemplo"
+          },
+          "operatorLabel": "示例复核",
+          "operatorLabelI18n": {
+            "en": "Sample review",
+            "es": "Revisión de ejemplo"
+          },
+          "uiColor": "#7C3AED",
+          "value": "SAMPLE_REVIEW"
+        }
+      },
+      "uiColor": "#2563EB"
+    },
+    {
+      "id": "example-checklist",
+      "pickerVisible": true,
+      "brand": "",
+      "model": "Example Checklist",
+      "color": "",
+      "displayName": "Example Checklist",
+      "searchText": "example checklist",
+      "requiresSecondSn": true,
+      "snFields": {
+        "primary": "example_record_id",
+        "secondary": "example_reference_id"
+      },
+      "snPlugins": [
+        {
+          "key": "primary",
+          "field": "example_record_id",
+          "label": "记录编号",
+          "labelI18n": {
+            "en": "Record identifier",
+            "es": "Identificador del registro"
+          },
+          "placeholder": "RECORD-0001",
+          "required": true,
+          "search": true,
+          "scan": true,
+          "scanner": {
+            "autoTextMode": "",
+            "rejectNumericOnly": false,
+            "preferredPrefixes": []
+          }
+        },
+        {
+          "key": "secondary",
+          "field": "example_reference_id",
+          "label": "参考编号",
+          "labelI18n": {
+            "en": "Reference identifier",
+            "es": "Identificador de referencia"
+          },
+          "placeholder": "REFERENCE-0001",
+          "required": true,
+          "search": false,
+          "scan": true,
+          "scanner": {
+            "autoTextMode": "",
+            "rejectNumericOnly": false,
+            "preferredPrefixes": []
+          }
+        }
+      ],
+      "materialCodePattern": "",
+      "workflow": {
+        "compatibilityReviewed": true,
+        "previousSteps": {
+          "enabled": false,
+          "scanPrecheck": false,
+          "scanPrecheckExcludedResultKeys": [],
+          "triggerResultKeys": [],
+          "artifacts": [],
+          "legacyDraftArtifactKey": "",
+          "templates": [],
+          "identifierCorrection": {
+            "enabled": false,
+            "substitutions": [],
+            "resultKeys": [],
+            "applyAction": "block"
+          },
+          "identifierCasePolicy": "preserve",
+          "scanPrecheckPolicy": {
+            "maxMissingAttempts": 1,
+            "beforeLimitAction": "block",
+            "atLimitAction": "block"
+          },
+          "verifyAttempts": 1,
+          "verifyDelayMs": 0,
+          "recipeMaxAttempts": 1,
+          "recipeRetryDelayMs": 0
+        },
+        "photos": {
+          "includeOptionalSlots": false
+        },
+        "alternateEntries": {
+          "enabled": false,
+          "entries": []
+        },
+        "duplicateCheck": {
+          "enabled": false,
+          "agePolicy": {
+            "unit": "days",
+            "value": 0
+          },
+          "unknownDateAction": "block",
+          "recentAction": "block",
+          "eligibleAction": "block"
+        },
+        "printing": {
+          "enabled": false,
+          "preflightAction": "block",
+          "onUnconfirmed": "stop",
+          "batchEndRecheckMode": "deferred_missing_two_pass",
+          "unknownStatusPresentation": "distinct",
+          "manualReprintEnabled": false,
+          "manualReprintStatuses": [],
+          "manualReprintRequiresConfirmation": true,
+          "confirmationPolls": 1,
+          "confirmationPollIntervalMs": 250,
+          "maxAutoReprints": 0,
+          "finalRecheckDelayMs": 0
+        },
+        "materials": {
+          "refreshBeforeSubmit": false,
+          "missingRecovery": {
+            "enabled": false,
+            "localNotice": false
+          }
+        },
+        "submission": {
+          "maxAttempts": 1,
+          "retryDelayMs": 0,
+          "interUnitDelayMs": 0,
+          "roundLedgerRetentionDays": 1,
+          "maxConsecutiveFailures": 1,
+          "networkRetry": {
+            "maxAttempts": 0,
+            "baseDelayMs": 250,
+            "maxDelayMs": 250
+          }
+        },
+        "notifications": {
+          "submissionSummary": false
+        }
+      },
+      "defaultPhotoOrder": "front_back_per_unit",
+      "template": {
+        "id": 1002,
+        "step": 1,
+        "sku": "EXAMPLE_CHECKLIST",
+        "warehouseId": 1
+      },
+      "photoSlots": [
+        {
+          "field": "example_attachment",
+          "title": "示例附件照片",
+          "titleI18n": {
+            "en": "Example attachment photo",
+            "es": "Foto adjunta de ejemplo"
+          },
+          "minPhotos": 1,
+          "maxPhotos": 2,
+          "required": true,
+          "conditional": false
+        }
+      ],
+      "gradeMap": {
+        "sample-ready": {
+          "field": "example_result",
+          "label": "示例完成",
+          "labelI18n": {
+            "en": "Sample ready",
+            "es": "Ejemplo listo"
+          },
+          "operatorLabel": "示例就绪",
+          "operatorLabelI18n": {
+            "en": "Sample ready",
+            "es": "Ejemplo listo"
+          },
+          "uiColor": "#0F766E",
+          "value": "SAMPLE_READY"
+        },
+        "sample-review": {
+          "field": "example_result",
+          "label": "示例复核",
+          "labelI18n": {
+            "en": "Sample review",
+            "es": "Revisión de ejemplo"
+          },
+          "operatorLabel": "示例复核",
+          "operatorLabelI18n": {
+            "en": "Sample review",
+            "es": "Revisión de ejemplo"
+          },
+          "uiColor": "#C2410C",
+          "value": "SAMPLE_REVIEW"
+        }
+      },
+      "uiColor": "#0F766E"
+    }
+  ]
+}
