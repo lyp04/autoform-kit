@@ -26,20 +26,26 @@
 | 最小化 runtime diagnostics 总开关 | Panel global `diagnosticsPolicy` | 私有 `form-profiles.json` |
 | 登录页跨表单结果汇总的分组、顺序、标签、颜色与精确 result key | Panel global `dailyStats` structured editor | 私有 `form-profiles.json` |
 | 可选 AI 辅助编辑的临时 instruction、draft 文案与翻译建议；只有经校验、审核并发布的最终字段才成为运行配置 | Panel optional AI editor | 私有 draft；发布后最终字段进入私有 `form-profiles.json` |
-| Brand、版本化公开更新源 `updateSource` v1（仅 owner/repo，并保留旧 App 所需的同值 flat 字段）、最低 App version、request override，以及迁移期旧 flat backend/`notifyWebhook` | Panel global settings | 私有 `form-profiles.json` + 派生 `manifest.json` |
+| 设置页标题的 Brand 前缀、版本化公开更新源 `updateSource` v1（仅 owner/repo，并保留旧 App 所需的同值 flat 字段）、最低 App version、request override，以及迁移期旧 flat backend/`notifyWebhook` | Panel global settings | 私有 `form-profiles.json` + 派生 `manifest.json` |
 | 默认 GitHub catalog repository/branch、可选 `CATALOG_R2` bucket binding 与受审 cutover、Worker identity/routes、Panel public URL、`CF_VERSION_METADATA` binding、精确 source-tag deploy/runtime provenance、AI endpoint/model | Cloudflare deployment config | Cloudflare 与受控私有部署证据 |
 | 默认/迁移期 GitHub token、catalog read key、AI key，以及 private catalog 建立前的 bootstrap adapter | Cloudflare variables / Secrets | Cloudflare |
 | 哪些账号可以 author/publish，以及 Panel 与 login 前 metadata 是否还受 edge/network 限制 | Backend authorization + edge/network policy；Panel 没有独立 RBAC | 部署方 backend / edge |
 | 授权下载会话、短期一次性 ticket audience、原子消费与限流 | 未来的 deployment-owned pairing issuer；当前未实现，入口必须禁用 | 未来的私有服务端状态；不得进入 APK、catalog 或公开下载 URL |
 | Panel URL、catalog read key、操作员语言与 stable/beta update channel（在 2.5 秒内连续点击“中文”5 次切换） | App Settings | 单台设备本地 |
 | 可选跨 App session peer allow-list | Android trust-boundary source（默认空；启用前必须增加 signer verification） | APK build |
-| Package identity、launcher name、icon、签名、version、SDK/release feature gates 与中性的 update protocol defaults | Android build/release config | Source 与 ignored local secrets |
+| Package identity、launcher name、icon、签名、version、SDK/release feature gates、中性的 update protocol defaults，以及 cleartext transport 兼容策略 | Android build/release config | Source 与 ignored local secrets |
 
 `manifest.json` 由 Panel 随每次 catalog 发布自动生成，不是手工自定义入口。`panel-settings.json`
 只有在存在 Worker-only setting 时才创建；显式 absence 是合法 authority 状态，不能用虚构空文件替代。
 三类 authority 文件的精确副本可以进入访问受控的 private backup 或 release evidence，但不得进入
 public source、tag、Release、artifact 或日志。直接编辑 private catalog 文件不是另一套推荐入口；
 需要手工 JSON 时仍应从 Panel 的 advanced JSON 进入并经过同一个发布校验器。
+
+正式 Panel、backend、通知与文件端点必须使用 HTTPS，但当前手工 Panel 地址输入并不强制该协议，
+也不会拒绝 `http://` 地址；release 构建使用的 Android manifest 还为旧集成兼容保留了 cleartext
+traffic。一次性 pairing 入口则只接受 HTTPS origin。是否继续保留 cleartext 是 APK build/release
+边界，不是可下发的 Panel 业务自定义项；将来收紧时必须作为单独的兼容迁移处理，不能把“运营要求
+HTTPS”误写成现有代码保证。
 
 Catalog authority 是部署状态，不是表单运行值：未绑定 `CATALOG_R2` 时 GitHub 为权威；绑定但
 尚无有效 `catalog-current-v1.json` 时只从 GitHub 读取并拒绝所有发布；有效 pointer 建立后 R2
@@ -54,7 +60,7 @@ GitHub。首次 R2-only publish 后 GitHub 可能过期，移除 binding 或直�
 - `notificationAdapter`：只由 Worker 使用的 provider contract；v2 使用 `eventTemplates`，v3 使用两个私有 `summary` / `problem` delivery，并可为固定 round 字段配置受限 formatter；
 - `diagnosticsPolicy`：最小化结构化故障事件总开关，缺失或 `enabled:false` 时关闭；
 - `dailyStats`：可选的登录页全表单汇总；只按 Panel 显式列出的精确 result key 分组，并由组自身保存顺序、标签和颜色，缺失时不启用；
-- `brand`：App 显示名称；
+- `brand`：设置页标题前缀；不改变 launcher 或普通表单页标题；
 - `updateSource` v1：公开 GitHub Releases 更新源，只允许 `version:1`、`owner`、`repo`；Panel 同时保留同值的 `updateOwner` / `updateRepo` 供旧 App 读取；
 - `minAppVersionCode`：允许应用新 catalog 的最低 Android versionCode；
 - `webOrigin` / `webReferer`：backend 明确要求时的 App request override；

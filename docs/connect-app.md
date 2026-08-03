@@ -6,8 +6,14 @@ Panel 是表单与运行策略的主体，App 是通用执行框架。App 不内
 
 在 App Settings 中填写：
 
-- **Panel URL**：已部署 Worker 的 HTTPS base URL；
+- **Panel URL**：已部署 Worker 的 HTTPS base URL（正式环境要求）；
 - **Access key**：与 Cloudflare `CATALOG_READ_KEY` 完全相同。
+
+这里的 HTTPS 是部署要求，不是当前手工输入路径的完整运行时保证：手工设置不强制 HTTPS，也不会
+拒绝 `http://` 地址；release 构建使用的 Android manifest 还为旧集成兼容允许 cleartext traffic。
+一次性 pairing 链接则只接受 HTTPS origin。正式 Panel、backend、通知和文件端点必须全部使用
+HTTPS。若以后关闭 cleartext，应作为独立兼容迁移验证，而不能假定现有 APK 已经拒绝所有 HTTP
+地址。
 
 保存后 App 异步请求：
 

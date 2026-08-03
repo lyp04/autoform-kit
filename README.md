@@ -66,14 +66,14 @@ These are the current customization entry points plus the explicitly reserved fu
 | Panel template import | Read backend templates through the Panel-managed adapter and convert their fields, choices, compatibility metadata, and opaque result mappings into a review-required draft; an administrator reviews required values and visibility before publishing | Private draft, then private `form-profiles.json` |
 | Panel profile editor | Form identity and visibility, localized operator labels (without rewriting legacy/import result labels or values), template/field bindings, choices, opaque result mappings, photo slots and order, scanner policy, materials, alternate entries, previous steps, duplicate checks, printing, retries, and profile notification policy | Private `form-profiles.json` |
 | Panel advanced JSON | Profile fields not yet covered by a structured control, plus opaque legacy extensions required by an already-signed client during a migration window; preserve those extensions privately, do not invent or publish them, and remove them only after old-client replay | Private `form-profiles.json` |
-| Panel global settings | `backendAdapter` (including final-submit outcome policy, the independent previous-step recipe outcome policy, and the release-only controlled-recovery verification capability), live resolvers/builders, printing protocol, brand, request overrides, profile order, explicit cross-profile daily-result groups, versioned public-update repository owner/repo, minimum App version, diagnostics policy, and migration-only legacy fields | Private `form-profiles.json` and derived `manifest.json` |
+| Panel global settings | `backendAdapter` (including final-submit outcome policy, the independent previous-step recipe outcome policy, and the release-only controlled-recovery verification capability), live resolvers/builders, printing protocol, Settings-title brand prefix, request overrides, profile order, explicit cross-profile daily-result groups, versioned public-update repository owner/repo, minimum App version, diagnostics policy, and migration-only legacy fields | Private `form-profiles.json` and derived `manifest.json` |
 | Panel notification settings | Provider protocol, templates, delivery rules, response policy, and timeouts | Optional private Worker-only `panel-settings.json`; absence is valid |
 | Optional Panel AI editor | Draft wording and translation assistance; output remains subject to validation and review | Private draft, then private catalog if published |
 | Panel administration policy | Accounts allowed to author or publish, plus optional edge/network restrictions for the Panel and pre-login metadata | Deployment backend authorization and edge/network policy |
 | Cloudflare deployment configuration | Default private GitHub catalog repository/branch, optional R2 catalog-authority binding and reviewed cutover, Worker identity/routes and public origin, `CF_VERSION_METADATA`, source-tagged deploy/runtime provenance, bootstrap adapter, catalog credentials, optional AI configuration, and migration-only legacy inputs | Bindings, variables, secrets, and private deployment evidence |
 | One-time App pairing issuer | Future authorized download-session policy, short-lived ticket audience, atomic consumption store, and rate limits; this server-side issuer is not implemented, so the pairing action must remain disabled | Future deployment-owned service and private state; never the APK or catalog |
 | App Settings | Panel address/read key plus operator-local language and a device-local stable/beta update channel (toggle by tapping the Chinese language button five times within 2.5 seconds); backend/form policy is not editable here | Device-local storage |
-| Android build/release configuration | Package/launcher name/icon/version/signing, SDK and release feature gates, neutral update-protocol defaults, and the empty-by-default cross-App trust allow-list | Source plus ignored/private signing inputs |
+| Android build/release configuration | Package/launcher name/icon/version/signing, SDK and release feature gates, neutral update-protocol defaults, the cleartext-transport compatibility policy, and the empty-by-default cross-App trust allow-list | Source plus ignored/private signing inputs |
 
 Real profiles, adapters, field/option values, notification settings, deployment update-repository
 coordinates, endpoints, and other production metadata stay in the private Panel/catalog or in the
@@ -89,6 +89,13 @@ come from Panel at runtime.
 The App-side one-time pairing protocol is only a reserved interface. Until a deployment-owned issuer
 and atomic redeem endpoint pass review, manual Panel URL/read-key entry remains authoritative and a
 download page must not advertise pairing as available.
+
+Production Panel, backend, notification, and file endpoints are required to use HTTPS. This is
+currently an operational/deployment requirement rather than a complete runtime guarantee: manual
+Panel entry does not enforce HTTPS or reject an `http://` address, and the Android application
+manifest used by release builds permits cleartext traffic for legacy integration compatibility,
+while the reserved pairing flow accepts HTTPS origins only. Treat the cleartext setting as an
+explicit APK build boundary, not as Panel-owned production customization.
 
 Two Panel safeguards are worth calling out:
 

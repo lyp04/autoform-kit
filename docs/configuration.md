@@ -7,7 +7,7 @@ Panel 是运行配置与表单行为的主体，App 只是读取并执行已验�
 | 配置 | 作用 | 下发给 App |
 | --- | --- | --- |
 | `backendAdapter` | 后端地址、接口、字段与可选模块协议 | 是 |
-| `brand` | App 显示名称 | 是 |
+| `brand` | 设置页标题前缀 | 是 |
 | `notificationAdapter` | Worker 调用通知提供方的协议 | 否 |
 | `diagnosticsPolicy` | 是否允许发送最小化结构化故障事件 | 是；运行时再派生为 `/api/config.notification.diagnosticsEnabled` |
 | `dailyStats` | 登录页按 Panel 显式 result-key 分组进行全表单汇总 | 是 |
@@ -298,7 +298,7 @@ v1 或 v2 都不会自动迁移成 v3，公开仓库中的虚构 adapter 示例�
 
 ## Brand、更新源与请求覆盖
 
-`brand` 只影响运行时文字，不改变 Android package、launcher label、图标或签名。
+`brand` 只作为设置页标题前缀，不改变普通表单页标题、Android package、launcher label、图标或签名。
 
 `updateOwner` / `updateRepo` 必须指向公开 GitHub Releases 仓库，因为 App 不携带 GitHub token。不要用更新仓库存放 private catalog 或内部 release notes。不需要 App 自更新时将两项留空。
 
