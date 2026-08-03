@@ -106,8 +106,8 @@ tools/release.sh \
 7. 标准升级模式比较上一版 APK 的 package 与 signer，并要求新 `versionCode` 更高；历史模式把每个原始 APK 的 package/version/code/signer 与重写前 inventory 精确绑定，并要求 v1.0.0 从 code 1 开始、后续 code 严格递增；
 8. 用 `aapt` 验证新 APK，并按模式验证上一版 APK，或所选原始历史 APK及紧邻的上一份重建候选；
 9. 使用仓库内固定扫描器分别现场审计 source commit 原始对象（含作者、提交者和 message）、该 commit 的 exact Git tree、当前 tracked/untracked non-ignored worktree 和已签名 APK；findings、缺失报告或操作错误都会失败；
-10. 生成 `update.json`、规范化的 release notes 和 candidate manifest；标准升级候选使用 schema 2 并绑定上一版 APK identity，全部历史候选使用 schema 4、显式 `publicationMode`、原始 Release/inventory binding 与无歧义的连续重建 lineage；两者都绑定 source/clean state、APK/update/notes hash、package/version/signer，以及扫描器/policy/input/report SHA 和最终来源 verifier/report/counts；
-11. 再用同一扫描器和私有词表逐字节审计将公开的 `update.json`、`release-notes.txt` 与 `candidate-manifest.json`，任一 finding 或扫描期间字节变化都会失败。
+10. 生成 `update.json`、规范化的 release notes 和 candidate manifest；标准升级候选使用 schema 2 并绑定上一版 APK identity，全部历史候选使用 schema 4、显式 `publicationMode`、最小化的原始 Release/inventory 加密绑定与无歧义的连续重建 lineage；两者都绑定 source/clean state、APK/update/notes hash、package/version/signer，以及扫描器/policy/input/report SHA 和最终来源 verifier/report/counts；
+11. 再用同一扫描器和私有词表逐字节审计 `update.json`、`release-notes.txt` 与 `candidate-manifest.json`，任一 finding 或扫描期间字节变化都会失败。标准 schema-2 的三者都会公开；历史 schema-4 manifest 仅作为本地私有证明，但仍按潜在公开面扫描，历史 Release 只公开 APK、`update.json`、title 与固定 body。
 
 输出：
 
@@ -118,7 +118,7 @@ dist/release-candidates/v1.2.3/release-notes.txt
 dist/release-candidates/v1.2.3/candidate-manifest.json
 ```
 
-`dist/` 被 Git 忽略。同版本候选目录已经存在时脚本会停止，不会覆盖；审查开始后不要修改其中任一文件，任何字节变化都会在第二阶段被拒绝。七个完整扫描报告（commit object、tree、worktree、APK 和三个公开 release metadata 文件）及来源 verifier 的完整报告只存在于权限受限的临时目录，候选落盘前即删除。Candidate manifest 保存 tree、worktree、APK、`update.json` 与 release notes 的公开安全 scanner/policy/input/report SHA、Git tree OID、来源 verifier binding 与无值计数；commit object 由 `source.commit` 选定并在发布阶段重新捕获扫描，candidate manifest 自身的 fresh exact-file report 则因不能自引用而在第二阶段单独交给私有 gate。任何报告都不保存 findings、受审常量或私有词表标识。发布阶段还会用同一 scanner/policy 重新现场扫描全部公开输入并重跑来源 verifier。`tools/release.sh --publish` 已停用并会明确报错。
+`dist/` 被 Git 忽略。同版本候选目录已经存在时脚本会停止，不会覆盖；审查开始后不要修改其中任一文件，任何字节变化都会在第二阶段被拒绝。七个完整扫描报告（commit object、tree、worktree、APK 和三个 release-metadata safety surface）及来源 verifier 的完整报告只存在于权限受限的临时目录，候选落盘前即删除。Candidate manifest 保存 tree、worktree、APK、`update.json` 与 release notes 的公开安全 scanner/policy/input/report SHA、Git tree OID、来源 verifier binding 与无值计数；commit object 由 `source.commit` 选定并在发布阶段重新捕获扫描，candidate manifest 自身的 fresh exact-file report 则因不能自引用而在第二阶段单独交给私有 gate。任何报告都不保存 findings、受审常量或私有词表标识。标准 schema-2 manifest 会成为 Release 资产；历史 schema-4 manifest 始终保持 mode-`0600` 的本地私有证明，不会进入 Git 或 Release。发布阶段还会用同一 scanner/policy 重新现场扫描全部相应输入并重跑来源 verifier。`tools/release.sh --publish` 已停用并会明确报错。
 
 ### 历史 v1.0.0–v1.0.6 净化重建
 
@@ -147,7 +147,7 @@ tools/release.sh \
   --offline
 ```
 
-v1.0.1–v1.0.6 使用相同参数，并额外把 `--historical-previous-candidate` 指向 `dist/release-candidates/<紧邻前一 tag>/candidate-manifest.json`。脚本拒绝跳版、混用 inventory、复用任何旧资产字节或旧的未绑定 `--historical-initial-*` 参数。原始 APK 只用于私下验证 identity；不会复制进候选，也绝不能重新上传。所有七个历史候选均使用 schema 4 与固定 `publicationMode:"historical-rewrite-non-latest"`，Release body 只能是源码绑定的通用固定文本；旧 Release body 已知不安全，绝不继承。
+v1.0.1–v1.0.6 使用相同参数，并额外把 `--historical-previous-candidate` 指向 `dist/release-candidates/<紧邻前一 tag>/candidate-manifest.json`。脚本拒绝跳版、混用 inventory、复用任何旧资产字节或旧的未绑定 `--historical-initial-*` 参数。原始 APK 只用于私下验证 identity；不会复制进候选，也绝不能重新上传。Schema-4 manifest 只保存 exact inventory file SHA-256、inventory identity、所选 Release identity、公开 publication 计划和重建链；不会复制 private inventory 的 `sourceInventory`、完整原始 Release 条目或原始 APK metadata。Validator 与发布器必须每次从仓库外 mode-`0600` inventory 现场派生并核对这些值。所有七个历史候选均使用 schema 4 与固定 `publicationMode:"historical-rewrite-non-latest"`，Release body 只能是源码绑定的通用固定文本；旧 Release body 已知不安全，绝不继承。
 
 标准 `tools/publish-release.sh` 在 gate/GitHub 操作前拒绝所有 schema 3/4、任何 `publicationMode`，以及伪装成 schema 2 的 v1.0.0–v1.0.6。历史候选只能按 tag 顺序交给独立发布器。
 
@@ -173,7 +173,7 @@ node tools/publish-historical-release.mjs \
   --private-wordlist /secure/example/private-publication-wordlist.json
 ```
 
-历史发布器要求 sanitized tag 已存在且精确指向 candidate source commit；它绝不创建、移动或删除 tag。两次完整 preflight 在任何远端副作用前绑定并扫描 commit/tree/worktree、候选四文件、Git refs、GitHub branches/tags（含 protection status contexts/checks）、repository 与 Releases；每次还在隔离 bare repository 中精确 fetch heads、tags 和 pull refs，从这些 roots 逐对象读取并扫描内容，再把 object count、content hash 和 canonical reachable closure 与 incremental attestation 精确比对。第一轮还下载、核对并扫描全部已发布历史前缀的 APK 与 `update.json`。它只上传本次重建 APK 和 `update.json`，先创建 `--draft --latest=false`，下载两项资产重新核对 identity/SHA 并扫描，原 Release 非 draft 时才以 `--draft=false --latest=false` 发布，再次下载和扫描。title、draft/prerelease、资产数量/名称来自 inventory；body 始终使用固定通用文本；历史 Release 永不成为 latest。开始时 `/releases/latest` 只能不存在或精确为 v1.0.7，结束时必须保持同一状态，否则明确失败。
+历史发布器要求 sanitized tag 已存在且精确指向 candidate source commit；它绝不创建、移动或删除 tag。两次完整 preflight 在任何远端副作用前绑定并扫描 commit/tree/worktree、候选四文件、Git refs、GitHub branches/tags（含 protection status contexts/checks）、repository 与 Releases；每次还在隔离 bare repository 中精确 fetch heads、tags 和 pull refs，从这些 roots 逐对象读取并扫描内容，再把 object count、content hash 和 canonical reachable closure 与 incremental attestation 精确比对。第一轮还下载、核对并扫描全部已发布历史前缀的 APK 与 `update.json`。它只上传本次重建 APK 和 `update.json`，绝不上传 schema-4 `candidate-manifest.json`；先创建 `--draft --latest=false`，下载两项资产重新核对 identity/SHA 并扫描，原 Release 非 draft 时才以 `--draft=false --latest=false` 发布，再次下载和扫描。title、draft/prerelease、资产数量/名称从外部 inventory 现场校验；body 始终使用固定通用文本；历史 Release 永不成为 latest。开始时 `/releases/latest` 只能不存在或精确为 v1.0.7，结束时必须保持同一状态，否则明确失败。
 
 Candidate manifest 的 `publicAudit` 绑定结构如下；示例值均为占位符：
 
@@ -693,8 +693,8 @@ Recipe outcome 发布门只针对 `workflow.previousSteps.enabled:true`、`trigg
 
 ## 发布后验证与回滚
 
-1. 从 GitHub Release 重新下载 APK、`update.json` 与 `candidate-manifest.json`；
-2. 独立计算 SHA-256，并与 candidate manifest 及私有 attestation 核对；
+1. 标准 schema-2 Release 重新下载 APK、`update.json` 与 `candidate-manifest.json`；历史 schema-4 Release 只下载 APK 与 `update.json`，远端出现 `candidate-manifest.json` 反而必须停止；
+2. 独立计算 SHA-256；标准发布与已下载 manifest 核对，历史发布与本地 mode-`0600` manifest、外部 inventory 及私有 attestation 核对；
 3. 用 `apksigner verify --print-certs` 核对 signer；
 4. 在已安装上一版的非生产设备上执行覆盖升级；
 5. 确认本地草稿 / 设置迁移、Panel 连接、catalog 同步、登录、提交与更新检查；

@@ -1969,7 +1969,8 @@ if grep -Fq -- $'\t'"${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_AUDIT_INPUT_LOG}"
 fi
 jq -e \
   --arg inventoryFileSha256 "$(sha256_file "${HISTORICAL_INVENTORY}")" \
-  --arg identitySha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --arg selectedReleaseIdentitySha256 "$(jq -er \
+    '.releases[0].releaseIdentitySha256' "${HISTORICAL_INVENTORY}")" \
   --arg fixedBody 'Sanitized historical rebuild from the public autoform-kit framework. No site-specific configuration is included.' \
   '.schemaVersion == 4
     and .publicationMode == "historical-rewrite-non-latest"
@@ -1978,20 +1979,25 @@ jq -e \
     and .lineage.kind == "historical-initial-rebuild"
     and .lineage.sequence == 0
     and .lineage.previousRebuiltCandidate == null
-    and .lineage.originalApk.sha256 == $identitySha256
-    and .artifacts.apk.sha256 != .lineage.originalApk.sha256
+    and (.lineage | keys == ["kind", "previousRebuiltCandidate", "sequence"])
+    and (.historicalRelease | keys == ["inventory", "publication"])
     and .historicalRelease.inventory.fileSha256 == $inventoryFileSha256
-    and .historicalRelease.original.originalApk.sha256 == $identitySha256
+    and .historicalRelease.inventory.selectedReleaseIdentitySha256
+      == $selectedReleaseIdentitySha256
+    and (.historicalRelease.inventory
+      | keys == ["fileSha256", "inventorySha256", "selectedReleaseIdentitySha256"])
     and .historicalRelease.publication.body == $fixedBody
       and .historicalRelease.publication.bodyPolicy == "fixed-source-bound-generic-v1"
       and .historicalRelease.publication.makeLatest == false
       and (.historicalRelease.publication.assets | length) == 2' \
   "${HISTORICAL_MANIFEST}" >/dev/null || \
   {
-    jq '{topKeys:keys, schemaVersion, publicationMode, tag, lineage,
-      artifactApk:.artifacts.apk, inventory:.historicalRelease.inventory,
-      originalApk:.historicalRelease.original.originalApk,
-      publication:.historicalRelease.publication}' "${HISTORICAL_MANIFEST}" >&2
+    jq '{topKeys:keys, schemaVersion, publicationMode, tag,
+      lineageKeys:(.lineage | keys),
+      historicalReleaseKeys:(.historicalRelease | keys),
+      inventoryKeys:(.historicalRelease.inventory | keys),
+      publicationKeys:(.historicalRelease.publication | keys)}' \
+      "${HISTORICAL_MANIFEST}" >&2
     die "historical candidate manifest did not use the strict schema-4 publication lineage"
   }
 grep -q 'historical schema 4 candidate' "${FIXTURE_ROOT}/historical-v4-success.log" || \

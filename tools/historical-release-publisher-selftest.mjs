@@ -668,9 +668,8 @@ function createCandidateDirectory(parent, targetSequence = 0,
         inventory: {
           fileSha256: inventoryFileSha256,
           inventorySha256: inventory.inventorySha256,
-          sourceInventory: inventory.sourceInventory,
+          selectedReleaseIdentitySha256: original.releaseIdentitySha256,
         },
-        original,
         publication: {
           assets: [
             { file: original.originalApk.assetName, name: original.originalApk.assetName,
@@ -689,7 +688,6 @@ function createCandidateDirectory(parent, targetSequence = 0,
       lineage: {
         kind: sequence === 0 ? "historical-initial-rebuild" : "historical-upgrade-rebuild",
         sequence,
-        originalApk: original.originalApk,
         previousRebuiltCandidate,
       },
       publicAudit: {
@@ -1312,6 +1310,16 @@ test("the wrong publication mode is rejected before create/edit", () => {
   assertPreflightRejected(runScenario({
     mutateCandidate(candidate) {
       candidate.publicationMode = "stable";
+    },
+  }));
+});
+
+test("private inventory copies cannot be reintroduced into a schema-4 candidate", () => {
+  assertPreflightRejected(runScenario({
+    mutateCandidate(candidate) {
+      candidate.historicalRelease.inventory.sourceInventory = {};
+      candidate.historicalRelease.original = {};
+      candidate.lineage.originalApk = {};
     },
   }));
 });

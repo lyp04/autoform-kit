@@ -191,9 +191,8 @@ function candidate(inventory, sequence = 0) {
       inventory: {
         fileSha256: HEX("0"),
         inventorySha256: inventory.inventorySha256,
-        sourceInventory: inventory.sourceInventory,
+        selectedReleaseIdentitySha256: original.releaseIdentitySha256,
       },
-      original,
       publication: {
         assets: [
           { file: original.originalApk.assetName, name: original.originalApk.assetName,
@@ -211,7 +210,6 @@ function candidate(inventory, sequence = 0) {
     lineage: {
       kind: sequence === 0 ? "historical-initial-rebuild" : "historical-upgrade-rebuild",
       sequence,
-      originalApk: original.originalApk,
       previousRebuiltCandidate: sequence === 0 ? null : {
         apkSha256: HEX("3"),
         candidateManifestSha256: HEX("4"),
@@ -318,6 +316,9 @@ test("schema-4 candidate has an unambiguous non-latest publication and lineage",
     const inventory = fixture();
     const manifest = candidate(inventory, sequence);
     assert.equal(validateHistoricalCandidate(manifest, inventory, HEX("0")), manifest);
+    assert.equal(Object.hasOwn(manifest.historicalRelease.inventory, "sourceInventory"), false);
+    assert.equal(Object.hasOwn(manifest.historicalRelease, "original"), false);
+    assert.equal(Object.hasOwn(manifest.lineage, "originalApk"), false);
   }
 });
 
@@ -331,8 +332,8 @@ test("historical title binding uses UTF-8 bytes and Unicode code points without 
   original.releaseIdentitySha256 = historicalReleaseIdentity(original);
   inventory.inventorySha256 = historicalInventoryIdentity(inventory);
   manifest.historicalRelease.inventory.inventorySha256 = inventory.inventorySha256;
-  manifest.historicalRelease.original = clone(original);
-  manifest.lineage.originalApk = clone(original.originalApk);
+  manifest.historicalRelease.inventory.selectedReleaseIdentitySha256 =
+    original.releaseIdentitySha256;
   manifest.historicalRelease.publication.title = title;
   assert.equal(validateHistoricalCandidate(manifest, inventory, HEX("0")), manifest);
 });
@@ -383,6 +384,10 @@ test("historical candidate rejects routing, body, asset and predecessor confusio
     (value) => { value.historicalRelease.publication.assets.pop(); },
     (value) => { value.lineage.previousRebuiltCandidate.tag = "v1.0.0"; },
     (value) => { value.historicalRelease.inventory.fileSha256 = HEX("9"); },
+    (value) => { value.historicalRelease.inventory.selectedReleaseIdentitySha256 = HEX("9"); },
+    (value) => { value.historicalRelease.inventory.sourceInventory = {}; },
+    (value) => { value.historicalRelease.original = {}; },
+    (value) => { value.lineage.originalApk = {}; },
   ]) {
     const inventory = fixture();
     const manifest = candidate(inventory, 2);

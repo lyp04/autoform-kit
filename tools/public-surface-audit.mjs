@@ -1632,6 +1632,20 @@ function asciiAlphaNumeric(value) {
   return (lower >= 0x61 && lower <= 0x7a) || (lower >= 0x30 && lower <= 0x39);
 }
 
+function isAsciiHexCharacter(value) {
+  if (value === undefined) return false;
+  const lower = asciiLower(value.charCodeAt(0));
+  return (lower >= 0x61 && lower <= 0x66) || (lower >= 0x30 && lower <= 0x39);
+}
+
+function containedByCompleteSha256HexDigest(text, start, end) {
+  let digestStart = start;
+  while (digestStart > 0 && isAsciiHexCharacter(text[digestStart - 1])) digestStart -= 1;
+  let digestEnd = end;
+  while (digestEnd < text.length && isAsciiHexCharacter(text[digestEnd])) digestEnd += 1;
+  return digestEnd - digestStart === 64;
+}
+
 function containedByDexNumericMetadata(start, end, ranges) {
   return ranges.some((range) => start >= range.start && end <= range.end);
 }
@@ -1717,8 +1731,14 @@ function auditGenericTextView(entry, text, textual, add) {
   });
   forEachMatch(E164_PATTERN, text, (match) =>
     add(entry, "pii-phone", textual ? lineAt(text, match.index) : null));
-  forEachMatch(CN_MOBILE_PATTERN, text, (match) =>
-    add(entry, "pii-phone", textual ? lineAt(text, match.index) : null));
+  forEachMatch(CN_MOBILE_PATTERN, text, (match) => {
+    const numberStart = match.index + match[0].length - 11;
+    const numberEnd = match.index + match[0].length;
+    // Decimal runs occur by chance in digests; exempt only an entire, bounded SHA-256 hex token.
+    if (!containedByCompleteSha256HexDigest(text, numberStart, numberEnd)) {
+      add(entry, "pii-phone", textual ? lineAt(text, match.index) : null);
+    }
+  });
   forEachMatch(CN_ID_PATTERN, text, (match) =>
     add(entry, "pii-government-id", textual ? lineAt(text, match.index) : null));
   forEachMatch(MAC_PATTERN, text, (match) =>

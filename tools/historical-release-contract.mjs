@@ -556,15 +556,14 @@ export function validateHistoricalCandidate(manifest, inventory, inventoryFileSh
       || manifest.artifacts.update.file !== "update.json") fail();
 
   const historical = manifest.historicalRelease;
-  if (!exactKeys(historical, ["inventory", "original", "publication"])
+  if (!exactKeys(historical, ["inventory", "publication"])
       || !exactKeys(historical.inventory,
-        ["fileSha256", "inventorySha256", "sourceInventory"])
+        ["fileSha256", "inventorySha256", "selectedReleaseIdentitySha256"])
       || historical.inventory.fileSha256 !== inventoryFileSha256
-      || historical.inventory.inventorySha256 !== inventory.inventorySha256
-      || canonicalJson(historical.inventory.sourceInventory)
-        !== canonicalJson(inventory.sourceInventory)) fail();
+      || historical.inventory.inventorySha256 !== inventory.inventorySha256) fail();
   const original = selectHistoricalRelease(inventory, manifest.tag);
-  if (canonicalJson(historical.original) !== canonicalJson(original)) fail();
+  if (historical.inventory.selectedReleaseIdentitySha256
+      !== original.releaseIdentitySha256) fail();
   if (manifest.app.packageName !== original.originalApk.packageName
       || manifest.app.versionCode !== original.originalApk.versionCode
       || manifest.app.versionName !== original.originalApk.versionName
@@ -615,9 +614,8 @@ export function validateHistoricalCandidate(manifest, inventory, inventoryFileSh
 
   const lineage = manifest.lineage;
   if (!exactKeys(lineage,
-    ["kind", "originalApk", "previousRebuiltCandidate", "sequence"])
-      || lineage.sequence !== original.sequence
-      || canonicalJson(lineage.originalApk) !== canonicalJson(original.originalApk)) fail();
+    ["kind", "previousRebuiltCandidate", "sequence"])
+      || lineage.sequence !== original.sequence) fail();
   if (lineage.sequence === 0) {
     if (lineage.kind !== "historical-initial-rebuild"
         || lineage.previousRebuiltCandidate !== null) fail();

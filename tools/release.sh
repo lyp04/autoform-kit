@@ -840,8 +840,6 @@ if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
   HISTORICAL_SELECTION_SHA256="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" | sha256_stdin)"
   HISTORICAL_INVENTORY_SHA256="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
     | jq -er '.inventorySha256')"
-  HISTORICAL_SOURCE_INVENTORY_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
-    | jq -ce '.sourceInventory')"
   HISTORICAL_RELEASE_ENTRY_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
     | jq -ce '.release')"
   HISTORICAL_ORIGINAL_ASSET_SHA256_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
@@ -1361,7 +1359,6 @@ jq -nS \
   --arg historicalBody "${NOTES}" \
   --arg historicalInventoryFileSha256 "${HISTORICAL_INVENTORY_FILE_SHA256:-}" \
   --arg historicalInventorySha256 "${HISTORICAL_INVENTORY_SHA256:-}" \
-  --argjson historicalSourceInventory "${HISTORICAL_SOURCE_INVENTORY_JSON:-null}" \
   --argjson historicalEntry "${HISTORICAL_RELEASE_ENTRY_JSON:-null}" \
   --argjson historicalSequence "${HISTORICAL_SEQUENCE:-0}" \
   --arg historicalPreviousTag "${HISTORICAL_PREVIOUS_TAG:-}" \
@@ -1482,9 +1479,8 @@ jq -nS \
       inventory: {
         fileSha256: $historicalInventoryFileSha256,
         inventorySha256: $historicalInventorySha256,
-        sourceInventory: $historicalSourceInventory
+        selectedReleaseIdentitySha256: $historicalEntry.releaseIdentitySha256
       },
-      original: $historicalEntry,
       publication: {
         title: $historicalTitle,
         body: $historicalBody,
@@ -1504,7 +1500,6 @@ jq -nS \
       kind: (if $lineageMode == "historical-initial"
         then "historical-initial-rebuild" else "historical-upgrade-rebuild" end),
       sequence: $historicalSequence,
-      originalApk: $historicalEntry.originalApk,
       previousRebuiltCandidate: (if $lineageMode == "historical-initial" then null else {
         tag: $historicalPreviousTag,
         candidateManifestSha256: $historicalPreviousManifestSha256,

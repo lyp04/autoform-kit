@@ -781,6 +781,62 @@ try {
   fs.unlinkSync(path.join(repo, "contact.txt"));
   fs.unlinkSync(path.join(repo, "adapter.example.json"));
 
+  const syntheticMobile = ["139", "2468", "1357"].join("");
+  const digestWithPhoneDigits = `${"a".repeat(20)}${syntheticMobile}${"b".repeat(33)}`;
+  assert.equal(digestWithPhoneDigits.length, 64);
+
+  const digestOnlyFile = path.join(temporary, "digest-with-phone-digits.txt");
+  fs.writeFileSync(digestOnlyFile, `sha256=${digestWithPhoneDigits}\n`, "utf8");
+  const digestOnlyAudit = audit(["--file", digestOnlyFile]);
+  assert.equal(digestOnlyAudit.status, 0,
+    "an 11-digit run wholly inside one complete SHA-256 hex digest is not a phone");
+  assert.ok(!findingRules(digestOnlyAudit.report).has("pii-phone"));
+
+  for (const hexLength of [63, 65]) {
+    const paddingLength = (hexLength - syntheticMobile.length) / 2;
+    const nearDigest = `${"a".repeat(paddingLength)}${syntheticMobile}${"b".repeat(paddingLength)}`;
+    assert.equal(nearDigest.length, hexLength);
+    const nearDigestFile = path.join(temporary, `near-digest-${hexLength}.txt`);
+    fs.writeFileSync(nearDigestFile, `hex=${nearDigest}\n`, "utf8");
+    const nearDigestAudit = audit(["--file", nearDigestFile]);
+    assert.equal(nearDigestAudit.status, 1);
+    assert.ok(findingRules(nearDigestAudit.report).has("pii-phone"),
+      `a phone inside a ${hexLength}-digit hex token must remain detectable`);
+  }
+
+  const ordinaryPhoneFile = path.join(temporary, "ordinary-phone.txt");
+  fs.writeFileSync(ordinaryPhoneFile, `phone=${syntheticMobile}\n`, "utf8");
+  const ordinaryPhoneAudit = audit(["--file", ordinaryPhoneFile]);
+  assert.equal(ordinaryPhoneAudit.status, 1);
+  assert.ok(findingRules(ordinaryPhoneAudit.report).has("pii-phone"),
+    "an ordinary mobile number must remain detectable");
+  assert.ok(!ordinaryPhoneAudit.stdout.includes(syntheticMobile));
+
+  const digestBesidePhoneFile = path.join(temporary, "digest-beside-phone.txt");
+  fs.writeFileSync(
+    digestBesidePhoneFile,
+    `sha256=${digestWithPhoneDigits}\nphone=${syntheticMobile}\n`,
+    "utf8",
+  );
+  const digestBesidePhoneAudit = audit(["--file", digestBesidePhoneFile]);
+  assert.equal(digestBesidePhoneAudit.status, 1);
+  const digestBesidePhoneFindings = digestBesidePhoneAudit.report.findings.filter(
+    (finding) => finding.ruleId === "pii-phone",
+  );
+  assert.deepEqual(digestBesidePhoneFindings.map((finding) => finding.line), [2],
+    "a phone beside a digest must not inherit the digest exemption");
+
+  const digestPrivateWordlist = path.join(temporary, "digest-private-wordlist.txt");
+  fs.writeFileSync(digestPrivateWordlist, `${syntheticMobile}\n`, "utf8");
+  const digestPrivateAudit = audit([
+    "--file", digestOnlyFile, "--private-wordlist", digestPrivateWordlist,
+  ]);
+  assert.equal(digestPrivateAudit.status, 1);
+  assert.ok(findingRules(digestPrivateAudit.report).has("private-wordlist-term"),
+    "a private wordlist term inside a digest must remain detectable");
+  assert.ok(!findingRules(digestPrivateAudit.report).has("pii-phone"));
+  assert.ok(!digestPrivateAudit.stdout.includes(syntheticMobile));
+
   const safeApk = path.join(temporary, "safe.apk");
   writeStoredOrDeflatedZip(safeApk, [
     {
