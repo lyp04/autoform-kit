@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 PUBLISH_SCRIPT="${SCRIPT_DIR}/publish-release.sh"
 RELEASE_SCRIPT="${SCRIPT_DIR}/release.sh"
 PUBLIC_AUDIT_SCANNER="${SCRIPT_DIR}/public-surface-audit.mjs"
+GITHUB_RELEASE_AUDIT_NORMALIZER="${SCRIPT_DIR}/normalize-github-releases-for-audit.mjs"
 APK_SOURCE_PROVENANCE_VERIFIER="${SCRIPT_DIR}/verify-apk-third-party-sources.mjs"
 
 die() {
@@ -63,6 +64,14 @@ if ! bash "${SCRIPT_DIR}/private-release-chain-selftest.sh" \
   die "isolated private verifier-to-attestation release chain selftest failed"
 fi
 
+GITHUB_METADATA_NORMALIZER_SELFTEST_LOG="${FIXTURE_ROOT}/github-metadata-normalizer-selftest.log"
+if ! "${REAL_NODE}" --test \
+  "${SCRIPT_DIR}/normalize-github-releases-for-audit-selftest.mjs" \
+  >"${GITHUB_METADATA_NORMALIZER_SELFTEST_LOG}" 2>&1; then
+  /bin/cat "${GITHUB_METADATA_NORMALIZER_SELFTEST_LOG}" >&2
+  die "GitHub public metadata normalizer selftest failed"
+fi
+
 BIN_DIR="${FIXTURE_ROOT}/bin"
 CANDIDATE_DIR="${FIXTURE_ROOT}/candidate"
 PREVIOUS_APK="${FIXTURE_ROOT}/previous.apk"
@@ -91,10 +100,17 @@ STALE_UPDATE_REPORT="${FIXTURE_ROOT}/stale-update-report.json"
 STALE_MANIFEST_REPORT="${FIXTURE_ROOT}/stale-manifest-report.json"
 HISTORY_COMMIT_OBJECT_FIXTURE="${FIXTURE_ROOT}/source-commit-object.fixture"
 HISTORY_REMOTE_REFS_FIXTURE="${FIXTURE_ROOT}/remote-refs.fixture"
+HISTORY_BRANCHES_API_FIXTURE="${FIXTURE_ROOT}/branches-api.fixture.json"
+HISTORY_TAGS_API_FIXTURE="${FIXTURE_ROOT}/tags-api.fixture.json"
+HISTORY_REF_API_FIXTURE="${FIXTURE_ROOT}/refs-api.fixture.json"
 HISTORY_RELEASES_API_FIXTURE="${FIXTURE_ROOT}/releases-api.fixture.json"
+HISTORY_RELEASE_AUTHOR_MARKER_API_FIXTURE="${FIXTURE_ROOT}/release-author-marker-api.fixture.json"
+HISTORY_RELEASE_UPLOADER_MARKER_API_FIXTURE="${FIXTURE_ROOT}/release-uploader-marker-api.fixture.json"
 HISTORY_RELEASES_FIXTURE="${FIXTURE_ROOT}/releases.fixture.json"
+HISTORY_REPOSITORY_API_FIXTURE="${FIXTURE_ROOT}/repository-api.fixture.json"
 HISTORY_COMMIT_REPORT="${FIXTURE_ROOT}/source-commit-object-report.json"
 HISTORY_REMOTE_REFS_REPORT="${FIXTURE_ROOT}/remote-refs-report.json"
+HISTORY_REF_API_REPORT="${FIXTURE_ROOT}/refs-api-report.json"
 HISTORY_RELEASES_REPORT="${FIXTURE_ROOT}/releases-report.json"
 STALE_HISTORY_COMMIT_REPORT="${FIXTURE_ROOT}/stale-source-commit-object-report.json"
 mkdir -p "${BIN_DIR}" "${CANDIDATE_DIR}"
@@ -112,7 +128,9 @@ PREVIOUS_VERSION_NAME="1.2.2"
 PREVIOUS_VERSION_CODE="122"
 TREE_OID="cccccccccccccccccccccccccccccccccccccccc"
 SCANNER_BLOB_OID="3333333333333333333333333333333333333333"
+NORMALIZER_BLOB_OID="8888888888888888888888888888888888888888"
 SOURCE_VERIFIER_BLOB_OID="4444444444444444444444444444444444444444"
+HISTORICAL_CONTRACT_BLOB_OID="9999999999999999999999999999999999999999"
 PRIVATE_EVIDENCE_VERIFIER_BLOB_OID="6666666666666666666666666666666666666666"
 PRIVATE_GATE_POLICY_BLOB_OID="7777777777777777777777777777777777777777"
 POLICY_SHA256="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
@@ -128,9 +146,98 @@ MANIFEST_PATH="${CANDIDATE_DIR}/candidate-manifest.json"
 
 printf 'tree %s\n\nautoform release workflow selftest\n' "${TREE_OID}" \
   > "${HISTORY_COMMIT_OBJECT_FIXTURE}"
-printf '%s\trefs/heads/main\n' "${SOURCE_COMMIT}" > "${HISTORY_REMOTE_REFS_FIXTURE}"
+printf '%s\tHEAD\n%s\trefs/heads/main\n' \
+  "${SOURCE_COMMIT}" "${SOURCE_COMMIT}" > "${HISTORY_REMOTE_REFS_FIXTURE}"
+q_branch_commit_url="https://api.github.com/repos/example/autoform-kit/commits/${SOURCE_COMMIT}"
+jq -nS \
+  --arg sourceCommit "${SOURCE_COMMIT}" \
+  --arg commitUrl "${q_branch_commit_url}" \
+  '[[{name:"main",commit:{sha:$sourceCommit,url:$commitUrl},protected:false}]]' \
+  > "${HISTORY_BRANCHES_API_FIXTURE}"
+printf '[[]]\n' > "${HISTORY_TAGS_API_FIXTURE}"
 printf '[[]]\n' > "${HISTORY_RELEASES_API_FIXTURE}"
-printf '[]\n' > "${HISTORY_RELEASES_FIXTURE}"
+jq -nS '{
+  id: 901,
+  node_id: "R_fixture_901",
+  full_name: "example/autoform-kit",
+  visibility: "public",
+  private: false,
+  description: "Generic form framework",
+  homepage: "https://example.invalid/autoform-kit",
+  topics: ["android", "forms"],
+  default_branch: "main"
+}' > "${HISTORY_REPOSITORY_API_FIXTURE}"
+
+write_marker_release_fixture() {
+  local marker_location="$1"
+  local output="$2"
+  jq -nS --arg markerLocation "${marker_location}" '
+    def user($login; $id): {
+      avatar_url:("https://avatars.githubusercontent.com/u/" + ($id|tostring) + "?v=4"),
+      events_url:("https://api.github.com/users/" + $login + "/events{/privacy}"),
+      followers_url:("https://api.github.com/users/" + $login + "/followers"),
+      following_url:("https://api.github.com/users/" + $login + "/following{/other_user}"),
+      gists_url:("https://api.github.com/users/" + $login + "/gists{/gist_id}"),
+      gravatar_id:"", html_url:("https://github.com/" + $login), id:$id,
+      login:$login, node_id:("U_fixture_" + ($id|tostring)),
+      organizations_url:("https://api.github.com/users/" + $login + "/orgs"),
+      received_events_url:("https://api.github.com/users/" + $login + "/received_events"),
+      repos_url:("https://api.github.com/users/" + $login + "/repos"), site_admin:false,
+      starred_url:("https://api.github.com/users/" + $login + "/starred{/owner}{/repo}"),
+      subscriptions_url:("https://api.github.com/users/" + $login + "/subscriptions"),
+      type:"User", url:("https://api.github.com/users/" + $login), user_view_type:"public"
+    };
+    (user("example";101)) as $owner |
+    (user("fictional-private-selftest-marker";102)) as $marker |
+    # Keep generic timestamp member names split in fixture source because a broad
+    # deployment wordlist can otherwise mistake those API keys for private values.
+    [[{
+      assets:[{
+        browser_download_url:"https://github.com/example/autoform-kit/releases/download/v0.9.0/fixture.apk",
+        content_type:"application/vnd.android.package-archive",
+        (("created" + "_at")):"2001-02-03T04:05:06Z",
+        digest:("sha256:" + ("b" * 64)),
+        download_count:0, id:401, label:"Android package", name:"fixture.apk",
+        node_id:"RA_fixture_401", size:123, state:"uploaded",
+        (("updated" + "_at")):"2001-02-03T04:05:07Z",
+        uploader:(if $markerLocation == "uploader" then $marker else $owner end),
+        url:"https://api.github.com/repos/example/autoform-kit/releases/assets/401"
+      }],
+      assets_url:"https://api.github.com/repos/example/autoform-kit/releases/301/assets",
+      author:(if $markerLocation == "author" then $marker else $owner end),
+      body:"Generic release notes",
+      (("created" + "_at")):"2001-02-03T04:05:06Z",
+      draft:false, html_url:"https://github.com/example/autoform-kit/releases/tag/v0.9.0",
+      id:301, immutable:false, name:"autoform-kit 0.9.0", node_id:"R_fixture_301",
+      prerelease:false, published_at:"2001-02-03T04:05:08Z", tag_name:"v0.9.0",
+      tarball_url:"https://api.github.com/repos/example/autoform-kit/tarball/v0.9.0",
+      target_commitish:"main",
+      (("updated" + "_at")):"2001-02-03T04:05:08Z",
+      upload_url:"https://uploads.github.com/repos/example/autoform-kit/releases/301/assets{?name,label}",
+      url:"https://api.github.com/repos/example/autoform-kit/releases/301",
+      zipball_url:"https://api.github.com/repos/example/autoform-kit/zipball/v0.9.0"
+    }]]
+  ' > "${output}"
+}
+write_marker_release_fixture author "${HISTORY_RELEASE_AUTHOR_MARKER_API_FIXTURE}"
+write_marker_release_fixture uploader "${HISTORY_RELEASE_UPLOADER_MARKER_API_FIXTURE}"
+
+"${REAL_NODE}" "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  --remote-refs-input "${HISTORY_REMOTE_REFS_FIXTURE}" \
+  > "${FIXTURE_ROOT}/remote-refs.normalized.fixture.json"
+mv "${FIXTURE_ROOT}/remote-refs.normalized.fixture.json" "${HISTORY_REMOTE_REFS_FIXTURE}.normalized"
+mv "${HISTORY_REMOTE_REFS_FIXTURE}.normalized" "${HISTORY_REMOTE_REFS_FIXTURE}"
+"${REAL_NODE}" "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  --branches-input "${HISTORY_BRANCHES_API_FIXTURE}" \
+  --tags-input "${HISTORY_TAGS_API_FIXTURE}" > "${HISTORY_REF_API_FIXTURE}"
+"${REAL_NODE}" "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  --input "${HISTORY_RELEASES_API_FIXTURE}" > "${HISTORY_RELEASES_FIXTURE}"
 
 printf 'fixture candidate apk bytes\n' > "${APK_PATH}"
 printf 'fixture previous apk bytes\n' > "${PREVIOUS_APK}"
@@ -312,9 +419,46 @@ write_audit_report worktree "${WORKTREE_INPUT_SHA256}" "${WORKTREE_REPORT}"
 write_audit_report apk "${APK_SHA256}" "${APK_REPORT}"
 HISTORY_COMMIT_INPUT_SHA256="$(sha256_file "${HISTORY_COMMIT_OBJECT_FIXTURE}")"
 HISTORY_REMOTE_REFS_INPUT_SHA256="$(sha256_file "${HISTORY_REMOTE_REFS_FIXTURE}")"
+HISTORY_REF_API_INPUT_SHA256="$(sha256_file "${HISTORY_REF_API_FIXTURE}")"
 HISTORY_RELEASES_INPUT_SHA256="$(sha256_file "${HISTORY_RELEASES_FIXTURE}")"
+HISTORY_REMOTE_REFS_IDENTITY_SHA256="$(
+  jq -er '.refIdentitySha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+[[ "$(jq -er '.refIdentitySha256' "${HISTORY_REF_API_FIXTURE}")" \
+  == "${HISTORY_REMOTE_REFS_IDENTITY_SHA256}" ]] || \
+  die "fixture git and API refs do not have the same identity"
+HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256="$(
+  jq -er '.rawSnapshotSha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+HISTORY_PULL_REFS_IDENTITY_SHA256="$(
+  jq -er '.pullRefIdentitySha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+HISTORY_REF_API_SNAPSHOT_SHA256="$(
+  jq -er '.apiSnapshotSha256' "${HISTORY_REF_API_FIXTURE}"
+)"
+HISTORY_RELEASE_API_SNAPSHOT_SHA256="$(
+  jq -er '.apiSnapshotSha256' "${HISTORY_RELEASES_FIXTURE}"
+)"
+HISTORY_REPOSITORY_BINDING_SHA256="$(
+  jq -er '.repositoryBindingSha256' "${HISTORY_RELEASES_FIXTURE}"
+)"
+HISTORY_METADATA_BINDING_BASE="$(jq -cnS \
+  --arg pullRefs "${HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+  --arg refApi "${HISTORY_REF_API_SNAPSHOT_SHA256}" \
+  --arg refs "${HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+  --arg refsRaw "${HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  --arg releases "${HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+  --arg repository "${HISTORY_REPOSITORY_BINDING_SHA256}" \
+  '{pullRefIdentitySha256:$pullRefs, refApiSnapshotSha256:$refApi,
+    refIdentitySha256:$refs, remoteRefsRawSnapshotSha256:$refsRaw,
+    releaseApiSnapshotSha256:$releases, repositoryBindingSha256:$repository}')"
+HISTORY_METADATA_BINDING_SHA256="$(
+  printf 'autoform-kit/github-public-metadata-binding/v2\n%s' \
+    "${HISTORY_METADATA_BINDING_BASE}" | sha256_file /dev/stdin
+)"
 write_audit_report file "${HISTORY_COMMIT_INPUT_SHA256}" "${HISTORY_COMMIT_REPORT}"
 write_audit_report file "${HISTORY_REMOTE_REFS_INPUT_SHA256}" "${HISTORY_REMOTE_REFS_REPORT}"
+write_audit_report file "${HISTORY_REF_API_INPUT_SHA256}" "${HISTORY_REF_API_REPORT}"
 write_audit_report file "${HISTORY_RELEASES_INPUT_SHA256}" "${HISTORY_RELEASES_REPORT}"
 write_audit_report file "${STALE_TREE_INPUT_SHA256}" "${STALE_HISTORY_COMMIT_REPORT}"
 TREE_REPORT_SHA256="$(jq -er '.reportSha256' "${TREE_REPORT}")"
@@ -484,6 +628,19 @@ jq -n \
   --arg candidateApkSha256 "${APK_SHA256}" \
   --arg panelPairSha256 "${PANEL_PAIR_SHA256}" \
   --arg panelCatalogSha256 "${PANEL_CATALOG_SHA256}" \
+  --arg publicHistoryRemoteRefsInputSha256 "${HISTORY_REMOTE_REFS_INPUT_SHA256}" \
+  --arg publicHistoryRefApiInputSha256 "${HISTORY_REF_API_INPUT_SHA256}" \
+  --arg publicHistoryRefApiSnapshotSha256 "${HISTORY_REF_API_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRemoteRefsRawSnapshotSha256 \
+    "${HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRefIdentitySha256 "${HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+  --arg publicHistoryPullRefIdentitySha256 "${HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+  --arg publicHistoryReleaseInputSha256 "${HISTORY_RELEASES_INPUT_SHA256}" \
+  --arg publicHistoryReleaseApiSnapshotSha256 \
+    "${HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRepositoryBindingSha256 \
+    "${HISTORY_REPOSITORY_BINDING_SHA256}" \
+  --arg publicHistoryMetadataBindingSha256 "${HISTORY_METADATA_BINDING_SHA256}" \
   '{
   releaseReady:true,
   structuralValidationPassed:true,
@@ -556,6 +713,20 @@ jq -n \
   runtimeFlowParityPickerSignedDeviceCandidateApkSha256:$candidateApkSha256,
   runtimeFlowParityPickerSignedDevicePanelPairSha256:$panelPairSha256,
   runtimeFlowParityPickerSignedDevicePanelCatalogSha256:$panelCatalogSha256,
+  publicHistoryRemoteRefsInputSha256:$publicHistoryRemoteRefsInputSha256,
+  publicHistoryRefApiInputSha256:$publicHistoryRefApiInputSha256,
+  publicHistoryRefApiSnapshotSha256:$publicHistoryRefApiSnapshotSha256,
+  publicHistoryRemoteRefsRawSnapshotSha256:$publicHistoryRemoteRefsRawSnapshotSha256,
+  publicHistoryRefIdentitySha256:$publicHistoryRefIdentitySha256,
+  publicHistoryPullRefIdentitySha256:$publicHistoryPullRefIdentitySha256,
+  publicHistoryReleaseInputSha256:$publicHistoryReleaseInputSha256,
+  publicHistoryReleaseApiSnapshotSha256:$publicHistoryReleaseApiSnapshotSha256,
+  publicHistoryRepositoryBindingSha256:$publicHistoryRepositoryBindingSha256,
+  publicHistoryMetadataBindingSha256:$publicHistoryMetadataBindingSha256,
+  publicHistoryReachableObjectClosureSha256:("f" * 64),
+  publicHistoryAuditReportSha256:("9" * 64),
+  publicHistoryReachableObjectCount:1,
+  publicHistoryReleaseAuditReachableObjectCount:1,
   missingPathCount:0,
   unresolvedPathCount:0,
   validationErrorCount:0,
@@ -591,8 +762,12 @@ case "${1:-}" in
       printf '%s\n' "${AUTOFORM_SELFTEST_TREE_OID}"
     elif [[ "${last_argument}" == *':tools/public-surface-audit.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_SCANNER_BLOB_OID}"
+    elif [[ "${last_argument}" == *':tools/normalize-github-releases-for-audit.mjs' ]]; then
+      printf '%s\n' "${AUTOFORM_SELFTEST_NORMALIZER_BLOB_OID}"
     elif [[ "${last_argument}" == *':tools/verify-apk-third-party-sources.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_OID}"
+    elif [[ "${last_argument}" == *':tools/historical-release-contract.mjs' ]]; then
+      printf '%s\n' "${AUTOFORM_SELFTEST_HISTORICAL_CONTRACT_BLOB_OID}"
     elif [[ "${last_argument}" == *':tools/verify-private-release-evidence.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}"
     elif [[ "${last_argument}" == *':tools/private-release-gate-policy.json' ]]; then
@@ -603,12 +778,16 @@ case "${1:-}" in
     ;;
   hash-object)
     last_argument="${!#}"
-    if [[ "${last_argument}" == *'/verify-apk-third-party-sources.mjs' ]]; then
+    if [[ "${last_argument}" == *'/normalize-github-releases-for-audit.mjs' ]]; then
+      printf '%s\n' "${AUTOFORM_SELFTEST_NORMALIZER_BLOB_OID}"
+    elif [[ "${last_argument}" == *'/verify-apk-third-party-sources.mjs' ]]; then
       if [[ "${AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_MISMATCH:-false}" == true ]]; then
         printf '5555555555555555555555555555555555555555\n'
       else
         printf '%s\n' "${AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_OID}"
       fi
+    elif [[ "${last_argument}" == *'/historical-release-contract.mjs' ]]; then
+      printf '%s\n' "${AUTOFORM_SELFTEST_HISTORICAL_CONTRACT_BLOB_OID}"
     elif [[ "${last_argument}" == *'/verify-private-release-evidence.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}"
     elif [[ "${last_argument}" == *'/private-release-gate-policy.json' ]]; then
@@ -626,7 +805,16 @@ case "${1:-}" in
     printf 'https://github.com/example/autoform-kit.git\n'
     ;;
   ls-remote)
-    if [[ "${2:-}" == "--heads" ]]; then
+    if [[ "${2:-}" == "origin" && $# -eq 2 ]]; then
+      printf '%s\tHEAD\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
+      printf '%s\trefs/heads/main\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
+      if [[ "${AUTOFORM_SELFTEST_REMOTE_PULL_REF:-false}" == true ]]; then
+        printf '%s\trefs/pull/1/head\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
+      fi
+      if [[ "${AUTOFORM_SELFTEST_REMOTE_UNKNOWN_REF:-false}" == true ]]; then
+        printf '%s\trefs/changes/1\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
+      fi
+    elif [[ "${2:-}" == "--heads" ]]; then
       printf '%s\trefs/heads/main\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
     elif [[ "${2:-}" == "--tags" ]]; then
       :
@@ -691,9 +879,52 @@ EOF
 cat > "${BIN_DIR}/node" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+dynamic_file_report() {
+  local file="$1"
+  local input_sha base canonical report_sha
+  input_sha="$(shasum -a 256 "${file}" | awk '{ print $1 }')"
+  base="$(mktemp "${TMPDIR:-/tmp}/autoform-dynamic-file-report.XXXXXX")"
+  jq -nS \
+    --arg scanner "${AUTOFORM_SELFTEST_PUBLIC_AUDIT_SCANNER_SHA256}" \
+    --arg policy "${AUTOFORM_SELFTEST_AUDIT_POLICY_SHA256}" \
+    --arg thirdPartyPolicy "${AUTOFORM_SELFTEST_THIRD_PARTY_POLICY_SHA256}" \
+    --arg input "${input_sha}" \
+    '{
+      schemaVersion: 1,
+      scannerSha256: $scanner,
+      policySha256: $policy,
+      input: {
+        mode: "file",
+        selection: "exact-regular-file",
+        sha256: $input,
+        entryCount: 1
+      },
+      privatePolicy: {applied: true, wordlistCount: 1, termCount: 1},
+      summary: {passed: true, findingCount: 0},
+      findings: [],
+      thirdPartyPolicy: {
+        manifestSha256: $thirdPartyPolicy,
+        applied: false,
+        profileId: null,
+        matchedEntryCount: 0,
+        applicationDexPolicy: "all application-namespace type descriptors remain strictly scanned"
+      }
+    }' > "${base}"
+  canonical="$(jq -cS . "${base}")"
+  report_sha="$(printf '%s' "${canonical}" | shasum -a 256 | awk '{ print $1 }')"
+  jq -S --arg reportSha256 "${report_sha}" \
+    '. + {reportSha256: $reportSha256}' "${base}"
+  rm -f "${base}"
+}
 program="${1:-}"
 [[ -n "${program}" ]]
 shift
+if [[ "$(basename "${program}")" == "normalize-github-releases-for-audit.mjs" ]]; then
+  exec "${AUTOFORM_SELFTEST_REAL_NODE}" "${program}" "$@"
+fi
+if [[ "$(basename "${program}")" == "historical-release-contract.mjs" ]]; then
+  exec "${AUTOFORM_SELFTEST_REAL_NODE}" "${program}" "$@"
+fi
 if [[ "$(basename "${program}")" == "verify-private-release-evidence.mjs" ]]; then
   NODE_OPTIONS="--require=${AUTOFORM_SELFTEST_FETCH_MOCK}" \
     exec "${AUTOFORM_SELFTEST_REAL_NODE}" "${program}" "$@"
@@ -750,7 +981,23 @@ done
 if [[ "${AUTOFORM_SELFTEST_AUDIT_FAIL:-false}" == true ]]; then
   exit 1
 fi
+if [[ -n "${AUTOFORM_SELFTEST_AUDIT_INPUT_LOG:-}" ]]; then
+  case "${mode}" in
+    apk)
+      printf 'apk\t%s\t%s\n' "${apk}" "$(shasum -a 256 "${apk}" | awk '{ print $1 }')" \
+        >> "${AUTOFORM_SELFTEST_AUDIT_INPUT_LOG}"
+      ;;
+    file)
+      printf 'file\t%s\t%s\n' "${file}" "$(shasum -a 256 "${file}" | awk '{ print $1 }')" \
+        >> "${AUTOFORM_SELFTEST_AUDIT_INPUT_LOG}"
+      ;;
+  esac
+fi
 if [[ "${mode}" == "file" && "${AUTOFORM_SELFTEST_FILE_AUDIT_FAIL:-false}" == true ]]; then
+  exit 1
+fi
+if [[ "${mode}" == "file" ]] \
+  && grep -Fq 'fictional-private-selftest-marker' "${file}"; then
   exit 1
 fi
 case "${mode}" in
@@ -771,6 +1018,10 @@ case "${mode}" in
     fi
     ;;
   file)
+    if [[ "${AUTOFORM_SELFTEST_DYNAMIC_FILE_REPORT:-false}" == true ]]; then
+      dynamic_file_report "${file}"
+      exit 0
+    fi
     case "${file}" in
       "${AUTOFORM_SELFTEST_UPDATE_PATH}")
         if [[ "${AUTOFORM_SELFTEST_STALE_METADATA_REPORT:-false}" == true ]]; then
@@ -795,6 +1046,7 @@ case "${mode}" in
         fi
         ;;
       */remote-refs.scan-input) /bin/cat "${AUTOFORM_SELFTEST_HISTORY_REMOTE_REFS_REPORT}" ;;
+      */github-refs.scan-input.json) /bin/cat "${AUTOFORM_SELFTEST_HISTORY_REF_API_REPORT}" ;;
       */github-releases.scan-input.json) /bin/cat "${AUTOFORM_SELFTEST_HISTORY_RELEASES_REPORT}" ;;
       *) exit 2 ;;
     esac
@@ -835,24 +1087,71 @@ cat > "${BIN_DIR}/aapt" <<'EOF'
 set -euo pipefail
 [[ "${1:-}" == "dump" && "${2:-}" == "badging" && -n "${3:-}" ]]
 if [[ "$(basename "${3}")" == "previous.apk" ]]; then
-  printf "package: name='%s' versionCode='%s' versionName='%s'\n" \
-    "${AUTOFORM_SELFTEST_PACKAGE}" \
-    "${AUTOFORM_SELFTEST_PREVIOUS_VERSION_CODE}" \
-    "${AUTOFORM_SELFTEST_PREVIOUS_VERSION_NAME}"
+  package="${AUTOFORM_SELFTEST_PACKAGE}"
+  version_code="${AUTOFORM_SELFTEST_PREVIOUS_VERSION_CODE}"
+  version_name="${AUTOFORM_SELFTEST_PREVIOUS_VERSION_NAME}"
+elif [[ -n "${AUTOFORM_SELFTEST_IDENTITY_APK:-}" \
+  && "${3}" == "${AUTOFORM_SELFTEST_IDENTITY_APK}" ]]; then
+  package="${AUTOFORM_SELFTEST_IDENTITY_PACKAGE:-${AUTOFORM_SELFTEST_PACKAGE}}"
+  version_code="${AUTOFORM_SELFTEST_IDENTITY_VERSION_CODE:-${AUTOFORM_SELFTEST_VERSION_CODE}}"
+  version_name="${AUTOFORM_SELFTEST_IDENTITY_VERSION_NAME:-${AUTOFORM_SELFTEST_VERSION_NAME}}"
 else
-  printf "package: name='%s' versionCode='%s' versionName='%s'\n" \
-    "${AUTOFORM_SELFTEST_PACKAGE}" \
-    "${AUTOFORM_SELFTEST_VERSION_CODE}" \
-    "${AUTOFORM_SELFTEST_VERSION_NAME}"
+  package="${AUTOFORM_SELFTEST_PACKAGE}"
+  version_code="${AUTOFORM_SELFTEST_VERSION_CODE}"
+  version_name="${AUTOFORM_SELFTEST_VERSION_NAME}"
 fi
+printf "package: name='%s' versionCode='%s' versionName='%s'\n" \
+  "${package}" "${version_code}" "${version_name}"
 EOF
 
 cat > "${BIN_DIR}/apksigner" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-[[ "${1:-}" == "verify" ]]
-printf 'Verifies\n'
-printf 'Signer #1 certificate SHA-256 digest: %s\n' "${AUTOFORM_SELFTEST_SIGNER}"
+case "${1:-}" in
+  sign)
+    output=""
+    input="${!#}"
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "--out" ]]; then
+        output="$2"
+        break
+      fi
+      shift
+    done
+    [[ -n "${output}" ]]
+    /bin/cp "${input}" "${output}"
+    ;;
+  verify)
+    signer="${AUTOFORM_SELFTEST_SIGNER}"
+    apk="${!#}"
+    if [[ -n "${AUTOFORM_SELFTEST_IDENTITY_APK:-}" \
+      && "${apk}" == "${AUTOFORM_SELFTEST_IDENTITY_APK}" ]]; then
+      signer="${AUTOFORM_SELFTEST_IDENTITY_SIGNER:-${signer}}"
+    fi
+    printf 'Verifies\n'
+    printf 'Signer #1 certificate SHA-256 digest: %s\n' "${signer}"
+    ;;
+  *)
+    exit 2
+    ;;
+esac
+EOF
+
+cat > "${BIN_DIR}/zipalign" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  -f)
+    [[ "${2:-}" == "-p" && "${3:-}" == "4" && -n "${4:-}" && -n "${5:-}" ]]
+    /bin/cp "$4" "$5"
+    ;;
+  -c)
+    [[ "${2:-}" == "-p" && "${3:-}" == "4" && -n "${4:-}" ]]
+    ;;
+  *)
+    exit 2
+    ;;
+esac
 EOF
 
 cat > "${BIN_DIR}/gh" <<'EOF'
@@ -865,15 +1164,46 @@ case "${1:-}" in
   api)
     endpoint="${!#}"
     if [[ "${endpoint}" == *'/releases?per_page=100'* ]]; then
-      /bin/cat "${AUTOFORM_SELFTEST_HISTORY_RELEASES_API_FIXTURE}"
+      if [[ "${AUTOFORM_SELFTEST_RELEASE_ACTOR_MARKER:-false}" == true ]]; then
+        /bin/cat "${AUTOFORM_SELFTEST_HISTORY_RELEASE_AUTHOR_MARKER_API_FIXTURE}"
+      elif [[ "${AUTOFORM_SELFTEST_RELEASE_UPLOADER_MARKER:-false}" == true ]]; then
+        /bin/cat "${AUTOFORM_SELFTEST_HISTORY_RELEASE_UPLOADER_MARKER_API_FIXTURE}"
+      else
+        /bin/cat "${AUTOFORM_SELFTEST_HISTORY_RELEASES_API_FIXTURE}"
+      fi
+      exit 0
+    fi
+    if [[ "${endpoint}" == *'/branches?per_page=100'* ]]; then
+      if [[ "${AUTOFORM_SELFTEST_REQUIRED_STATUS_MARKER:-false}" == true ]]; then
+        jq '
+          .[0][0].protected = true
+          | .[0][0].protection_url =
+            "https://api.github.com/repos/example/autoform-kit/branches/main/protection"
+          | .[0][0].protection = {
+              enabled:true,
+              required_status_checks:{
+                checks:[{app_id:null,context:"fictional-private-selftest-marker"}],
+                contexts:["fictional-private-selftest-marker"],
+                enforcement_level:"everyone"
+              }
+            }
+        ' "${AUTOFORM_SELFTEST_HISTORY_BRANCHES_API_FIXTURE}"
+      else
+        /bin/cat "${AUTOFORM_SELFTEST_HISTORY_BRANCHES_API_FIXTURE}"
+      fi
+      exit 0
+    fi
+    if [[ "${endpoint}" == *'/tags?per_page=100'* ]]; then
+      /bin/cat "${AUTOFORM_SELFTEST_HISTORY_TAGS_API_FIXTURE}"
       exit 0
     fi
     if [[ "${endpoint}" == "repos/example/autoform-kit" ]]; then
       visibility="${AUTOFORM_SELFTEST_REPO_VISIBILITY:-public}"
       if [[ "${visibility}" == "public" ]]; then
-        printf '%s\n' '{"node_id":"public-fixture-node","full_name":"example/autoform-kit","visibility":"public","private":false}'
+        /bin/cat "${AUTOFORM_SELFTEST_HISTORY_REPOSITORY_API_FIXTURE}"
       else
-        printf '%s\n' '{"node_id":"public-fixture-node","full_name":"example/autoform-kit","visibility":"private","private":true}'
+        jq '.visibility = "private" | .private = true' \
+          "${AUTOFORM_SELFTEST_HISTORY_REPOSITORY_API_FIXTURE}"
       fi
       exit 0
     fi
@@ -1026,8 +1356,17 @@ jq -n \
   --arg commitObjectReport "${AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_REPORT_SHA256}" \
   --arg remoteRefsInput "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256}" \
   --arg remoteRefsReport "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256}" \
+  --arg refApiInput "${AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256}" \
+  --arg refApiReport "${AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256}" \
   --arg releasesInput "${AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256}" \
   --arg releasesReport "${AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256}" \
+  --arg refIdentity "${AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256}" \
+  --arg pullRefIdentity "${AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256}" \
+  --arg remoteRefsRawSnapshot "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  --arg refApiSnapshot "${AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256}" \
+  --arg releaseApiSnapshot "${AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256}" \
+  --arg repositoryBinding "${AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256}" \
+  --arg metadataBinding "${AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256}" \
   --arg privateVerifier "${AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
   --arg privateEvidenceReport "${AUTOFORM_RELEASE_PRIVATE_EVIDENCE_REPORT_SHA256}" \
   --arg privateMigrationReport "${AUTOFORM_RELEASE_PRIVATE_MIGRATION_REPORT_SHA256}" \
@@ -1118,10 +1457,21 @@ jq -n \
             inputSha256: $remoteRefsInput,
             reportSha256: $remoteRefsReport
           },
+          refsApi: {
+            inputSha256: $refApiInput,
+            reportSha256: $refApiReport
+          },
           releases: {
             inputSha256: $releasesInput,
             reportSha256: $releasesReport
-          }
+          },
+          refIdentitySha256: $refIdentity,
+          pullRefIdentitySha256: $pullRefIdentity,
+          remoteRefsRawSnapshotSha256: $remoteRefsRawSnapshot,
+          refApiSnapshotSha256: $refApiSnapshot,
+          releaseApiSnapshotSha256: $releaseApiSnapshot,
+          repositoryBindingSha256: $repositoryBinding,
+          metadataBindingSha256: $metadataBinding
         }
       },
       privateEvidence: {
@@ -1165,6 +1515,7 @@ chmod 700 \
   "${BIN_DIR}/shasum" \
   "${BIN_DIR}/aapt" \
   "${BIN_DIR}/apksigner" \
+  "${BIN_DIR}/zipalign" \
   "${BIN_DIR}/gh" \
   "${GATE_PROGRAM}"
 
@@ -1191,6 +1542,7 @@ run_publish() {
   AUTOFORM_SELFTEST_SOURCE_COMMIT="${SOURCE_COMMIT}" \
   AUTOFORM_SELFTEST_TREE_OID="${TREE_OID}" \
   AUTOFORM_SELFTEST_SCANNER_BLOB_OID="${SCANNER_BLOB_OID}" \
+  AUTOFORM_SELFTEST_NORMALIZER_BLOB_OID="${NORMALIZER_BLOB_OID}" \
   AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_OID="${SOURCE_VERIFIER_BLOB_OID}" \
   AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID="${PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}" \
   AUTOFORM_SELFTEST_PRIVATE_GATE_POLICY_BLOB_OID="${PRIVATE_GATE_POLICY_BLOB_OID}" \
@@ -1233,9 +1585,15 @@ run_publish() {
   AUTOFORM_SELFTEST_STALE_UPDATE_REPORT="${STALE_UPDATE_REPORT}" \
   AUTOFORM_SELFTEST_STALE_MANIFEST_REPORT_PATH="${STALE_MANIFEST_REPORT}" \
   AUTOFORM_SELFTEST_HISTORY_COMMIT_OBJECT_FIXTURE="${HISTORY_COMMIT_OBJECT_FIXTURE}" \
+  AUTOFORM_SELFTEST_HISTORY_BRANCHES_API_FIXTURE="${HISTORY_BRANCHES_API_FIXTURE}" \
+  AUTOFORM_SELFTEST_HISTORY_TAGS_API_FIXTURE="${HISTORY_TAGS_API_FIXTURE}" \
   AUTOFORM_SELFTEST_HISTORY_RELEASES_API_FIXTURE="${HISTORY_RELEASES_API_FIXTURE}" \
+  AUTOFORM_SELFTEST_HISTORY_RELEASE_AUTHOR_MARKER_API_FIXTURE="${HISTORY_RELEASE_AUTHOR_MARKER_API_FIXTURE}" \
+  AUTOFORM_SELFTEST_HISTORY_RELEASE_UPLOADER_MARKER_API_FIXTURE="${HISTORY_RELEASE_UPLOADER_MARKER_API_FIXTURE}" \
+  AUTOFORM_SELFTEST_HISTORY_REPOSITORY_API_FIXTURE="${HISTORY_REPOSITORY_API_FIXTURE}" \
   AUTOFORM_SELFTEST_HISTORY_COMMIT_REPORT="${HISTORY_COMMIT_REPORT}" \
   AUTOFORM_SELFTEST_HISTORY_REMOTE_REFS_REPORT="${HISTORY_REMOTE_REFS_REPORT}" \
+  AUTOFORM_SELFTEST_HISTORY_REF_API_REPORT="${HISTORY_REF_API_REPORT}" \
   AUTOFORM_SELFTEST_HISTORY_RELEASES_REPORT="${HISTORY_RELEASES_REPORT}" \
   AUTOFORM_SELFTEST_STALE_HISTORY_COMMIT_REPORT="${STALE_HISTORY_COMMIT_REPORT}" \
   AUTOFORM_SELFTEST_AUDIT_FAIL="${AUTOFORM_SELFTEST_AUDIT_FAIL:-false}" \
@@ -1246,6 +1604,11 @@ run_publish() {
   AUTOFORM_SELFTEST_STALE_METADATA_REPORT="${AUTOFORM_SELFTEST_STALE_METADATA_REPORT:-false}" \
   AUTOFORM_SELFTEST_STALE_MANIFEST_REPORT="${AUTOFORM_SELFTEST_STALE_MANIFEST_REPORT:-false}" \
   AUTOFORM_SELFTEST_STALE_HISTORY_REPORT="${AUTOFORM_SELFTEST_STALE_HISTORY_REPORT:-false}" \
+  AUTOFORM_SELFTEST_REQUIRED_STATUS_MARKER="${AUTOFORM_SELFTEST_REQUIRED_STATUS_MARKER:-false}" \
+  AUTOFORM_SELFTEST_RELEASE_ACTOR_MARKER="${AUTOFORM_SELFTEST_RELEASE_ACTOR_MARKER:-false}" \
+  AUTOFORM_SELFTEST_RELEASE_UPLOADER_MARKER="${AUTOFORM_SELFTEST_RELEASE_UPLOADER_MARKER:-false}" \
+  AUTOFORM_SELFTEST_REMOTE_PULL_REF="${AUTOFORM_SELFTEST_REMOTE_PULL_REF:-false}" \
+  AUTOFORM_SELFTEST_REMOTE_UNKNOWN_REF="${AUTOFORM_SELFTEST_REMOTE_UNKNOWN_REF:-false}" \
   AUTOFORM_SELFTEST_MUTATE_APK_DURING_AUDIT="${AUTOFORM_SELFTEST_MUTATE_APK_DURING_AUDIT:-false}" \
   AUTOFORM_SELFTEST_SCANNER_SHA_FLIP="${AUTOFORM_SELFTEST_SCANNER_SHA_FLIP:-false}" \
   AUTOFORM_SELFTEST_SCANNER_PATH="${PUBLIC_AUDIT_SCANNER}" \
@@ -1287,11 +1650,711 @@ grep -q -- '--v4-signing-enabled false' "${RELEASE_SCRIPT}" || \
   die "release.sh did not suppress an unmanifested APK v4 sidecar"
 grep -q -- 'candidate directory contains unexpected artifacts' "${RELEASE_SCRIPT}" || \
   die "release.sh did not reject unmanifested candidate artifacts"
-grep -Fq -- 'git cat-file commit "${SOURCE_HEAD}"' "${RELEASE_SCRIPT}" || \
+grep -Fq -- "git cat-file commit \"\${SOURCE_HEAD}\"" "${RELEASE_SCRIPT}" || \
   die "release.sh did not capture the raw source commit object"
-grep -Fq -- 'run_public_audit "${PUBLIC_COMMIT_REPORT}" file "${PUBLIC_COMMIT_OBJECT}"' \
+grep -Fq -- "run_public_audit \"\${PUBLIC_COMMIT_REPORT}\" file \"\${PUBLIC_COMMIT_OBJECT}\"" \
   "${RELEASE_SCRIPT}" || \
   die "release.sh did not scan source commit metadata with the private wordlist"
+
+# The standard release path must still require a real previous APK. The only
+# exception is a narrowly bounded, one-time historical rebuild of v1.0.0/code 1.
+HISTORICAL_REPO="${FIXTURE_ROOT}/historical-initial-repo"
+HISTORICAL_IDENTITY_APK="${FIXTURE_ROOT}/autoform-kit-1.0.0.apk"
+HISTORICAL_SYMLINK_APK="${FIXTURE_ROOT}/historical-v1.0.0-symlink.apk"
+HISTORICAL_BAD_MODE_APK="${FIXTURE_ROOT}/historical-v1.0.0-bad-mode.apk"
+HISTORICAL_HARDLINK_APK="${FIXTURE_ROOT}/historical-v1.0.0-hardlink.apk"
+HISTORICAL_GRADLE_LOG="${FIXTURE_ROOT}/historical-gradle.log"
+HISTORICAL_AUDIT_INPUT_LOG="${FIXTURE_ROOT}/historical-audit-inputs.log"
+HISTORICAL_JAVA_HOME="${FIXTURE_ROOT}/historical-jdk"
+mkdir -p \
+  "${HISTORICAL_REPO}/app" \
+  "${HISTORICAL_REPO}/config" \
+  "${HISTORICAL_REPO}/tools" \
+  "${HISTORICAL_JAVA_HOME}/bin"
+cp "${RELEASE_SCRIPT}" "${HISTORICAL_REPO}/tools/release.sh"
+cp "${PUBLIC_AUDIT_SCANNER}" \
+  "${HISTORICAL_REPO}/tools/public-surface-audit.mjs"
+cp "${APK_SOURCE_PROVENANCE_VERIFIER}" \
+  "${HISTORICAL_REPO}/tools/verify-apk-third-party-sources.mjs"
+cp "${SCRIPT_DIR}/historical-release-contract.mjs" \
+  "${HISTORICAL_REPO}/tools/historical-release-contract.mjs"
+cp "${SCRIPT_DIR}/apk-third-party-components.json" \
+  "${HISTORICAL_REPO}/tools/apk-third-party-components.json"
+cp "${SCRIPT_DIR}/android-runtime-dependencies.lock.json" \
+  "${HISTORICAL_REPO}/tools/android-runtime-dependencies.lock.json"
+
+cat > "${HISTORICAL_REPO}/app/build.gradle" <<'EOF'
+android {
+  defaultConfig {
+    applicationId "com.example.autoform"
+    versionCode = (project.findProperty("versionCode") ?: "8").toInteger()
+    versionName = (project.findProperty("versionName") ?: "1.0.7").toString()
+  }
+}
+EOF
+cat > "${HISTORICAL_REPO}/config/signing.local.json" <<'EOF'
+{
+  "keystore": "config/release.jks",
+  "keyAlias": "fixture-release",
+  "storePassword": "fixture-store-password",
+  "keyPassword": "fixture-key-password"
+}
+EOF
+printf 'fixture keystore bytes\n' > "${HISTORICAL_REPO}/config/release.jks"
+cat > "${HISTORICAL_REPO}/gradlew" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'called\n' >> "${AUTOFORM_SELFTEST_GRADLE_LOG}"
+mkdir -p app/build/outputs/apk/release
+printf 'fixture candidate apk bytes\n' \
+  > app/build/outputs/apk/release/app-release-unsigned.apk
+if [[ "${AUTOFORM_SELFTEST_MUTATE_IDENTITY_DURING_BUILD:-false}" == true ]]; then
+  printf 'changed-during-build\n' >> "${AUTOFORM_SELFTEST_IDENTITY_APK}"
+fi
+if [[ "${AUTOFORM_SELFTEST_CHANGE_IDENTITY_MODE_DURING_BUILD:-false}" == true ]]; then
+  chmod 644 "${AUTOFORM_SELFTEST_IDENTITY_APK}"
+fi
+if [[ "${AUTOFORM_SELFTEST_SYMLINK_IDENTITY_DURING_BUILD:-false}" == true ]]; then
+  /bin/mv "${AUTOFORM_SELFTEST_IDENTITY_APK}" \
+    "${AUTOFORM_SELFTEST_IDENTITY_APK}.toctou-original"
+  /bin/ln -s "${AUTOFORM_SELFTEST_IDENTITY_APK}.toctou-original" \
+    "${AUTOFORM_SELFTEST_IDENTITY_APK}"
+fi
+EOF
+cat > "${HISTORICAL_JAVA_HOME}/bin/java" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'openjdk version "17.0.0"\n' >&2
+EOF
+chmod 700 \
+  "${HISTORICAL_REPO}/gradlew" \
+  "${HISTORICAL_JAVA_HOME}/bin/java"
+printf 'distinct historical identity apk bytes\n' > "${HISTORICAL_IDENTITY_APK}"
+chmod 600 "${HISTORICAL_IDENTITY_APK}"
+HISTORICAL_IDENTITY_SHA256="$(sha256_file "${HISTORICAL_IDENTITY_APK}")"
+/bin/ln -s "${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_SYMLINK_APK}"
+cp "${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_BAD_MODE_APK}"
+chmod 644 "${HISTORICAL_BAD_MODE_APK}"
+HISTORICAL_BAD_MODE_SHA256="$(sha256_file "${HISTORICAL_BAD_MODE_APK}")"
+HISTORICAL_INVENTORY="${FIXTURE_ROOT}/historical-release-inventory.private.json"
+HISTORICAL_TITLE_FILE="${FIXTURE_ROOT}/historical-release-title.private.txt"
+printf '%s' 'autoform-kit 1.0.0' > "${HISTORICAL_TITLE_FILE}"
+chmod 600 "${HISTORICAL_TITLE_FILE}"
+"${REAL_NODE}" --input-type=module - \
+  "${SCRIPT_DIR}/historical-release-contract.mjs" \
+  "${HISTORICAL_INVENTORY}" \
+  "${HISTORICAL_IDENTITY_SHA256}" <<'EOF'
+import fs from "node:fs";
+import { pathToFileURL } from "node:url";
+const modulePath = process.argv[2];
+const outputPath = process.argv[3];
+const firstApkSha256 = process.argv[4];
+const contract = await import(pathToFileURL(modulePath));
+const hex = (character) => character.repeat(64);
+const releases = contract.HISTORICAL_TAGS.map((tag, sequence) => {
+  const version = tag.slice(1);
+  const title = `autoform-kit ${version}`;
+  return {
+    assets: [
+      {name:`autoform-kit-${version}.apk`,size:sequence === 0 ? 39 : 100 + sequence,
+        sha256:sequence === 0 ? firstApkSha256 : String(sequence).repeat(64)},
+      {name:"update.json",size:40 + sequence,sha256:String(sequence + 2).repeat(64)}
+    ].sort((left, right) => left.name.localeCompare(right.name)),
+    draft:false,prerelease:false,tagName:tag,
+    titleLength:[...title].length,titleSha256:contract.digest(Buffer.from(title))
+  };
+});
+const sourceInventory = {
+  schemaVersion:1,kind:"public-rewrite-inventory",tagCount:7,releaseCount:7,assetCount:14,
+  stableIdentitySha256:hex("a"),inventorySha256:hex("b"),
+  sourceBindings:{gitTagRefListingSha256:hex("c"),releaseMetadataSha256:hex("d")},
+  releases
+};
+const apkIdentities = contract.HISTORICAL_TAGS.map((tag, sequence) => ({
+  tag,packageName:"com.example.autoform",versionCode:sequence + 1,
+  versionName:tag.slice(1),signerSha256:hex("b")
+}));
+const updateIdentities = contract.HISTORICAL_TAGS.map((tag, sequence) => ({
+  tag,packageName:"com.example.autoform",versionCode:sequence + 1,
+  versionName:tag.slice(1),apkAsset:`autoform-kit-${tag.slice(1)}.apk`,
+  apkSha256:releases[sequence].assets.find((asset) => asset.name.endsWith(".apk")).sha256,
+  notesLength:1,notesSha256:hex("e")
+}));
+const inventory = contract.createHistoricalInventory({
+  sourceFileSha256:hex("f"),sourceInventory,apkIdentities,updateIdentities
+});
+fs.writeFileSync(outputPath, `${contract.canonicalJson(inventory)}\n`, {mode:0o600});
+EOF
+chmod 600 "${HISTORICAL_INVENTORY}"
+
+run_historical_release() {
+  (
+    cd "${HISTORICAL_REPO}"
+    PATH="${BIN_DIR}:${PATH}" \
+    JAVA_HOME="${HISTORICAL_JAVA_HOME}" \
+    ZIPALIGN="${BIN_DIR}/zipalign" \
+    AAPT="${BIN_DIR}/aapt" \
+    APKSIGNER="${BIN_DIR}/apksigner" \
+    AUTOFORM_SELFTEST_SOURCE_COMMIT="${SOURCE_COMMIT}" \
+    AUTOFORM_SELFTEST_TREE_OID="${TREE_OID}" \
+    AUTOFORM_SELFTEST_SCANNER_BLOB_OID="${SCANNER_BLOB_OID}" \
+    AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_OID="${SOURCE_VERIFIER_BLOB_OID}" \
+    AUTOFORM_SELFTEST_HISTORICAL_CONTRACT_BLOB_OID="${HISTORICAL_CONTRACT_BLOB_OID}" \
+    AUTOFORM_SELFTEST_SIGNER="${SIGNER_SHA256}" \
+    AUTOFORM_SELFTEST_IDENTITY_SIGNER="${AUTOFORM_SELFTEST_IDENTITY_SIGNER:-${SIGNER_SHA256}}" \
+    AUTOFORM_SELFTEST_IDENTITY_APK="${HISTORICAL_IDENTITY_APK}" \
+    AUTOFORM_SELFTEST_PACKAGE="${AUTOFORM_SELFTEST_PACKAGE:-${PACKAGE_NAME}}" \
+    AUTOFORM_SELFTEST_IDENTITY_PACKAGE="${AUTOFORM_SELFTEST_IDENTITY_PACKAGE:-${PACKAGE_NAME}}" \
+    AUTOFORM_SELFTEST_VERSION_CODE="${AUTOFORM_SELFTEST_VERSION_CODE:-1}" \
+    AUTOFORM_SELFTEST_VERSION_NAME="${AUTOFORM_SELFTEST_VERSION_NAME:-1.0.0}" \
+    AUTOFORM_SELFTEST_IDENTITY_VERSION_CODE="${AUTOFORM_SELFTEST_IDENTITY_VERSION_CODE:-1}" \
+    AUTOFORM_SELFTEST_IDENTITY_VERSION_NAME="${AUTOFORM_SELFTEST_IDENTITY_VERSION_NAME:-1.0.0}" \
+    AUTOFORM_SELFTEST_PREVIOUS_VERSION_CODE="${AUTOFORM_SELFTEST_PREVIOUS_VERSION_CODE:-1}" \
+    AUTOFORM_SELFTEST_PREVIOUS_VERSION_NAME="${AUTOFORM_SELFTEST_PREVIOUS_VERSION_NAME:-1.0.0}" \
+    AUTOFORM_SELFTEST_HISTORY_COMMIT_OBJECT_FIXTURE="${HISTORY_COMMIT_OBJECT_FIXTURE}" \
+    AUTOFORM_SELFTEST_PRIVATE_WORDLIST="${PRIVATE_WORDLIST}" \
+    AUTOFORM_SELFTEST_TREE_REPORT="${TREE_REPORT}" \
+    AUTOFORM_SELFTEST_STALE_TREE_REPORT="${STALE_TREE_REPORT}" \
+    AUTOFORM_SELFTEST_WORKTREE_REPORT="${WORKTREE_REPORT}" \
+    AUTOFORM_SELFTEST_APK_REPORT="${APK_REPORT}" \
+    AUTOFORM_SELFTEST_SOURCE_PROVENANCE_REPORT="${SOURCE_PROVENANCE_REPORT}" \
+    AUTOFORM_SELFTEST_STALE_SOURCE_PROVENANCE_REPORT_PATH="${STALE_SOURCE_PROVENANCE_REPORT}" \
+    AUTOFORM_SELFTEST_PUBLIC_AUDIT_SCANNER_SHA256="${PUBLIC_AUDIT_SCANNER_SHA256}" \
+    AUTOFORM_SELFTEST_AUDIT_POLICY_SHA256="${POLICY_SHA256}" \
+    AUTOFORM_SELFTEST_THIRD_PARTY_POLICY_SHA256="${PUBLIC_THIRD_PARTY_POLICY_SHA256}" \
+    AUTOFORM_SELFTEST_DYNAMIC_FILE_REPORT=true \
+    AUTOFORM_SELFTEST_GRADLE_LOG="${HISTORICAL_GRADLE_LOG}" \
+    AUTOFORM_SELFTEST_AUDIT_INPUT_LOG="${HISTORICAL_AUDIT_INPUT_LOG}" \
+    AUTOFORM_SELFTEST_MUTATE_IDENTITY_DURING_BUILD="${AUTOFORM_SELFTEST_MUTATE_IDENTITY_DURING_BUILD:-false}" \
+    AUTOFORM_SELFTEST_CHANGE_IDENTITY_MODE_DURING_BUILD="${AUTOFORM_SELFTEST_CHANGE_IDENTITY_MODE_DURING_BUILD:-false}" \
+    AUTOFORM_SELFTEST_SYMLINK_IDENTITY_DURING_BUILD="${AUTOFORM_SELFTEST_SYMLINK_IDENTITY_DURING_BUILD:-false}" \
+    AUTOFORM_SELFTEST_REAL_SHASUM="${REAL_SHASUM}" \
+    AUTOFORM_SELFTEST_REAL_SHA256SUM="${REAL_SHA256SUM}" \
+    AUTOFORM_SELFTEST_REAL_NODE="${REAL_NODE}" \
+      bash tools/release.sh "$@"
+  )
+}
+
+if run_historical_release \
+  --version 1.2.4 \
+  --version-code 124 \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/standard-missing-previous.log" 2>&1; then
+  die "standard release path stopped requiring --previous-apk"
+fi
+grep -q -- '--previous-apk is required' \
+  "${FIXTURE_ROOT}/standard-missing-previous.log" || \
+  die "standard release path no longer reports its previous-APK requirement"
+[[ ! -s "${HISTORICAL_GRADLE_LOG}" ]] || \
+  die "missing standard previous APK reached Gradle"
+
+# Historical routing no longer accepts a caller-selected APK+SHA pair. It requires the exact
+# mode-0600 pre-rewrite inventory, the selected original APK, and an exact title file.
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-retired-anchor.log" 2>&1; then
+  die "historical mode accepted the retired unbound identity option"
+fi
+grep -q 'unbound historical identity options were removed' \
+  "${FIXTURE_ROOT}/historical-retired-anchor.log" || \
+  die "historical mode did not explain the retired unbound identity option"
+[[ ! -s "${HISTORICAL_GRADLE_LOG}" ]] || \
+  die "retired historical identity option reached Gradle"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_IDENTITY_APK}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-missing-title.log" 2>&1; then
+  die "historical mode accepted a missing exact title input"
+fi
+grep -q 'requires inventory, original APK, and exact title file' \
+  "${FIXTURE_ROOT}/historical-missing-title.log" || \
+  die "historical mode did not explain its complete inventory inputs"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --notes 'caller supplied old body' \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-title-file "${HISTORICAL_TITLE_FILE}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-custom-body.log" 2>&1; then
+  die "historical mode accepted a caller-controlled Release body"
+fi
+grep -q 'fixed audited body' "${FIXTURE_ROOT}/historical-custom-body.log" || \
+  die "historical mode did not explain the fixed-body boundary"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_SYMLINK_APK}" \
+  --historical-title-file "${HISTORICAL_TITLE_FILE}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-symlink-v4.log" 2>&1; then
+  die "historical mode accepted a symlink original APK"
+fi
+grep -q 'must be a regular non-symlink file' \
+  "${FIXTURE_ROOT}/historical-symlink-v4.log" || \
+  die "historical mode did not explain the original APK symlink rejection"
+
+: > "${HISTORICAL_GRADLE_LOG}"
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_BAD_MODE_APK}" \
+  --historical-title-file "${HISTORICAL_TITLE_FILE}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-bad-mode-v4.log" 2>&1; then
+  die "historical mode accepted a non-private original APK"
+fi
+grep -q 'must be owned by the current user, have mode 0600, and have one link' \
+  "${FIXTURE_ROOT}/historical-bad-mode-v4.log" || \
+  die "historical mode did not explain the original APK permission contract"
+[[ ! -s "${HISTORICAL_GRADLE_LOG}" ]] || \
+  die "bad-mode historical original APK reached Gradle"
+
+/bin/ln "${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_HARDLINK_APK}"
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_HARDLINK_APK}" \
+  --historical-title-file "${HISTORICAL_TITLE_FILE}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-hardlink-v4.log" 2>&1; then
+  die "historical mode accepted a multiply-linked original APK"
+fi
+grep -q 'must be owned by the current user, have mode 0600, and have one link' \
+  "${FIXTURE_ROOT}/historical-hardlink-v4.log" || \
+  die "historical mode did not explain the original APK single-link contract"
+[[ ! -s "${HISTORICAL_GRADLE_LOG}" ]] || \
+  die "hard-linked historical original APK reached Gradle"
+rm -f "${HISTORICAL_HARDLINK_APK}"
+
+: > "${HISTORICAL_AUDIT_INPUT_LOG}"
+run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --config config/signing.local.json \
+  --historical-inventory "${HISTORICAL_INVENTORY}" \
+  --historical-original-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-title-file "${HISTORICAL_TITLE_FILE}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  --offline >"${FIXTURE_ROOT}/historical-v4-success.log" 2>&1 || {
+    /bin/cat "${FIXTURE_ROOT}/historical-v4-success.log" >&2
+    die "historical schema-4 candidate fixture failed"
+  }
+HISTORICAL_CANDIDATE_DIR="${HISTORICAL_REPO}/dist/release-candidates/v1.0.0"
+HISTORICAL_MANIFEST="${HISTORICAL_CANDIDATE_DIR}/candidate-manifest.json"
+HISTORICAL_CANDIDATE_APK="${HISTORICAL_CANDIDATE_DIR}/$(basename "${HISTORICAL_IDENTITY_APK}")"
+[[ "$(find "${HISTORICAL_CANDIDATE_DIR}" -mindepth 1 -maxdepth 1 -type f \
+  | wc -l | tr -d '[:space:]')" == "4" ]] || \
+  die "historical schema-4 candidate did not contain exactly four local files"
+[[ "$(sha256_file "${HISTORICAL_CANDIDATE_APK}")" != "${HISTORICAL_IDENTITY_SHA256}" ]] || \
+  die "historical schema-4 candidate reused the original APK bytes"
+grep -Eq $'^apk\t.*/autoform-kit-1\\.0\\.0\\.apk\t[0-9a-f]{64}$' \
+  "${HISTORICAL_AUDIT_INPUT_LOG}" || \
+  die "historical schema-4 fixture did not scan its generated candidate APK"
+if grep -Fq -- $'\t'"${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_AUDIT_INPUT_LOG}"; then
+  die "historical original APK path entered the public surface scanner"
+fi
+jq -e \
+  --arg inventoryFileSha256 "$(sha256_file "${HISTORICAL_INVENTORY}")" \
+  --arg identitySha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --arg fixedBody 'Sanitized historical rebuild from the public autoform-kit framework. No site-specific configuration is included.' \
+  '.schemaVersion == 4
+    and .publicationMode == "historical-rewrite-non-latest"
+    and (keys == ["app", "artifacts", "historicalRelease", "lineage", "publicAudit", "publicationMode", "schemaVersion", "source", "tag"])
+    and .tag == "v1.0.0"
+    and .lineage.kind == "historical-initial-rebuild"
+    and .lineage.sequence == 0
+    and .lineage.previousRebuiltCandidate == null
+    and .lineage.originalApk.sha256 == $identitySha256
+    and .artifacts.apk.sha256 != .lineage.originalApk.sha256
+    and .historicalRelease.inventory.fileSha256 == $inventoryFileSha256
+    and .historicalRelease.original.originalApk.sha256 == $identitySha256
+    and .historicalRelease.publication.body == $fixedBody
+      and .historicalRelease.publication.bodyPolicy == "fixed-source-bound-generic-v1"
+      and .historicalRelease.publication.makeLatest == false
+      and (.historicalRelease.publication.assets | length) == 2' \
+  "${HISTORICAL_MANIFEST}" >/dev/null || \
+  {
+    jq '{topKeys:keys, schemaVersion, publicationMode, tag, lineage,
+      artifactApk:.artifacts.apk, inventory:.historicalRelease.inventory,
+      originalApk:.historicalRelease.original.originalApk,
+      publication:.historicalRelease.publication}' "${HISTORICAL_MANIFEST}" >&2
+    die "historical candidate manifest did not use the strict schema-4 publication lineage"
+  }
+grep -q 'historical schema 4 candidate' "${FIXTURE_ROOT}/historical-v4-success.log" || \
+  die "historical candidate did not explain its separate publication boundary"
+
+# Reserved historical versions can no longer be generated through the ordinary schema-2 path.
+if AUTOFORM_SELFTEST_VERSION_CODE=2 AUTOFORM_SELFTEST_VERSION_NAME=1.0.1 \
+  run_historical_release \
+    --version 1.0.1 \
+    --version-code 2 \
+    --config config/signing.local.json \
+    --previous-apk "${PREVIOUS_APK}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/reserved-standard-build.log" 2>&1; then
+  die "release.sh generated a schema-2 candidate for a reserved historical version"
+fi
+grep -q 'reserved historical versions require the inventory-bound historical mode' \
+  "${FIXTURE_ROOT}/reserved-standard-build.log" || \
+  die "release.sh did not explain the reserved historical version boundary"
+
+# The normal stable publisher rejects schema 4 before its private gate or GitHub command.
+cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.schema2.backup"
+cp "${HISTORICAL_MANIFEST}" "${MANIFEST_PATH}"
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if run_publish >"${FIXTURE_ROOT}/historical-publisher-v4-rejection.log" 2>&1; then
+  die "standard publisher accepted a historical schema-4 candidate"
+fi
+grep -q 'historical or explicitly routed candidates cannot be published' \
+  "${FIXTURE_ROOT}/historical-publisher-v4-rejection.log" || \
+  die "standard publisher did not explain the historical routing rejection"
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "historical schema 4 reached the private gate or GitHub command"
+mv "${FIXTURE_ROOT}/candidate-manifest.schema2.backup" "${MANIFEST_PATH}"
+
+# Alternate schema numbers, explicit historical routing, reserved tags, and a
+# reserved versionName hidden behind a newer tag all stop before any remote call.
+cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.standard.backup"
+for rejected_schema in 3 4; do
+  jq --argjson schema "${rejected_schema}" '.schemaVersion = $schema' \
+    "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
+  : > "${GATE_LOG}"
+  : > "${GH_LOG}"
+  if run_publish >"${FIXTURE_ROOT}/standard-schema-${rejected_schema}-rejection.log" 2>&1; then
+    die "standard publisher accepted historical schema ${rejected_schema}"
+  fi
+  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+    die "historical schema ${rejected_schema} reached a gate or GitHub command"
+done
+jq '.publicationMode = "historical-rewrite-non-latest"' \
+  "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if run_publish >"${FIXTURE_ROOT}/standard-publication-mode-rejection.log" 2>&1; then
+  die "standard publisher accepted an explicitly historical publication mode"
+fi
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "historical publication mode reached a gate or GitHub command"
+for reserved_version in 1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6; do
+  jq --arg tag "v${reserved_version}" --arg version "${reserved_version}" \
+    '.tag = $tag | .app.versionName = $version' \
+    "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
+  : > "${GATE_LOG}"
+  : > "${GH_LOG}"
+  if run_publish >"${FIXTURE_ROOT}/reserved-${reserved_version}-rejection.log" 2>&1; then
+    die "standard publisher accepted reserved tag v${reserved_version}"
+  fi
+  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+    die "reserved tag v${reserved_version} reached a gate or GitHub command"
+done
+jq '.app.versionName = "1.0.6"' \
+  "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if run_publish >"${FIXTURE_ROOT}/reserved-version-disguise-rejection.log" 2>&1; then
+  die "standard publisher accepted a reserved versionName behind another tag"
+fi
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "reserved versionName disguise reached a gate or GitHub command"
+mv "${FIXTURE_ROOT}/candidate-manifest.standard.backup" "${MANIFEST_PATH}"
+
+# The block below retains obsolete fixture cases only as inert documentation while the new
+# inventory-bound cases above replace them.
+if false; then
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-partial-identity.log" 2>&1; then
+  die "historical initial mode accepted a missing identity SHA-256"
+fi
+grep -q 'requires both identity APK and expected SHA-256' \
+  "${FIXTURE_ROOT}/historical-partial-identity.log" || \
+  die "historical initial mode did not explain its paired identity inputs"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --previous-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-mixed-lineage.log" 2>&1; then
+  die "historical initial mode accepted --previous-apk"
+fi
+grep -q 'mutually exclusive with --previous-apk' \
+  "${FIXTURE_ROOT}/historical-mixed-lineage.log" || \
+  die "historical initial mode did not explain the lineage-mode boundary"
+
+if run_historical_release \
+  --version 1.0.1 \
+  --version-code 2 \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-wrong-version.log" 2>&1; then
+  die "historical initial mode accepted a version other than v1.0.0/code 1"
+fi
+grep -q 'restricted to versionName 1.0.0 and versionCode 1' \
+  "${FIXTURE_ROOT}/historical-wrong-version.log" || \
+  die "historical initial mode did not explain its exact version boundary"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-initial-identity-apk "${HISTORICAL_BAD_MODE_APK}" \
+  --historical-initial-identity-sha256 "${HISTORICAL_BAD_MODE_SHA256}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-bad-mode.log" 2>&1; then
+  die "historical initial mode accepted a non-private identity APK"
+fi
+grep -q 'must have mode 0600' "${FIXTURE_ROOT}/historical-bad-mode.log" || \
+  die "historical initial mode did not explain the identity APK mode requirement"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-initial-identity-apk "${HISTORICAL_SYMLINK_APK}" \
+  --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-symlink.log" 2>&1; then
+  die "historical initial mode accepted a symlink identity APK"
+fi
+grep -q 'must be a regular non-symlink file' \
+  "${FIXTURE_ROOT}/historical-symlink.log" || \
+  die "historical initial mode did not explain the identity symlink rejection"
+
+if run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-initial-identity-sha256 \
+    "0000000000000000000000000000000000000000000000000000000000000000" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  >"${FIXTURE_ROOT}/historical-bad-sha.log" 2>&1; then
+  die "historical initial mode accepted a mismatched identity APK SHA-256"
+fi
+grep -q 'SHA-256 does not match the expected value' \
+  "${FIXTURE_ROOT}/historical-bad-sha.log" || \
+  die "historical initial mode did not explain the identity SHA-256 mismatch"
+
+if AUTOFORM_SELFTEST_IDENTITY_PACKAGE=com.example.wrong \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-package-mismatch.log" 2>&1; then
+  die "historical initial mode accepted an identity APK from another package"
+fi
+grep -q 'package does not match the source applicationId' \
+  "${FIXTURE_ROOT}/historical-package-mismatch.log" || \
+  die "historical initial mode did not explain the identity package mismatch"
+
+if AUTOFORM_SELFTEST_IDENTITY_VERSION_CODE=2 \
+  AUTOFORM_SELFTEST_IDENTITY_VERSION_NAME=1.0.1 \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-version-mismatch.log" 2>&1; then
+  die "historical initial mode accepted a non-v1.0.0/code-1 identity APK"
+fi
+grep -q 'identity APK must be versionName 1.0.0 and versionCode 1' \
+  "${FIXTURE_ROOT}/historical-version-mismatch.log" || \
+  die "historical initial mode did not explain the identity version mismatch"
+
+if AUTOFORM_SELFTEST_IDENTITY_SIGNER=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-signer-mismatch.log" 2>&1; then
+  die "historical initial mode accepted a different candidate signer"
+fi
+grep -q 'certificate does not match the historical identity anchor' \
+  "${FIXTURE_ROOT}/historical-signer-mismatch.log" || \
+  die "historical initial mode did not explain the signer mismatch"
+
+if AUTOFORM_SELFTEST_MUTATE_IDENTITY_DURING_BUILD=true \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-bytes-toctou.log" 2>&1; then
+  die "historical initial mode accepted identity APK bytes changing during the build"
+fi
+grep -q 'identity APK changed while building the candidate' \
+  "${FIXTURE_ROOT}/historical-bytes-toctou.log" || \
+  die "historical initial mode did not explain the identity byte change"
+printf 'distinct historical identity apk bytes\n' > "${HISTORICAL_IDENTITY_APK}"
+chmod 600 "${HISTORICAL_IDENTITY_APK}"
+
+if AUTOFORM_SELFTEST_CHANGE_IDENTITY_MODE_DURING_BUILD=true \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-mode-toctou.log" 2>&1; then
+  die "historical initial mode accepted identity APK permissions changing during the build"
+fi
+grep -q 'must have mode 0600' "${FIXTURE_ROOT}/historical-mode-toctou.log" || \
+  die "historical initial mode did not recheck identity APK permissions"
+chmod 600 "${HISTORICAL_IDENTITY_APK}"
+
+if AUTOFORM_SELFTEST_SYMLINK_IDENTITY_DURING_BUILD=true \
+  run_historical_release \
+    --version 1.0.0 \
+    --version-code 1 \
+    --config config/signing.local.json \
+    --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+    --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+    --private-wordlist "${PRIVATE_WORDLIST}" \
+    >"${FIXTURE_ROOT}/historical-symlink-toctou.log" 2>&1; then
+  die "historical initial mode accepted an identity APK symlink replacement"
+fi
+grep -q 'must be a regular non-symlink file' \
+  "${FIXTURE_ROOT}/historical-symlink-toctou.log" || \
+  die "historical initial mode did not recheck the identity APK file type"
+[[ -L "${HISTORICAL_IDENTITY_APK}" \
+  && -f "${HISTORICAL_IDENTITY_APK}.toctou-original" ]] || \
+  die "historical symlink TOCTOU fixture did not replace the identity pathname"
+/bin/rm "${HISTORICAL_IDENTITY_APK}"
+/bin/mv "${HISTORICAL_IDENTITY_APK}.toctou-original" \
+  "${HISTORICAL_IDENTITY_APK}"
+chmod 600 "${HISTORICAL_IDENTITY_APK}"
+
+: > "${HISTORICAL_AUDIT_INPUT_LOG}"
+run_historical_release \
+  --version 1.0.0 \
+  --version-code 1 \
+  --config config/signing.local.json \
+  --historical-initial-identity-apk "${HISTORICAL_IDENTITY_APK}" \
+  --historical-initial-identity-sha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  --offline >"${FIXTURE_ROOT}/historical-success.log" 2>&1 || {
+    /bin/cat "${FIXTURE_ROOT}/historical-success.log" >&2
+    die "historical initial candidate fixture failed"
+  }
+HISTORICAL_CANDIDATE_DIR="${HISTORICAL_REPO}/dist/release-candidates/v1.0.0"
+HISTORICAL_MANIFEST="${HISTORICAL_CANDIDATE_DIR}/candidate-manifest.json"
+HISTORICAL_CANDIDATE_APK="${HISTORICAL_CANDIDATE_DIR}/autoform-kit-1.0.0.apk"
+[[ "$(find "${HISTORICAL_CANDIDATE_DIR}" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d '[:space:]')" \
+  == "4" ]] || die "historical initial candidate did not contain exactly four files"
+[[ "$(sha256_file "${HISTORICAL_CANDIDATE_APK}")" != "${HISTORICAL_IDENTITY_SHA256}" ]] || \
+  die "historical initial candidate reused the private identity APK bytes"
+while IFS= read -r HISTORICAL_CANDIDATE_FILE; do
+  [[ "$(sha256_file "${HISTORICAL_CANDIDATE_FILE}")" != "${HISTORICAL_IDENTITY_SHA256}" ]] || \
+    die "historical identity APK bytes entered the candidate directory"
+done < <(find "${HISTORICAL_CANDIDATE_DIR}" -mindepth 1 -maxdepth 1 -type f -print)
+[[ -s "${HISTORICAL_AUDIT_INPUT_LOG}" ]] || \
+  die "historical initial fixture did not record public audit inputs"
+if grep -Fq -- $'\t'"${HISTORICAL_IDENTITY_APK}" "${HISTORICAL_AUDIT_INPUT_LOG}"; then
+  die "historical identity APK path entered the public surface scanner"
+fi
+if grep -Fq -- $'\t'"${HISTORICAL_IDENTITY_SHA256}" "${HISTORICAL_AUDIT_INPUT_LOG}"; then
+  die "historical identity APK bytes entered the public surface scanner"
+fi
+grep -Eq $'^apk\t.*/autoform-kit-1\\.0\\.0\\.apk\t[0-9a-f]{64}$' \
+  "${HISTORICAL_AUDIT_INPUT_LOG}" || \
+  die "historical initial fixture did not scan its generated candidate APK"
+jq -e \
+  --arg identitySha256 "${HISTORICAL_IDENTITY_SHA256}" \
+  --arg signerSha256 "${SIGNER_SHA256}" \
+  '.schemaVersion == 3
+    and (keys == ["app", "artifacts", "lineage", "publicAudit", "schemaVersion", "source", "tag"])
+    and .tag == "v1.0.0"
+    and .app.versionName == "1.0.0"
+    and .app.versionCode == 1
+    and .lineage.kind == "historical-initial-rebuild"
+    and (.lineage | keys == ["identityAnchor", "kind"])
+    and .lineage.identityAnchor.sha256 == $identitySha256
+    and .artifacts.apk.sha256 != .lineage.identityAnchor.sha256
+    and .lineage.identityAnchor.versionName == "1.0.0"
+    and .lineage.identityAnchor.versionCode == 1
+    and .lineage.identityAnchor.signerSha256 == $signerSha256
+    and (.lineage.identityAnchor
+      | keys == ["packageName", "sha256", "signerSha256", "versionCode", "versionName"])
+    and (has("previousApk") | not)' "${HISTORICAL_MANIFEST}" >/dev/null || \
+  die "historical initial candidate manifest did not use the strict schema-3 lineage"
+grep -q 'tools/publish-release.sh intentionally rejects this candidate' \
+  "${FIXTURE_ROOT}/historical-success.log" || \
+  die "historical initial candidate did not explain its non-publishable boundary"
+
+# A normal upgrade built by the same implementation must retain schema 2 and
+# the real previousApk identity contract.
+AUTOFORM_SELFTEST_VERSION_CODE=2 \
+AUTOFORM_SELFTEST_VERSION_NAME=1.0.1 \
+AUTOFORM_SELFTEST_PREVIOUS_VERSION_CODE=1 \
+AUTOFORM_SELFTEST_PREVIOUS_VERSION_NAME=1.0.0 \
+run_historical_release \
+  --version 1.0.1 \
+  --version-code 2 \
+  --config config/signing.local.json \
+  --previous-apk "${PREVIOUS_APK}" \
+  --private-wordlist "${PRIVATE_WORDLIST}" \
+  --offline >"${FIXTURE_ROOT}/standard-upgrade-success.log" 2>&1 || {
+    /bin/cat "${FIXTURE_ROOT}/standard-upgrade-success.log" >&2
+    die "standard upgrade candidate fixture failed after adding historical mode"
+  }
+STANDARD_UPGRADE_MANIFEST="${HISTORICAL_REPO}/dist/release-candidates/v1.0.1/candidate-manifest.json"
+jq -e '
+  .schemaVersion == 2
+  and (keys == ["app", "artifacts", "previousApk", "publicAudit", "schemaVersion", "source", "tag"])
+  and .tag == "v1.0.1"
+  and .app.versionName == "1.0.1"
+  and .app.versionCode == 2
+  and .previousApk.versionName == "1.0.0"
+  and .previousApk.versionCode == 1
+  and (has("lineage") | not)' "${STANDARD_UPGRADE_MANIFEST}" >/dev/null || \
+  die "standard upgrade manifest changed from the schema-2 previousApk contract"
+
+# The normal stable publisher must reject the historical schema before the
+# private gate or GitHub can be reached, even if all standard arguments exist.
+cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.schema2.backup"
+cp "${HISTORICAL_MANIFEST}" "${MANIFEST_PATH}"
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if run_publish >"${FIXTURE_ROOT}/historical-publisher-rejection.log" 2>&1; then
+  die "standard publisher accepted a historical-initial schema-3 candidate"
+fi
+grep -q 'historical-initial schema version 3 candidates cannot be published' \
+  "${FIXTURE_ROOT}/historical-publisher-rejection.log" || \
+  die "standard publisher did not explicitly explain the schema-3 rejection"
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "historical schema reached the private gate or GitHub release command"
+mv "${FIXTURE_ROOT}/candidate-manifest.schema2.backup" "${MANIFEST_PATH}"
+fi
 
 # Neither phase may silently skip the repository-external private policy.
 if PATH="${BIN_DIR}:${PATH}" bash "${PUBLISH_SCRIPT}" \
@@ -1426,6 +2489,52 @@ if AUTOFORM_SELFTEST_STALE_HISTORY_REPORT=true \
 fi
 [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
   die "publisher reached the gate after a public-history report mismatch"
+
+# Branch-protection status contexts are administrator-controlled public text and
+# must pass through the exact refs API normalizer into the private-wordlist scan.
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if AUTOFORM_SELFTEST_REQUIRED_STATUS_MARKER=true \
+  run_publish >"${FIXTURE_ROOT}/required-status-marker.log" 2>&1; then
+  die "publisher accepted prohibited text in a required status context"
+fi
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "required-status marker reached the private gate or release creation"
+
+# Third-party actor and uploader identities are also retained in the normalized
+# Release scan surface. Test both independently before any side effect.
+for actor_location in ACTOR UPLOADER; do
+  : > "${GATE_LOG}"
+  : > "${GH_LOG}"
+  actor_marker_status=0
+  if [[ "${actor_location}" == "ACTOR" ]]; then
+    actor_label="actor"
+    AUTOFORM_SELFTEST_RELEASE_ACTOR_MARKER=true \
+      run_publish >"${FIXTURE_ROOT}/release-actor-marker.log" 2>&1 || \
+      actor_marker_status=$?
+  else
+    actor_label="uploader"
+    AUTOFORM_SELFTEST_RELEASE_UPLOADER_MARKER=true \
+      run_publish >"${FIXTURE_ROOT}/release-uploader-marker.log" 2>&1 || \
+      actor_marker_status=$?
+  fi
+  if [[ ${actor_marker_status} -eq 0 ]]; then
+    die "publisher accepted prohibited text in a Release ${actor_label}"
+  fi
+  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+    die "Release ${actor_label} marker reached the private gate or release creation"
+done
+
+# A full ls-remote capture may contain heads, tags, pull refs, and one literal
+# HEAD only. Any future or unexpected namespace must fail closed.
+: > "${GATE_LOG}"
+: > "${GH_LOG}"
+if AUTOFORM_SELFTEST_REMOTE_UNKNOWN_REF=true \
+  run_publish >"${FIXTURE_ROOT}/unknown-remote-ref.log" 2>&1; then
+  die "publisher accepted an unknown remote ref namespace"
+fi
+[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
+  die "unknown remote ref reached the private gate or release creation"
 
 # Until a reviewed real private gate is pinned in the source-committed policy,
 # even a gate that copies every environment hash and writes every boolean true

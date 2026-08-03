@@ -7,6 +7,7 @@ umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
 PUBLIC_AUDIT_SCANNER="${SCRIPT_DIR}/public-surface-audit.mjs"
+GITHUB_RELEASE_AUDIT_NORMALIZER="${SCRIPT_DIR}/normalize-github-releases-for-audit.mjs"
 APK_THIRD_PARTY_POLICY="${SCRIPT_DIR}/apk-third-party-components.json"
 ANDROID_RUNTIME_LOCK="${SCRIPT_DIR}/android-runtime-dependencies.lock.json"
 APK_SOURCE_PROVENANCE_VERIFIER="${SCRIPT_DIR}/verify-apk-third-party-sources.mjs"
@@ -26,9 +27,20 @@ PUBLIC_HISTORY_COMMIT_OBJECT_REPORT_SHA256=""
 PUBLIC_HISTORY_REMOTE_REFS_FILE=""
 PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256=""
 PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256=""
+PUBLIC_HISTORY_REF_API_FILE=""
+PUBLIC_HISTORY_REF_API_INPUT_SHA256=""
+PUBLIC_HISTORY_REF_API_REPORT_SHA256=""
 PUBLIC_HISTORY_RELEASES_FILE=""
 PUBLIC_HISTORY_RELEASES_INPUT_SHA256=""
 PUBLIC_HISTORY_RELEASES_REPORT_SHA256=""
+PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256=""
+PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256=""
+PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256=""
+PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256=""
+PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256=""
+PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256=""
+PUBLIC_HISTORY_REPOSITORY_SELECTION_SHA256=""
+PUBLIC_HISTORY_METADATA_BINDING_SHA256=""
 PRIVATE_EVIDENCE_VERIFIER_SHA256=""
 PRIVATE_EVIDENCE_REPORT_SHA256=""
 PRIVATE_MIGRATION_REPORT_SHA256=""
@@ -82,7 +94,11 @@ Usage: tools/publish-release.sh --candidate PATH --previous-apk PATH --gate PATH
   --panel-catalog-evidence PATH --private-deployment-evidence PATH \
   --private-wordlist PATH [--private-wordlist PATH ...]
 
-Publish an already-built release candidate without rebuilding or rewriting it.
+Publish an already-built standard upgrade candidate without rebuilding or
+rewriting it. Schema 3, schema 4, every historical publicationMode, and the
+reserved v1.0.0-v1.0.6 history-rewrite tags are rejected before any gate or
+GitHub side effect. Those candidates belong only to the separate reviewed
+non-latest history-rewrite workflow.
 
 Required options:
   --candidate PATH       candidate-manifest.json created by tools/release.sh
@@ -209,6 +225,16 @@ private_file_link_count() {
   else
     stat -c '%h' "${file}"
   fi
+}
+
+assert_owned_private_regular_file() {
+  local file="$1"
+  local label="$2"
+  [[ -f "${file}" && ! -L "${file}" \
+    && "$(private_file_owner "${file}")" == "${EUID}" \
+    && "$(private_file_link_count "${file}")" == "1" \
+    && "$(private_file_mode "${file}")" == "600" ]] || \
+    die "${label} must be an owner-only mode-0600 regular file"
 }
 
 assert_owned_private_directory() {
@@ -363,6 +389,15 @@ assert_scanner_matches_source() {
     "tools/public-surface-audit.mjs" \
     "${PUBLIC_AUDIT_SCANNER}" \
     "public audit scanner"
+}
+
+assert_github_release_normalizer_matches_source() {
+  local commit="$1"
+  assert_source_file_matches_commit \
+    "${commit}" \
+    "tools/normalize-github-releases-for-audit.mjs" \
+    "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+    "GitHub public metadata normalizer"
 }
 
 assert_apk_source_verifier_matches_source() {
@@ -575,6 +610,7 @@ run_public_audit() {
   rm -f "${report}.stderr"
   [[ ${status} -eq 0 ]] || die "public surface audit failed or found prohibited data"
   [[ -f "${report}" && ! -L "${report}" ]] || die "public surface audit did not create a report"
+  assert_owned_private_regular_file "${report}" "public surface audit report"
 
   scanner_after="$(sha256_file "${PUBLIC_AUDIT_SCANNER}")"
   [[ "${scanner_after}" == "${scanner_before}" ]] || \
@@ -727,26 +763,86 @@ release_is_absent() {
 
 source_repository_is_public() {
   local repo_slug="$1"
+  local current_slug
+  local repository_raw="${AUDIT_DIR}/source-repository.raw.json"
   local repository_file="${AUDIT_DIR}/source-repository.json"
-  local status
+  local empty_releases="${AUDIT_DIR}/source-repository.empty-releases.json"
+  local normalized="${AUDIT_DIR}/source-repository.normalized.json"
+  local status normalizer_before normalizer_after binding selection_sha
 
-  rm -f "${repository_file}" "${repository_file}.stderr"
+  current_slug="$(repo_slug_from_origin)" || return 1
+  [[ "${current_slug}" == "${repo_slug}" ]] || return 1
+
+  rm -f "${repository_raw}" "${repository_file}" "${empty_releases}" "${normalized}" \
+    "${repository_file}.stderr"
   set +e
-  gh api "repos/${repo_slug}" >"${repository_file}" \
+  gh api "repos/${repo_slug}" >"${repository_raw}" \
     2>"${repository_file}.stderr"
   status=$?
   set -e
   rm -f "${repository_file}.stderr"
-  [[ ${status} -eq 0 && -s "${repository_file}" && ! -L "${repository_file}" ]] || \
+  [[ ${status} -eq 0 && -s "${repository_raw}" && ! -L "${repository_raw}" ]] || \
     return 1
-  jq -e -s --arg repo "${repo_slug}" \
-    'length == 1 and (.[0]
-      | type == "object"
+  jq -ceS '
+    if type == "object"
+      and (.id | type == "number" and floor == . and . > 0)
+      and (.node_id | type == "string" and length > 0)
+      and (.full_name | type == "string" and length > 0)
       and .visibility == "public"
       and .private == false
-      and (.full_name | type == "string")
-      and ((.full_name | ascii_downcase) == ($repo | ascii_downcase)))' \
-    "${repository_file}" >/dev/null 2>&1
+      and (.description == null or (.description | type == "string"))
+      and (.homepage == null or (.homepage | type == "string"))
+      and (.topics | type == "array" and all(.[]; type == "string"))
+      and (.default_branch | type == "string" and length > 0)
+    then {
+      default_branch, description, full_name, homepage, id, node_id, private, topics,
+      visibility
+    }
+    else error("invalid repository selection") end
+  ' "${repository_raw}" >"${repository_file}" 2>/dev/null || {
+    rm -f "${repository_raw}"
+    return 1
+  }
+  rm -f "${repository_raw}"
+  printf '[[]]\n' >"${empty_releases}"
+  assert_github_release_normalizer_matches_source "${SOURCE_COMMIT}"
+  normalizer_before="$(sha256_file "${GITHUB_RELEASE_AUDIT_NORMALIZER}")"
+  set +e
+  node "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+    --repo "${repo_slug}" \
+    --repository-input "${repository_file}" \
+    --input "${empty_releases}" >"${normalized}" \
+    2>"${AUDIT_DIR}/source-repository.normalizer.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/source-repository.normalizer.stderr" "${empty_releases}"
+  normalizer_after="$(sha256_file "${GITHUB_RELEASE_AUDIT_NORMALIZER}")"
+  assert_github_release_normalizer_matches_source "${SOURCE_COMMIT}"
+  [[ ${status} -eq 0 && -s "${normalized}" && ! -L "${normalized}" \
+    && "${normalizer_before}" == "${normalizer_after}" ]] || return 1
+  jq -e -s --arg normalizer "${normalizer_before}" '
+    length == 1 and (.[0]
+      | type == "object"
+      and (keys == ["apiSnapshotSha256", "assetCount", "kind", "normalizerSha256",
+        "releaseCount", "releases", "repositoryBindingSha256", "repositoryContent",
+        "schemaVersion"])
+      and .schemaVersion == 1
+      and .kind == "github-releases-sensitive-audit-input"
+      and .normalizerSha256 == $normalizer
+      and .releaseCount == 0 and .assetCount == 0 and .releases == []
+      and (.repositoryBindingSha256 | type == "string" and test("^[a-f0-9]{64}$")))
+  ' "${normalized}" >/dev/null 2>&1 || return 1
+  binding="$(jq -er '.repositoryBindingSha256' "${normalized}")" || return 1
+  selection_sha="$(sha256_file "${repository_file}")"
+  if [[ -z "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" ]]; then
+    PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256="${binding}"
+    PUBLIC_HISTORY_REPOSITORY_SELECTION_SHA256="${selection_sha}"
+  else
+    [[ "${binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+      && "${selection_sha}" == "${PUBLIC_HISTORY_REPOSITORY_SELECTION_SHA256}" ]] || return 1
+  fi
+  rm -f "${normalized}"
+  return 0
 }
 
 assert_public_source_repository() {
@@ -976,15 +1072,31 @@ capture_and_audit_public_history_metadata() {
   local commit_object_file="${AUDIT_DIR}/source-commit-object.scan-input"
   local remote_refs_raw="${AUDIT_DIR}/remote-refs.raw"
   local remote_refs_file="${AUDIT_DIR}/remote-refs.scan-input"
+  local branches_raw="${AUDIT_DIR}/github-branches.raw.json"
+  local tags_raw="${AUDIT_DIR}/github-tags.raw.json"
+  local ref_api_file="${AUDIT_DIR}/github-refs.scan-input.json"
   local releases_raw="${AUDIT_DIR}/github-releases.raw.json"
   local releases_file="${AUDIT_DIR}/github-releases.scan-input.json"
   local commit_report="${AUDIT_DIR}/source-commit-object.audit.json"
   local refs_report="${AUDIT_DIR}/remote-refs.audit.json"
+  local ref_api_report="${AUDIT_DIR}/github-refs.audit.json"
   local releases_report="${AUDIT_DIR}/github-releases.audit.json"
   local status commit_input commit_report_sha refs_input refs_report_sha
-  local releases_input releases_report_sha
+  local ref_api_input ref_api_report_sha releases_input releases_report_sha
+  local normalizer_before normalizer_after refs_identity ref_api_identity
+  local pull_refs_identity refs_raw_snapshot ref_api_snapshot releases_snapshot
+  local remote_repository_binding ref_api_repository_binding release_repository_binding
+  local metadata_base metadata_binding
 
   if [[ -n "${PUBLIC_HISTORY_COMMIT_OBJECT_INPUT_SHA256}" ]]; then
+    assert_owned_private_regular_file "${PUBLIC_HISTORY_COMMIT_OBJECT_FILE}" \
+      "captured public source commit object"
+    assert_owned_private_regular_file "${PUBLIC_HISTORY_REMOTE_REFS_FILE}" \
+      "captured normalized public remote refs"
+    assert_owned_private_regular_file "${PUBLIC_HISTORY_REF_API_FILE}" \
+      "captured normalized public refs API metadata"
+    assert_owned_private_regular_file "${PUBLIC_HISTORY_RELEASES_FILE}" \
+      "captured normalized public Release metadata"
     [[ -f "${PUBLIC_HISTORY_COMMIT_OBJECT_FILE}" \
       && ! -L "${PUBLIC_HISTORY_COMMIT_OBJECT_FILE}" \
       && "$(sha256_file "${PUBLIC_HISTORY_COMMIT_OBJECT_FILE}")" \
@@ -993,6 +1105,10 @@ capture_and_audit_public_history_metadata() {
       && ! -L "${PUBLIC_HISTORY_REMOTE_REFS_FILE}" \
       && "$(sha256_file "${PUBLIC_HISTORY_REMOTE_REFS_FILE}")" \
         == "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
+      && -f "${PUBLIC_HISTORY_REF_API_FILE}" \
+      && ! -L "${PUBLIC_HISTORY_REF_API_FILE}" \
+      && "$(sha256_file "${PUBLIC_HISTORY_REF_API_FILE}")" \
+        == "${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
       && -f "${PUBLIC_HISTORY_RELEASES_FILE}" \
       && ! -L "${PUBLIC_HISTORY_RELEASES_FILE}" \
       && "$(sha256_file "${PUBLIC_HISTORY_RELEASES_FILE}")" \
@@ -1000,7 +1116,11 @@ capture_and_audit_public_history_metadata() {
       die "private gate changed a public-history snapshot input"
   fi
 
+  source_repository_is_public "${REPO_SLUG}" || \
+    die "source repository identity or selected public metadata changed during audit"
+
   rm -f "${commit_object_file}" "${remote_refs_raw}" "${remote_refs_file}" \
+    "${branches_raw}" "${tags_raw}" "${ref_api_file}" \
     "${releases_raw}" "${releases_file}"
   set +e
   git cat-file commit "${SOURCE_COMMIT}" >"${commit_object_file}" \
@@ -1012,15 +1132,61 @@ capture_and_audit_public_history_metadata() {
     die "unable to capture the exact source commit object"
 
   set +e
-  git ls-remote --heads --tags origin >"${remote_refs_raw}" \
+  git ls-remote origin >"${remote_refs_raw}" \
     2>"${AUDIT_DIR}/remote-refs.stderr"
   status=$?
   set -e
   rm -f "${AUDIT_DIR}/remote-refs.stderr"
   [[ ${status} -eq 0 && -s "${remote_refs_raw}" && ! -L "${remote_refs_raw}" ]] || \
-    die "unable to capture public branch and tag refs"
-  LC_ALL=C sort -u "${remote_refs_raw}" >"${remote_refs_file}"
+    die "unable to capture public branch, tag, and pull refs"
+  assert_github_release_normalizer_matches_source "${SOURCE_COMMIT}"
+  normalizer_before="$(sha256_file "${GITHUB_RELEASE_AUDIT_NORMALIZER}")"
+  set +e
+  node "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+    --repo "${REPO_SLUG}" \
+    --repository-input "${AUDIT_DIR}/source-repository.json" \
+    --remote-refs-input "${remote_refs_raw}" >"${remote_refs_file}" \
+    2>"${AUDIT_DIR}/remote-refs.normalizer.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/remote-refs.normalizer.stderr"
+  [[ ${status} -eq 0 && -s "${remote_refs_file}" && ! -L "${remote_refs_file}" ]] || \
+    die "public branch, tag, and pull refs failed strict normalization"
   rm -f "${remote_refs_raw}"
+
+  set +e
+  gh api --paginate --slurp \
+    "repos/${REPO_SLUG}/branches?per_page=100" >"${branches_raw}" \
+    2>"${AUDIT_DIR}/github-branches.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/github-branches.stderr"
+  [[ ${status} -eq 0 && -s "${branches_raw}" && ! -L "${branches_raw}" ]] || \
+    die "unable to capture the public GitHub branch list"
+
+  set +e
+  gh api --paginate --slurp \
+    "repos/${REPO_SLUG}/tags?per_page=100" >"${tags_raw}" \
+    2>"${AUDIT_DIR}/github-tags.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/github-tags.stderr"
+  [[ ${status} -eq 0 && -s "${tags_raw}" && ! -L "${tags_raw}" ]] || \
+    die "unable to capture the public GitHub tag list"
+
+  set +e
+  node "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+    --repo "${REPO_SLUG}" \
+    --repository-input "${AUDIT_DIR}/source-repository.json" \
+    --branches-input "${branches_raw}" \
+    --tags-input "${tags_raw}" >"${ref_api_file}" \
+    2>"${AUDIT_DIR}/github-refs.normalizer.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/github-refs.normalizer.stderr"
+  [[ ${status} -eq 0 && -s "${ref_api_file}" && ! -L "${ref_api_file}" ]] || \
+    die "public GitHub branch and tag metadata failed strict normalization"
+  rm -f "${branches_raw}" "${tags_raw}"
 
   set +e
   gh api --paginate --slurp \
@@ -1031,31 +1197,141 @@ capture_and_audit_public_history_metadata() {
   rm -f "${AUDIT_DIR}/github-releases.stderr"
   [[ ${status} -eq 0 && -s "${releases_raw}" && ! -L "${releases_raw}" ]] || \
     die "unable to capture the public GitHub Release list"
-  jq -ceS '
-    if type != "array" or (all(.[]; type == "array") | not) then
-      error("unexpected paginated release response")
-    else
-      flatten
-      | if (all(.[]; type == "object" and (.assets | type == "array"))) then
-          walk(if type == "object" then del(.download_count, .reactions) else . end)
-          | sort_by(.id)
-          | map(.assets |= sort_by(.id))
-        else
-          error("unexpected release or asset response")
-        end
-    end' "${releases_raw}" >"${releases_file}" 2>/dev/null || \
-    die "public GitHub Release metadata has an unexpected shape"
+  set +e
+  node "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+    --repo "${REPO_SLUG}" \
+    --repository-input "${AUDIT_DIR}/source-repository.json" \
+    --input "${releases_raw}" >"${releases_file}" \
+    2>"${AUDIT_DIR}/github-releases.normalizer.stderr"
+  status=$?
+  set -e
+  rm -f "${AUDIT_DIR}/github-releases.normalizer.stderr"
+  normalizer_after="$(sha256_file "${GITHUB_RELEASE_AUDIT_NORMALIZER}")"
+  assert_github_release_normalizer_matches_source "${SOURCE_COMMIT}"
+  [[ ${status} -eq 0 && -s "${releases_file}" && ! -L "${releases_file}" \
+    && "${normalizer_before}" == "${normalizer_after}" ]] || \
+    die "public GitHub Release metadata failed strict normalization"
   rm -f "${releases_raw}"
+
+  assert_owned_private_regular_file "${commit_object_file}" \
+    "captured public source commit object"
+  assert_owned_private_regular_file "${remote_refs_file}" \
+    "normalized public remote refs"
+  assert_owned_private_regular_file "${ref_api_file}" \
+    "normalized public refs API metadata"
+  assert_owned_private_regular_file "${releases_file}" \
+    "normalized public Release metadata"
+
+  jq -e -s --arg normalizer "${normalizer_before}" '
+    length == 1 and (.[0]
+      | type == "object"
+      and (keys == ["branchCount", "branches", "headOid", "kind", "normalizerSha256",
+        "pullRefCount", "pullRefIdentitySha256", "pullRefs",
+        "rawSnapshotSha256", "refIdentitySha256", "repositoryBindingSha256",
+        "schemaVersion", "tagCount", "tags"])
+      and .schemaVersion == 1
+      and .kind == "github-remote-refs-sensitive-audit-input"
+      and .normalizerSha256 == $normalizer
+      and (.rawSnapshotSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.refIdentitySha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.pullRefIdentitySha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.headOid | type == "string" and test("^(?:[a-f0-9]{40}|[a-f0-9]{64})$"))
+      and (.repositoryBindingSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.branchCount | type == "number" and floor == . and . > 0)
+      and (.tagCount | type == "number" and floor == . and . >= 0)
+      and (.pullRefCount | type == "number" and floor == . and . >= 0)
+      and (.branches | type == "array")
+      and (.branches | length) == .branchCount
+      and (.tags | type == "array")
+      and (.tags | length) == .tagCount
+      and (.pullRefs | type == "array")
+      and (.pullRefs | length) == .pullRefCount)
+  ' "${remote_refs_file}" >/dev/null 2>&1 || \
+    die "normalized public branch, tag, and pull refs have an invalid envelope"
+  jq -e -s --arg normalizer "${normalizer_before}" '
+    length == 1 and (.[0]
+      | type == "object"
+      and (keys == ["apiSnapshotSha256", "branchCount", "branches", "kind",
+        "normalizerSha256", "refIdentitySha256", "repositoryBindingSha256",
+        "repositoryContent", "schemaVersion", "tagCount", "tags"])
+      and .schemaVersion == 1
+      and .kind == "github-refs-sensitive-audit-input"
+      and .normalizerSha256 == $normalizer
+      and (.apiSnapshotSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.refIdentitySha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.repositoryBindingSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.branchCount | type == "number" and floor == . and . > 0)
+      and (.tagCount | type == "number" and floor == . and . >= 0)
+      and (.branches | type == "array")
+      and (.branches | length) == .branchCount
+      and (.tags | type == "array")
+      and (.tags | length) == .tagCount
+      and (.repositoryContent | type == "object"))
+  ' "${ref_api_file}" >/dev/null 2>&1 || \
+    die "normalized public GitHub ref metadata has an invalid envelope"
+  jq -e -s --arg normalizer "${normalizer_before}" '
+    length == 1 and (.[0]
+      | type == "object"
+      and (keys == ["apiSnapshotSha256", "assetCount", "kind", "normalizerSha256",
+        "releaseCount", "releases", "repositoryBindingSha256", "repositoryContent",
+        "schemaVersion"])
+      and .schemaVersion == 1
+      and .kind == "github-releases-sensitive-audit-input"
+      and .normalizerSha256 == $normalizer
+      and (.apiSnapshotSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.repositoryBindingSha256 | type == "string" and test("^[a-f0-9]{64}$"))
+      and (.releaseCount | type == "number" and floor == . and . >= 0)
+      and (.assetCount | type == "number" and floor == . and . >= 0)
+      and (.releases | type == "array")
+      and (.releases | length) == .releaseCount
+      and (.repositoryContent | type == "object"))
+  ' "${releases_file}" >/dev/null 2>&1 || \
+    die "normalized public GitHub Release metadata has an invalid envelope"
+
+  refs_identity="$(jq -er '.refIdentitySha256' "${remote_refs_file}")"
+  ref_api_identity="$(jq -er '.refIdentitySha256' "${ref_api_file}")"
+  pull_refs_identity="$(jq -er '.pullRefIdentitySha256' "${remote_refs_file}")"
+  refs_raw_snapshot="$(jq -er '.rawSnapshotSha256' "${remote_refs_file}")"
+  ref_api_snapshot="$(jq -er '.apiSnapshotSha256' "${ref_api_file}")"
+  releases_snapshot="$(jq -er '.apiSnapshotSha256' "${releases_file}")"
+  remote_repository_binding="$(jq -er '.repositoryBindingSha256' "${remote_refs_file}")"
+  ref_api_repository_binding="$(jq -er '.repositoryBindingSha256' "${ref_api_file}")"
+  release_repository_binding="$(jq -er '.repositoryBindingSha256' "${releases_file}")"
+  [[ "${refs_identity}" == "${ref_api_identity}" ]] || \
+    die "GitHub refs API and git transport reported different branch or tag identities"
+  [[ "${remote_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+    && "${ref_api_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+    && "${release_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" ]] || \
+    die "normalized public metadata was bound to a different repository identity"
+  metadata_base="$(jq -cnS \
+    --arg pullRefs "${pull_refs_identity}" \
+    --arg refApi "${ref_api_snapshot}" \
+    --arg refs "${refs_identity}" \
+    --arg refsRaw "${refs_raw_snapshot}" \
+    --arg releases "${releases_snapshot}" \
+    --arg repository "${release_repository_binding}" \
+    '{pullRefIdentitySha256:$pullRefs, refApiSnapshotSha256:$refApi,
+      refIdentitySha256:$refs, remoteRefsRawSnapshotSha256:$refsRaw,
+      releaseApiSnapshotSha256:$releases,
+      repositoryBindingSha256:$repository}')"
+  metadata_binding="$(printf 'autoform-kit/github-public-metadata-binding/v2\n%s' \
+    "${metadata_base}" | sha256_stdin)"
 
   run_public_audit "${commit_report}" file "${commit_object_file}"
   run_public_audit "${refs_report}" file "${remote_refs_file}"
+  run_public_audit "${ref_api_report}" file "${ref_api_file}"
   run_public_audit "${releases_report}" file "${releases_file}"
   commit_input="$(jq -er '.input.sha256' "${commit_report}")"
   commit_report_sha="$(jq -er '.reportSha256' "${commit_report}")"
   refs_input="$(jq -er '.input.sha256' "${refs_report}")"
   refs_report_sha="$(jq -er '.reportSha256' "${refs_report}")"
+  ref_api_input="$(jq -er '.input.sha256' "${ref_api_report}")"
+  ref_api_report_sha="$(jq -er '.reportSha256' "${ref_api_report}")"
   releases_input="$(jq -er '.input.sha256' "${releases_report}")"
   releases_report_sha="$(jq -er '.reportSha256' "${releases_report}")"
+  assert_owned_private_regular_file "${refs_report}" "public remote refs audit report"
+  assert_owned_private_regular_file "${ref_api_report}" "public refs API audit report"
+  assert_owned_private_regular_file "${releases_report}" "public Releases audit report"
 
   if [[ -z "${PUBLIC_HISTORY_COMMIT_OBJECT_INPUT_SHA256}" ]]; then
     PUBLIC_HISTORY_COMMIT_OBJECT_FILE="${commit_object_file}"
@@ -1064,17 +1340,37 @@ capture_and_audit_public_history_metadata() {
     PUBLIC_HISTORY_REMOTE_REFS_FILE="${remote_refs_file}"
     PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256="${refs_input}"
     PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256="${refs_report_sha}"
+    PUBLIC_HISTORY_REF_API_FILE="${ref_api_file}"
+    PUBLIC_HISTORY_REF_API_INPUT_SHA256="${ref_api_input}"
+    PUBLIC_HISTORY_REF_API_REPORT_SHA256="${ref_api_report_sha}"
     PUBLIC_HISTORY_RELEASES_FILE="${releases_file}"
     PUBLIC_HISTORY_RELEASES_INPUT_SHA256="${releases_input}"
     PUBLIC_HISTORY_RELEASES_REPORT_SHA256="${releases_report_sha}"
+    PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256="${refs_identity}"
+    PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256="${pull_refs_identity}"
+    PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256="${refs_raw_snapshot}"
+    PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256="${ref_api_snapshot}"
+    PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256="${releases_snapshot}"
+    PUBLIC_HISTORY_METADATA_BINDING_SHA256="${metadata_binding}"
   else
     [[ "${commit_input}" == "${PUBLIC_HISTORY_COMMIT_OBJECT_INPUT_SHA256}" \
       && "${commit_report_sha}" == "${PUBLIC_HISTORY_COMMIT_OBJECT_REPORT_SHA256}" \
       && "${refs_input}" == "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
       && "${refs_report_sha}" == "${PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256}" \
+      && "${ref_api_input}" == "${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
+      && "${ref_api_report_sha}" == "${PUBLIC_HISTORY_REF_API_REPORT_SHA256}" \
       && "${releases_input}" == "${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
-      && "${releases_report_sha}" == "${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" ]] || \
-      die "public commit/ref/tag/Release metadata changed after private attestation"
+      && "${releases_report_sha}" == "${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" \
+      && "${refs_identity}" == "${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+      && "${pull_refs_identity}" == "${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+      && "${refs_raw_snapshot}" == "${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+      && "${ref_api_snapshot}" == "${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
+      && "${releases_snapshot}" == "${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+      && "${remote_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+      && "${ref_api_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+      && "${release_repository_binding}" == "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+      && "${metadata_binding}" == "${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" ]] || \
+      die "public commit/repository/ref/status/Release metadata changed after private attestation"
   fi
 }
 
@@ -1194,6 +1490,26 @@ verify_private_release_evidence() {
     --apk-sha256 "${APK_SHA256}" \
     --previous-apk-sha256 "${PREVIOUS_APK_SHA256}" \
     --private-gate-sha256 "${gate_before}" \
+    --public-history-remote-refs-input-sha256 \
+      "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
+    --public-history-ref-api-input-sha256 \
+      "${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
+    --public-history-ref-api-snapshot-sha256 \
+      "${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
+    --public-history-remote-refs-raw-snapshot-sha256 \
+      "${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+    --public-history-ref-identity-sha256 \
+      "${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+    --public-history-pull-ref-identity-sha256 \
+      "${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+    --public-history-release-input-sha256 \
+      "${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
+    --public-history-release-api-snapshot-sha256 \
+      "${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+    --public-history-repository-binding-sha256 \
+      "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+    --public-history-metadata-binding-sha256 \
+      "${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" \
     --public-repository "${REPO_SLUG}" > "${report}" 2> "${report}.stderr"
   status=$?
   set -e
@@ -1433,9 +1749,19 @@ run_private_gate() {
   AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_FILE="${PUBLIC_HISTORY_REMOTE_REFS_FILE}" \
   AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
   AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REF_API_FILE="${PUBLIC_HISTORY_REF_API_FILE}" \
+  AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256="${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256="${PUBLIC_HISTORY_REF_API_REPORT_SHA256}" \
   AUTOFORM_RELEASE_PUBLIC_RELEASES_FILE="${PUBLIC_HISTORY_RELEASES_FILE}" \
   AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256="${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
   AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256="${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256="${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256="${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256="${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256="${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+  AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256="${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" \
   AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256="${PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
   AUTOFORM_RELEASE_PRIVATE_EVIDENCE_REPORT_SHA256="${PRIVATE_EVIDENCE_REPORT_SHA256}" \
   AUTOFORM_RELEASE_PRIVATE_MIGRATION_REPORT_SHA256="${PRIVATE_MIGRATION_REPORT_SHA256}" \
@@ -1515,8 +1841,17 @@ run_private_gate() {
     --arg commitObjectReport "${PUBLIC_HISTORY_COMMIT_OBJECT_REPORT_SHA256}" \
     --arg remoteRefsInput "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
     --arg remoteRefsReport "${PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256}" \
+    --arg refApiInput "${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
+    --arg refApiReport "${PUBLIC_HISTORY_REF_API_REPORT_SHA256}" \
     --arg releasesInput "${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
     --arg releasesReport "${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" \
+    --arg refIdentity "${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+    --arg pullRefIdentity "${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
+    --arg remoteRefsRawSnapshot "${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+    --arg refApiSnapshot "${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
+    --arg releaseApiSnapshot "${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+    --arg repositoryBinding "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
+    --arg metadataBinding "${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" \
     --arg privateVerifier "${PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
     --arg privateEvidenceReport "${PRIVATE_EVIDENCE_REPORT_SHA256}" \
     --arg privateMigrationReport "${PRIVATE_MIGRATION_REPORT_SHA256}" \
@@ -1606,10 +1941,21 @@ run_private_gate() {
               inputSha256: $remoteRefsInput,
               reportSha256: $remoteRefsReport
             },
+            refsApi: {
+              inputSha256: $refApiInput,
+              reportSha256: $refApiReport
+            },
             releases: {
               inputSha256: $releasesInput,
               reportSha256: $releasesReport
-            }
+            },
+            refIdentitySha256: $refIdentity,
+            pullRefIdentitySha256: $pullRefIdentity,
+            remoteRefsRawSnapshotSha256: $remoteRefsRawSnapshot,
+            refApiSnapshotSha256: $refApiSnapshot,
+            releaseApiSnapshotSha256: $releaseApiSnapshot,
+            repositoryBindingSha256: $repositoryBinding,
+            metadataBindingSha256: $metadataBinding
           }
         },
         privateEvidence: {
@@ -1734,6 +2080,9 @@ require_command mktemp
 initialize_release_temp_parent
 [[ -f "${PUBLIC_AUDIT_SCANNER}" && ! -L "${PUBLIC_AUDIT_SCANNER}" ]] || \
   die "public surface audit scanner is missing or is not a regular file"
+[[ -f "${GITHUB_RELEASE_AUDIT_NORMALIZER}" \
+  && ! -L "${GITHUB_RELEASE_AUDIT_NORMALIZER}" ]] || \
+  die "GitHub public metadata normalizer is missing or is not a regular file"
 [[ -f "${APK_THIRD_PARTY_POLICY}" && ! -L "${APK_THIRD_PARTY_POLICY}" ]] || \
   die "APK third-party provenance policy is missing or is not a regular file"
 [[ -f "${ANDROID_RUNTIME_LOCK}" && ! -L "${ANDROID_RUNTIME_LOCK}" ]] || \
@@ -1756,6 +2105,23 @@ done
 MANIFEST_PATH="$(canonical_regular_file "candidate manifest" "${CANDIDATE_INPUT}")"
 [[ "$(basename "${MANIFEST_PATH}")" == "candidate-manifest.json" ]] || \
   die "candidate manifest must be named candidate-manifest.json"
+CANDIDATE_SCHEMA_VERSION="$(jq -er \
+  '.schemaVersion | select(type == "number" and floor == .) | tostring' \
+  "${MANIFEST_PATH}" 2>/dev/null || true)"
+CANDIDATE_DECLARED_TAG="$(jq -er '.tag | select(type == "string")' \
+  "${MANIFEST_PATH}" 2>/dev/null || true)"
+CANDIDATE_PUBLICATION_MODE="$(jq -er \
+  'if has("publicationMode") then .publicationMode | select(type == "string") else "" end' \
+  "${MANIFEST_PATH}" 2>/dev/null || true)"
+if [[ "${CANDIDATE_SCHEMA_VERSION}" == "3" || "${CANDIDATE_SCHEMA_VERSION}" == "4" \
+  || -n "${CANDIDATE_PUBLICATION_MODE}" ]]; then
+  die "historical or explicitly routed candidates cannot be published by the stable command"
+fi
+case "${CANDIDATE_DECLARED_TAG}" in
+  v1.0.0|v1.0.1|v1.0.2|v1.0.3|v1.0.4|v1.0.5|v1.0.6)
+    die "reserved historical tags cannot be published by the stable command"
+    ;;
+esac
 PREVIOUS_APK_PATH="$(canonical_regular_file "previous APK" "${PREVIOUS_APK_INPUT}")"
 GATE_PATH="$(canonical_regular_file "private gate" "${GATE_INPUT}")"
 [[ -x "${GATE_PATH}" ]] || die "private gate is not executable: ${GATE_PATH}"
@@ -1997,14 +2363,19 @@ assert_trusted_private_gate_enabled
 verify_private_release_evidence
 run_private_gate "${GATE_PATH}"
 
-# The gate can take time. Re-read all bytes, source state, and remote absence
-# immediately before the sole publishing command.
+# The gate can take time. Re-read all bytes and public metadata once, then
+# reverify the live private evidence. A third, metadata-only capture after that
+# verifier closes its network window and must still equal the original binding
+# before the sole publishing command.
 assert_candidate_bytes_and_identity
 assert_publishable_head "${SOURCE_COMMIT}"
 assert_fresh_public_audits
 assert_tag_and_release_absent "${REPO_SLUG}" "${TAG}"
 reverify_private_release_evidence_before_publish
-assert_public_source_repository "${REPO_SLUG}"
+assert_candidate_bytes_and_identity
+capture_and_audit_public_history_metadata
+assert_publishable_head "${SOURCE_COMMIT}"
+assert_tag_and_release_absent "${REPO_SLUG}" "${TAG}"
 
 info "publishing exact candidate ${TAG}"
 set +e

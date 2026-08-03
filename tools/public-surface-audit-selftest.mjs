@@ -471,17 +471,30 @@ function crc32(buffer) {
 try {
   const publicThirdPartyPolicy = JSON.parse(
     fs.readFileSync(path.join(root, "tools/apk-third-party-components.json"), "utf8"));
-  const releaseProfile = publicThirdPartyPolicy.profiles.find(
+  const releaseProfiles = publicThirdPartyPolicy.profiles.filter(
     (profile) => profile.buildType === "release");
-  assert.ok(releaseProfile);
-  assert.ok(!releaseProfile.entries.some((entry) => entry.path === "classes.dex"),
-    "the mixed first-party release DEX must never become a trusted whole-entry");
-  assert.ok(releaseProfile.entries
-    .filter((entry) => entry.kind === "runtime-profile")
-    .every((entry) => publicThirdPartyPolicy.components.some((component) =>
+  assert.ok(releaseProfiles.length > 0);
+  const runtimeProfileFingerprints = new Set();
+  for (const releaseProfile of releaseProfiles) {
+    assert.ok(!releaseProfile.entries.some((entry) => entry.path === "classes.dex"),
+      `${releaseProfile.id}: the mixed first-party release DEX must never become a trusted whole-entry`);
+    const runtimeEntries = releaseProfile.entries
+      .filter((entry) => entry.kind === "runtime-profile");
+    assert.ok(runtimeEntries.length > 0,
+      `${releaseProfile.id}: release profiles must bind runtime-profile outputs`);
+    assert.ok(runtimeEntries.every((entry) => publicThirdPartyPolicy.components.some((component) =>
       component.id === entry.component
         && component.runtimeProfileSources?.mergedTextSha256 === component.sourceArtifactSha256
-        && component.runtimeProfileSources.artifacts.length > 0)));
+        && component.runtimeProfileSources.artifacts.length > 0)),
+      `${releaseProfile.id}: every runtime-profile output must retain exact source provenance`);
+    const fingerprint = JSON.stringify(runtimeEntries
+      .map((entry) => [entry.path, entry.sha256])
+      .sort(([left], [right]) => left.localeCompare(right)));
+    assert.ok(!runtimeProfileFingerprints.has(fingerprint),
+      `${releaseProfile.id}: release runtime-profile fingerprints must be unique`);
+    runtimeProfileFingerprints.add(fingerprint);
+  }
+  assert.equal(runtimeProfileFingerprints.size, releaseProfiles.length);
 
   const ignoreRepo = path.join(temporary, "ignore-repo");
   fs.mkdirSync(ignoreRepo);

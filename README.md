@@ -3,8 +3,11 @@
 A Panel-led form platform with a self-hosted control plane and a generic Android runtime.
 
 > Project status: active development. This repository is a framework, not a hosted service or a
-> ready-to-use deployment. No release-ready candidate is currently declared. The tracked profiles
-> and adapters are fictional examples.
+> ready-to-use deployment. Release policy permits generic framework artifacts only, but visibility
+> on GitHub is not proof that an existing history or Release has completed the required rewrite and
+> post-publication audit. Every real deployment must pass its own private compatibility and release
+> evidence. No release-ready candidate is currently declared. The tracked profiles and adapters are
+> fictional examples.
 
 [中文概要](#中文概要)
 
@@ -47,12 +50,12 @@ Admin browser ──> Panel Worker ──> private catalog authority
       └──────────── configured backend <──────────── Android App
 ```
 
-The browser and App send backend credentials directly to the configured backend. The Worker holds
-catalog-write and optional service credentials, validates protected Panel writes, and exposes only
-the App-facing subset of the private catalog. GitHub is the default catalog authority. A bound but
-unseeded R2 bucket reads from GitHub and rejects publishes; only a seeded, hash-verified current
-pointer makes R2 authoritative. The Panel has no separate role database: deployments must restrict
-authoring accounts through backend authorization and, when needed, an edge or network access policy.
+The browser and App send backend credentials directly to the configured backend. The Worker keeps
+catalog-write and optional service credentials, protects Panel writes, and exposes only the
+App-facing catalog subset. GitHub is the default catalog authority; R2 is an optional, explicit
+cutover. Panel authoring access is controlled by the deployment backend and, when needed, an edge or
+network policy. See [Panel deployment](./docs/worker-setup.md) and
+[deployment security](./docs/security.md) for the trust boundaries and cutover rules.
 
 ## Where customization lives
 
@@ -112,9 +115,9 @@ Prerequisites:
 - a backend that permits the documented browser/Worker access and implements every operation enabled
   by the private adapter and profiles.
 
-The documented quick start uses the GitHub-backed default. The repository exposes the R2 seed
-library contract and tests, but no operator-facing Panel route or supported CLI performs that
-cutover; do not bind R2 without a separately reviewed private one-shot procedure.
+The quick start uses the GitHub-backed default. R2 cutover requires the separately reviewed
+procedure described in [Panel deployment](./docs/worker-setup.md); merely binding a bucket does not
+make it authoritative.
 
 Set up in this order:
 
@@ -130,70 +133,35 @@ preview until an operator saves a Panel connection and the App verifies a comple
 
 ## Release status and hard gates
 
-There is no declared release-ready candidate. Passing public tests or moving configuration into
-Panel does not by itself certify an upgrade or the repository's existing public history.
+A framework Release does not certify a deployment. Public tests validate the generic framework;
+deployment truth must be established with private evidence bound to the exact Panel config/catalog,
+adapter, candidate APK, and retry/outcome policies.
 
-- Final-submit and alternate-entry retries require private replay evidence bound to
-  `operations.submit.outcomePolicy`. Missing-material recovery requires its own not-written rules
-  and a profile-owned material-code pattern.
-- An executable previous-step recipe requesting more than one attempt requires separate evidence
-  bound to `operations.previousSteps.recipeOutcomePolicy`; its legacy retry/already-exists strings
-  do not authorize the new App, and submit evidence cannot substitute for recipe evidence. Retaining
-  legacy already-exists behavior for old Apps also requires explicit acknowledgement rules for the
-  new App.
-- Private release gates must bind each policy's `evidenceSha256` to the exact reviewed replay. Public
-  schema validation checks shape, not deployment truth.
-- Duplicate-response parity cannot be established by replay counts or mock/offline fixtures. The
-  private-only migration gate must stable-read three independent mode-`0600` raw-response/provenance
-  pairs—duplicate, non-duplicate, and unclassified fail-closed—plus their audited GET execution
-  receipts. It recomputes the current capture-tool and command-protocol hashes and binds each case to
-  the exact adapter, candidate, and external Panel config/catalog pair; private fields are never
-  copied into public reports.
-- Release still requires a full public-history/tag/Release-asset and APK privacy audit, signed
-  in-place upgrade tests, exact old/new update routing, real-profile payload replay, and reviewed
-  handling for uncertain remote side effects. An ordinary merge or deletion commit does not erase
-  sensitive objects from earlier Git history.
+Publication is blocked until the complete public surface—history, branches, tags, pull-request refs,
+Releases, assets, and APK contents—passes the privacy audit. Signed in-place upgrade and rollback,
+old/new update routing, real-profile payload replay, and fail-closed handling of uncertain remote
+side effects are separate required gates. Deleting a file or merging a cleanup commit does not erase
+older Git objects.
+
+The exact evidence formats, capture requirements, and publication sequence are documented in
+[Releasing](./docs/releasing.md) and [deployment security](./docs/security.md). Repository visibility
+or a successful command is not evidence that those gates passed.
 
 ## Synchronization and upgrade safety
 
-Config and catalog are one logical unit. Each active pair is bound to the exact Panel/key and one
-positive catalog revision. Downloads first enter candidate slots and become active together only at
-a safe Settings boundary.
+Config and catalog form one atomic, revisioned pair bound to the exact Panel/key. A newer verified
+pair activates only at a safe boundary; a malformed, same-revision-mutated, or wrongly bound pair
+locks new work instead of mixing revisions. A saved queue backup pins its original pair until the
+operator explicitly deletes that backup.
 
-- A strictly newer, individually valid candidate may wait while the App continues using the exact
-  old active pair. This preserves the established offline/cache fallback without mixing revisions.
-- A same-revision mutation, malformed candidate, wrong connection binding, or uncertain recovery
-  state locks new work instead of falling back silently.
-- A manually saved queue backup is deliberately long-lived. It pins the active pair so a downloaded
-  candidate cannot reinterpret work intended for later restoration. Only the explicit, confirmed
-  “delete queue backup” action can remove that backup and release the pin; restart, logout, ordinary
-  queue completion, or a new download does not.
+Legacy upgrades are **Panel first**: publish a behavior-equivalent higher revision, then let the old
+App cache the exact target pair before installing the signed update. The first upgrade requires one
+new login because unbound legacy credentials are never imported or sent; drafts, queues, ledgers,
+pending photos, and rollback credentials are preserved. Missing proof or uncertain remote results
+fail closed and must not be cleared or replayed by hand.
 
-For an upgrade from a legacy App cache, **Panel first** is a hard prerequisite: deploy the compatible
-Panel, publish a behavior-equivalent higher revision, then fully stop and restart the old App after
-that publication so it caches config and catalog from the exact same target revision. The Panel proof
-binds the Panel origin, read-key digest, exact raw catalog digest, and revision. If the proof or any
-bound input is absent or different, the new App does not infer ownership; it requires an online pair
-refresh, and an unbound legacy draft remains locked. Before the first signed-v1-to-current install,
-the old App must be fully stopped with no camera flow awaiting a result, and all three legacy
-`pending_a_step_photo_path`, `pending_a_step_photo_seq`, and
-`pending_a_step_entry_photo_path` slots must be readable and absent. Uncertain slots must not be
-deleted by hand; recover them with a compatible old workflow or stop the rollout.
-
-The current App also introduces a realm-bound v2 login store. Its realm covers the full Panel/key
-connection identity and the effective authenticated backend transport, while form/profile-only
-publishes do not change it. For safety, a first upgrade does **not** import or send an unbound legacy
-token, password, account, user name, or web fingerprint: the operator must sign in once after the
-upgrade. Legacy credential bytes are left untouched during the ordinary upgrade so a signed-App
-rollback remains possible; an explicit Panel/key switch clears both legacy and v2 session storage.
-Drafts, queues, ledgers, and pending photos are not cleared by this one-time re-login requirement.
-
-Remote results that cannot be proven are also locked rather than replayed. This repository currently
-does **not** ship an operator-facing controlled-recovery tool for uncertain final submissions,
-previous-step writes, or multipart uploads. Do not delete their local state manually or describe
-those paths as recoverable. A deployment-specific backend reconciliation procedure and reviewed
-recovery tool remain release prerequisites. Reprints have only the narrower, implemented convergence
-path documented in [deployment security](./docs/security.md).
+Follow the operational checks in [Connect the App](./docs/connect-app.md) and the recovery limits in
+[deployment security](./docs/security.md) before upgrading a real device.
 
 ## Public/private boundary
 
@@ -262,11 +230,12 @@ must remain deployment-neutral.
 
 ## 中文概要
 
-**Panel 是主体，Android App 是通用运行框架。** 当前改造尚未发布，也没有已声明可发布的候选。
-表单、字段与结果映射、照片框和拍摄顺序、扫描规则、可选流程、后端适配器、通知和更新源都在
-私有 Panel/catalog 中维护；候选工作树只允许通用代码和不可运行示例。现有公开历史、tags、
-Releases 与 assets 在完成历史重写和独立复核前不属于这一结论，普通合并或删除提交不能清除旧
-对象。新装 App 的 Panel 地址与 read key 均为空，不能从 APK 获得生产配置。
+**Panel 是主体，Android App 是通用运行框架。** 发布政策只允许 GitHub Release 包含通用框架产物，
+但内容在 GitHub 上可见，不代表现有历史或 Release 已完成规定的重写和发布后审计，也不等于任何
+真实部署已经通过投产门；当前没有已声明可发布的候选。表单、字段与结果映射、照片框和拍摄顺序、
+扫描规则、可选流程、后端适配器、通知和更新源都在私有 Panel/catalog 中维护；候选工作树只允许
+通用代码和不可运行示例。公开前必须独立复核完整历史、tags、Releases 与 assets，普通合并或删除
+提交不能清除旧对象。新装 App 的 Panel 地址与 read key 均为空，不能从 APK 获得生产配置。
 
 升级旧设备必须先部署兼容 Panel，并让旧 App 在目标 revision 发布后彻底退出、重新启动，缓存
 带精确 proof 的同一 config/catalog pair；这是兼容迁移的必要条件，不是充分条件，签名升级、完整

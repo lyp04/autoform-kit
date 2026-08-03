@@ -92,7 +92,17 @@ function parseArguments(argv) {
   const allowed = new Set([
     "migration-report", "panel-config", "panel-catalog", "deployment-evidence",
     "source-commit", "candidate-manifest-sha256", "apk-sha256",
-    "previous-apk-sha256", "private-gate-sha256", "public-repository"
+    "previous-apk-sha256", "private-gate-sha256", "public-repository",
+    "public-history-remote-refs-input-sha256",
+    "public-history-ref-api-input-sha256",
+    "public-history-ref-api-snapshot-sha256",
+    "public-history-remote-refs-raw-snapshot-sha256",
+    "public-history-ref-identity-sha256",
+    "public-history-pull-ref-identity-sha256",
+    "public-history-release-input-sha256",
+    "public-history-release-api-snapshot-sha256",
+    "public-history-repository-binding-sha256",
+    "public-history-metadata-binding-sha256"
   ]);
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -742,6 +752,23 @@ function migrationReportPass(report) {
       === report.candidateApkSignedDevicePanelPairSha256
     && report.runtimeFlowParityPickerSignedDevicePanelCatalogSha256
       === report.candidateApkSignedDevicePanelCatalogSha256
+    && [
+      "publicHistoryRemoteRefsInputSha256",
+      "publicHistoryRefApiInputSha256",
+      "publicHistoryRefApiSnapshotSha256",
+      "publicHistoryRemoteRefsRawSnapshotSha256",
+      "publicHistoryRefIdentitySha256",
+      "publicHistoryPullRefIdentitySha256",
+      "publicHistoryReleaseApiSnapshotSha256",
+      "publicHistoryReleaseInputSha256",
+      "publicHistoryRepositoryBindingSha256",
+      "publicHistoryMetadataBindingSha256",
+      "publicHistoryReachableObjectClosureSha256",
+      "publicHistoryAuditReportSha256"
+    ].every((field) => SHA256.test(String(report[field] || "")))
+    && positiveInteger(report.publicHistoryReachableObjectCount)
+    && report.publicHistoryReachableObjectCount
+      === report.publicHistoryReleaseAuditReachableObjectCount
     && zeroFields.every((field) => report[field] === 0);
 }
 
@@ -759,7 +786,16 @@ const args = parseArguments(argv);
 if (!GIT_OID.test(args["source-commit"])) fail("source commit binding is invalid");
 for (const name of [
   "candidate-manifest-sha256", "apk-sha256", "previous-apk-sha256",
-  "private-gate-sha256"
+  "private-gate-sha256", "public-history-remote-refs-input-sha256",
+  "public-history-ref-api-input-sha256",
+  "public-history-ref-api-snapshot-sha256",
+  "public-history-remote-refs-raw-snapshot-sha256",
+  "public-history-ref-identity-sha256",
+  "public-history-pull-ref-identity-sha256",
+  "public-history-release-input-sha256",
+  "public-history-release-api-snapshot-sha256",
+  "public-history-repository-binding-sha256",
+  "public-history-metadata-binding-sha256"
 ]) {
   if (!SHA256.test(args[name])) fail("SHA-256 binding is invalid");
 }
@@ -777,6 +813,28 @@ const config = parseJson(configFile.bytes, "Panel config evidence");
 const catalog = parseJson(catalogFile.bytes, "Panel catalog evidence");
 const deployment = parseJson(deploymentFile.bytes, "private deployment evidence");
 if (!migrationReportPass(migration)) fail("private migration report is not release-ready");
+if (migration.publicHistoryRemoteRefsInputSha256
+      !== args["public-history-remote-refs-input-sha256"]
+    || migration.publicHistoryRefApiInputSha256
+      !== args["public-history-ref-api-input-sha256"]
+    || migration.publicHistoryRefApiSnapshotSha256
+      !== args["public-history-ref-api-snapshot-sha256"]
+    || migration.publicHistoryRemoteRefsRawSnapshotSha256
+      !== args["public-history-remote-refs-raw-snapshot-sha256"]
+    || migration.publicHistoryRefIdentitySha256
+      !== args["public-history-ref-identity-sha256"]
+    || migration.publicHistoryPullRefIdentitySha256
+      !== args["public-history-pull-ref-identity-sha256"]
+    || migration.publicHistoryReleaseApiSnapshotSha256
+      !== args["public-history-release-api-snapshot-sha256"]
+    || migration.publicHistoryReleaseInputSha256
+      !== args["public-history-release-input-sha256"]
+    || migration.publicHistoryRepositoryBindingSha256
+      !== args["public-history-repository-binding-sha256"]
+    || migration.publicHistoryMetadataBindingSha256
+      !== args["public-history-metadata-binding-sha256"]) {
+  fail("private full-history audit does not match the publisher metadata capture");
+}
 
 const proof = config._autoFormKitLegacyCacheProof;
 if (!exactKeys(proof, ["version", "panelBase", "keySha256", "catalogSha256", "catalogVersion"])

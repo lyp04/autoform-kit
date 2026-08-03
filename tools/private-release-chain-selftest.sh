@@ -66,6 +66,7 @@ copy_source_file() {
 for relative in \
   tools/publish-release.sh \
   tools/public-surface-audit.mjs \
+  tools/normalize-github-releases-for-audit.mjs \
   tools/apk-third-party-components.json \
   tools/android-runtime-dependencies.lock.json \
   tools/verify-apk-third-party-sources.mjs \
@@ -220,10 +221,27 @@ const attestation = {
           inputSha256: required("AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256"),
           reportSha256: required("AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256")
         },
+        refsApi: {
+          inputSha256: required("AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256"),
+          reportSha256: required("AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256")
+        },
         releases: {
           inputSha256: required("AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256"),
           reportSha256: required("AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256")
-        }
+        },
+        refIdentitySha256: required("AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256"),
+        pullRefIdentitySha256:
+          required("AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256"),
+        remoteRefsRawSnapshotSha256:
+          required("AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256"),
+        refApiSnapshotSha256:
+          required("AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256"),
+        releaseApiSnapshotSha256:
+          required("AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256"),
+        repositoryBindingSha256:
+          required("AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256"),
+        metadataBindingSha256:
+          required("AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256")
       }
     },
     privateEvidence: {
@@ -364,11 +382,17 @@ MANIFEST_REPORT="${REPORT_DIR}/manifest-report.json"
 SOURCE_PROVENANCE_REPORT="${REPORT_DIR}/source-provenance-report.json"
 HISTORY_COMMIT_REPORT="${REPORT_DIR}/source-commit-object-report.json"
 HISTORY_REMOTE_REFS_REPORT="${REPORT_DIR}/remote-refs-report.json"
+HISTORY_REF_API_REPORT="${REPORT_DIR}/ref-api-report.json"
 HISTORY_RELEASES_REPORT="${REPORT_DIR}/releases-report.json"
 HISTORY_COMMIT_OBJECT_FIXTURE="${STATE_DIR}/source-commit-object.fixture"
+HISTORY_REMOTE_REFS_RAW_FIXTURE="${STATE_DIR}/remote-refs.raw.fixture"
 HISTORY_REMOTE_REFS_FIXTURE="${STATE_DIR}/remote-refs.fixture"
+HISTORY_BRANCHES_API_FIXTURE="${STATE_DIR}/branches-api.fixture.json"
+HISTORY_TAGS_API_FIXTURE="${STATE_DIR}/tags-api.fixture.json"
+HISTORY_REF_API_FIXTURE="${STATE_DIR}/ref-api.fixture.json"
 HISTORY_RELEASES_API_FIXTURE="${STATE_DIR}/releases-api.fixture.json"
 HISTORY_RELEASES_FIXTURE="${STATE_DIR}/releases.fixture.json"
+HISTORY_REPOSITORY_API_FIXTURE="${STATE_DIR}/repository-api.fixture.json"
 
 SIGNER_SHA256="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 PACKAGE_NAME="com.example.autoform"
@@ -406,9 +430,40 @@ PUBLIC_RUNTIME_LOCK_SHA256="$(sha256_file \
 
 "${REAL_GIT}" -C "${REPO_DIR}" cat-file commit "${SOURCE_COMMIT}" \
   > "${HISTORY_COMMIT_OBJECT_FIXTURE}"
-printf '%s\trefs/heads/main\n' "${SOURCE_COMMIT}" > "${HISTORY_REMOTE_REFS_FIXTURE}"
+printf '%s\tHEAD\n%s\trefs/heads/main\n%s\trefs/pull/1/head\n%s\trefs/pull/1/merge\n' \
+  "${SOURCE_COMMIT}" "${SOURCE_COMMIT}" "${SOURCE_COMMIT}" "${SOURCE_COMMIT}" \
+  > "${HISTORY_REMOTE_REFS_RAW_FIXTURE}"
+printf '[[]]\n' > "${HISTORY_TAGS_API_FIXTURE}"
 printf '[[]]\n' > "${HISTORY_RELEASES_API_FIXTURE}"
-printf '[]\n' > "${HISTORY_RELEASES_FIXTURE}"
+jq -nS '{
+  id: 901,
+  node_id: "R_fixture_901",
+  full_name: "example/autoform-kit",
+  visibility: "public",
+  private: false,
+  description: "Generic form framework",
+  homepage: "https://example.invalid/autoform-kit",
+  topics: ["android", "forms"],
+  default_branch: "main"
+}' > "${HISTORY_REPOSITORY_API_FIXTURE}"
+jq -nS --arg sha "${SOURCE_COMMIT}" '[[{name:"main", protected:false,
+  commit:{sha:$sha,url:("https://api.github.com/repos/example/autoform-kit/commits/"+$sha)}}]]' \
+  > "${HISTORY_BRANCHES_API_FIXTURE}"
+"${REAL_NODE}" "${TOOLS_DIR}/normalize-github-releases-for-audit.mjs" \
+  --remote-refs-input "${HISTORY_REMOTE_REFS_RAW_FIXTURE}" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  > "${HISTORY_REMOTE_REFS_FIXTURE}"
+"${REAL_NODE}" "${TOOLS_DIR}/normalize-github-releases-for-audit.mjs" \
+  --branches-input "${HISTORY_BRANCHES_API_FIXTURE}" \
+  --tags-input "${HISTORY_TAGS_API_FIXTURE}" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  > "${HISTORY_REF_API_FIXTURE}"
+"${REAL_NODE}" "${TOOLS_DIR}/normalize-github-releases-for-audit.mjs" \
+  --repo example/autoform-kit \
+  --repository-input "${HISTORY_REPOSITORY_API_FIXTURE}" \
+  --input "${HISTORY_RELEASES_API_FIXTURE}" > "${HISTORY_RELEASES_FIXTURE}"
 
 write_source_provenance_report() {
   local output="$1"
@@ -567,8 +622,45 @@ write_audit_report file "$(sha256_file "${HISTORY_COMMIT_OBJECT_FIXTURE}")" \
   "${HISTORY_COMMIT_REPORT}"
 write_audit_report file "$(sha256_file "${HISTORY_REMOTE_REFS_FIXTURE}")" \
   "${HISTORY_REMOTE_REFS_REPORT}"
+write_audit_report file "$(sha256_file "${HISTORY_REF_API_FIXTURE}")" \
+  "${HISTORY_REF_API_REPORT}"
 write_audit_report file "$(sha256_file "${HISTORY_RELEASES_FIXTURE}")" \
   "${HISTORY_RELEASES_REPORT}"
+HISTORY_REMOTE_REFS_INPUT_SHA256="$(sha256_file "${HISTORY_REMOTE_REFS_FIXTURE}")"
+HISTORY_REF_API_INPUT_SHA256="$(sha256_file "${HISTORY_REF_API_FIXTURE}")"
+HISTORY_RELEASES_INPUT_SHA256="$(sha256_file "${HISTORY_RELEASES_FIXTURE}")"
+HISTORY_REMOTE_REFS_IDENTITY_SHA256="$(
+  jq -er '.refIdentitySha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256="$(
+  jq -er '.rawSnapshotSha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+HISTORY_PULL_REF_IDENTITY_SHA256="$(
+  jq -er '.pullRefIdentitySha256' "${HISTORY_REMOTE_REFS_FIXTURE}"
+)"
+HISTORY_REF_API_SNAPSHOT_SHA256="$(
+  jq -er '.apiSnapshotSha256' "${HISTORY_REF_API_FIXTURE}"
+)"
+HISTORY_RELEASE_API_SNAPSHOT_SHA256="$(
+  jq -er '.apiSnapshotSha256' "${HISTORY_RELEASES_FIXTURE}"
+)"
+HISTORY_REPOSITORY_BINDING_SHA256="$(
+  jq -er '.repositoryBindingSha256' "${HISTORY_RELEASES_FIXTURE}"
+)"
+HISTORY_METADATA_BINDING_BASE="$(jq -cnS \
+  --arg pullRefs "${HISTORY_PULL_REF_IDENTITY_SHA256}" \
+  --arg refsApi "${HISTORY_REF_API_SNAPSHOT_SHA256}" \
+  --arg refs "${HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+  --arg refsRaw "${HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  --arg releases "${HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+  --arg repository "${HISTORY_REPOSITORY_BINDING_SHA256}" \
+  '{pullRefIdentitySha256:$pullRefs, refApiSnapshotSha256:$refsApi,
+    refIdentitySha256:$refs, remoteRefsRawSnapshotSha256:$refsRaw,
+    releaseApiSnapshotSha256:$releases, repositoryBindingSha256:$repository}')"
+HISTORY_METADATA_BINDING_SHA256="$(
+  printf 'autoform-kit/github-public-metadata-binding/v2\n%s' \
+    "${HISTORY_METADATA_BINDING_BASE}" | sha256_file /dev/stdin
+)"
 TREE_REPORT_SHA256="$(jq -er '.reportSha256' "${TREE_REPORT}")"
 WORKTREE_REPORT_SHA256="$(jq -er '.reportSha256' "${WORKTREE_REPORT}")"
 APK_REPORT_SHA256="$(jq -er '.reportSha256' "${APK_REPORT}")"
@@ -706,6 +798,19 @@ jq -n \
   --arg candidateApkSha256 "${APK_SHA256}" \
   --arg panelPairSha256 "${PANEL_PAIR_SHA256}" \
   --arg panelCatalogSha256 "${PANEL_CATALOG_SHA256}" \
+  --arg publicHistoryRemoteRefsInputSha256 "${HISTORY_REMOTE_REFS_INPUT_SHA256}" \
+  --arg publicHistoryRefApiInputSha256 "${HISTORY_REF_API_INPUT_SHA256}" \
+  --arg publicHistoryRefApiSnapshotSha256 "${HISTORY_REF_API_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRemoteRefsRawSnapshotSha256 \
+    "${HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRefIdentitySha256 "${HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
+  --arg publicHistoryPullRefIdentitySha256 "${HISTORY_PULL_REF_IDENTITY_SHA256}" \
+  --arg publicHistoryReleaseInputSha256 "${HISTORY_RELEASES_INPUT_SHA256}" \
+  --arg publicHistoryReleaseApiSnapshotSha256 \
+    "${HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
+  --arg publicHistoryRepositoryBindingSha256 \
+    "${HISTORY_REPOSITORY_BINDING_SHA256}" \
+  --arg publicHistoryMetadataBindingSha256 "${HISTORY_METADATA_BINDING_SHA256}" \
   '{
     releaseReady:true,
     structuralValidationPassed:true,
@@ -778,6 +883,20 @@ jq -n \
     runtimeFlowParityPickerSignedDeviceCandidateApkSha256:$candidateApkSha256,
     runtimeFlowParityPickerSignedDevicePanelPairSha256:$panelPairSha256,
     runtimeFlowParityPickerSignedDevicePanelCatalogSha256:$panelCatalogSha256,
+    publicHistoryRemoteRefsInputSha256:$publicHistoryRemoteRefsInputSha256,
+    publicHistoryRefApiInputSha256:$publicHistoryRefApiInputSha256,
+    publicHistoryRefApiSnapshotSha256:$publicHistoryRefApiSnapshotSha256,
+    publicHistoryRemoteRefsRawSnapshotSha256:$publicHistoryRemoteRefsRawSnapshotSha256,
+    publicHistoryRefIdentitySha256:$publicHistoryRefIdentitySha256,
+    publicHistoryPullRefIdentitySha256:$publicHistoryPullRefIdentitySha256,
+    publicHistoryReleaseInputSha256:$publicHistoryReleaseInputSha256,
+    publicHistoryReleaseApiSnapshotSha256:$publicHistoryReleaseApiSnapshotSha256,
+    publicHistoryRepositoryBindingSha256:$publicHistoryRepositoryBindingSha256,
+    publicHistoryMetadataBindingSha256:$publicHistoryMetadataBindingSha256,
+    publicHistoryReachableObjectClosureSha256:("f" * 64),
+    publicHistoryAuditReportSha256:("9" * 64),
+    publicHistoryReachableObjectCount:1,
+    publicHistoryReleaseAuditReachableObjectCount:1,
     missingPathCount:0,
     unresolvedPathCount:0,
     validationErrorCount:0,
@@ -843,6 +962,7 @@ RELEASE_STATE="${STATE_DIR}/release-state"
 RELEASE_STORE="${STATE_DIR}/release-store"
 ASSET_DOWNLOAD_LOG="${STATE_DIR}/asset-download.log"
 GH_COMMAND_LOG="${STATE_DIR}/gh-command.log"
+METADATA_CAPTURE_LOG="${STATE_DIR}/metadata-capture.log"
 EVENT_LOG="${STATE_DIR}/events.log"
 MALICIOUS_GATE_MARKER="${STATE_DIR}/malicious-gate-executed"
 CLEANUP_INJECTION_LOG="${STATE_DIR}/cleanup-injection.log"
@@ -916,6 +1036,11 @@ set -euo pipefail
 real_git="${AUTOFORM_CHAIN_REAL_GIT:?}"
 case "${1:-}" in
   ls-remote)
+    if [[ $# -eq 2 && "${2}" == "origin" ]]; then
+      printf 'capture\n' >> "${AUTOFORM_CHAIN_METADATA_CAPTURE_LOG}"
+      /bin/cat "${AUTOFORM_CHAIN_HISTORY_REMOTE_REFS_RAW_FIXTURE}"
+      exit 0
+    fi
     if [[ $# -eq 4 && "${2}" == "--heads" && "${3}" == "origin" \
       && "${4}" == "refs/heads/main" ]]; then
       printf '%s\trefs/heads/main\n' "${AUTOFORM_CHAIN_SOURCE_COMMIT}"
@@ -988,9 +1113,30 @@ program="${1:-}"
 [[ -n "${program}" ]]
 shift
 case "$(basename "${program}")" in
+  normalize-github-releases-for-audit.mjs)
+    exec "${AUTOFORM_CHAIN_REAL_NODE}" "${program}" "$@"
+    ;;
   private-release-gate.cjs)
     printf '%s\n' "${program}" >> "${AUTOFORM_CHAIN_GATE_EXEC_PATH_LOG}"
-    exec "${AUTOFORM_CHAIN_REAL_NODE}" "${program}" "$@"
+    set +e
+    "${AUTOFORM_CHAIN_REAL_NODE}" "${program}" "$@"
+    status=$?
+    set -e
+    if [[ ${status} -eq 0 \
+      && "${AUTOFORM_CHAIN_MUTATE_REF_CONTEXT_AFTER_GATE:-false}" == true ]]; then
+      jq '.[0][0].protected = true
+        | .[0][0].protection_url =
+          "https://api.github.com/repos/example/autoform-kit/branches/main/protection"
+        | .[0][0].protection = {enabled:true,required_status_checks:{
+          enforcement_level:"everyone",
+          contexts:["changed-after-gate-context"],
+          checks:[{app_id:null,context:"changed-after-gate-context"}]}}' \
+        "${AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE}" \
+        > "${AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE}.changed"
+      mv "${AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE}.changed" \
+        "${AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE}"
+    fi
+    exit "${status}"
     ;;
   verify-private-release-evidence.mjs)
     set +e
@@ -1001,6 +1147,15 @@ case "$(basename "${program}")" in
     if [[ ${status} -eq 0 ]]; then
       printf 'called\n' >> "${AUTOFORM_CHAIN_VERIFIER_CALL_LOG}"
       printf 'verifier\n' >> "${AUTOFORM_CHAIN_EVENT_LOG}"
+      call_count="$(wc -l < "${AUTOFORM_CHAIN_VERIFIER_CALL_LOG}" | tr -d ' ')"
+      if [[ "${AUTOFORM_CHAIN_MUTATE_METADATA_DURING_REVERIFY:-false}" == true \
+        && "${call_count}" == "2" ]]; then
+        jq '.description = "changed-during-private-reverification"' \
+          "${AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE}" \
+          > "${AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE}.changed"
+        mv "${AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE}.changed" \
+          "${AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE}"
+      fi
     fi
     exit "${status}"
     ;;
@@ -1059,6 +1214,9 @@ case "$(basename "${program}")" in
             ;;
           */remote-refs.scan-input)
             /bin/cat "${AUTOFORM_CHAIN_HISTORY_REMOTE_REFS_REPORT}"
+            ;;
+          */github-refs.scan-input.json)
+            /bin/cat "${AUTOFORM_CHAIN_HISTORY_REF_API_REPORT}"
             ;;
           */github-releases.scan-input.json)
             /bin/cat "${AUTOFORM_CHAIN_HISTORY_RELEASES_REPORT}"
@@ -1122,6 +1280,22 @@ case "${1:-}" in
     ;;
   api)
     endpoint="${!#}"
+    if [[ "${endpoint}" == "repos/example/autoform-kit/branches?per_page=100" ]]; then
+      [[ $# -eq 4 && "${2:-}" == "--paginate" && "${3:-}" == "--slurp" ]] || {
+        printf 'unexpected fixture branch-history API arguments\n' >&2
+        exit 2
+      }
+      /bin/cat "${AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE}"
+      exit 0
+    fi
+    if [[ "${endpoint}" == "repos/example/autoform-kit/tags?per_page=100" ]]; then
+      [[ $# -eq 4 && "${2:-}" == "--paginate" && "${3:-}" == "--slurp" ]] || {
+        printf 'unexpected fixture tag-history API arguments\n' >&2
+        exit 2
+      }
+      /bin/cat "${AUTOFORM_CHAIN_HISTORY_TAGS_API_FIXTURE}"
+      exit 0
+    fi
     if [[ "${endpoint}" == "repos/example/autoform-kit/releases?per_page=100" ]]; then
       [[ $# -eq 4 && "${2:-}" == "--paginate" && "${3:-}" == "--slurp" ]] || {
         printf 'unexpected fixture release-history API arguments\n' >&2
@@ -1135,8 +1309,7 @@ case "${1:-}" in
         printf 'unexpected fixture public-repository API arguments\n' >&2
         exit 2
       }
-      printf '%s\n' \
-        '{"node_id":"public-fixture-node","full_name":"example/autoform-kit","visibility":"public","private":false}'
+      /bin/cat "${AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE}"
       exit 0
     fi
     if [[ "${endpoint}" == "repos/private-example/forms" ]]; then
@@ -1342,6 +1515,7 @@ reset_run_state() {
   : > "${RELEASE_CREATE_LOG}"
   : > "${ASSET_DOWNLOAD_LOG}"
   : > "${GH_COMMAND_LOG}"
+  : > "${METADATA_CAPTURE_LOG}"
   : > "${FETCH_LOG}"
   : > "${EVENT_LOG}"
   : > "${CLEANUP_INJECTION_LOG}"
@@ -1389,6 +1563,8 @@ run_publish() {
   AUTOFORM_CHAIN_SPOOF_TEMP_PARENT_OWNER="${spoof_temp_parent_owner}" \
   AUTOFORM_CHAIN_TEMP_PARENT="${release_temp_parent}" \
   AUTOFORM_CHAIN_REPLACE_AUDIT_DIRECTORY="${replace_audit_directory}" \
+  AUTOFORM_CHAIN_MUTATE_METADATA_DURING_REVERIFY="${AUTOFORM_CHAIN_MUTATE_METADATA_DURING_REVERIFY:-false}" \
+  AUTOFORM_CHAIN_MUTATE_REF_CONTEXT_AFTER_GATE="${AUTOFORM_CHAIN_MUTATE_REF_CONTEXT_AFTER_GATE:-false}" \
   AUTOFORM_CHAIN_CLEANUP_INJECTION_LOG="${CLEANUP_INJECTION_LOG}" \
   AUTOFORM_CHAIN_CLEANUP_SENTINEL_DIR="${CLEANUP_SENTINEL_DIR}" \
   AUTOFORM_CHAIN_ORIGINAL_GATE_PATH="${GATE_PROGRAM}" \
@@ -1398,6 +1574,7 @@ run_publish() {
   AUTOFORM_CHAIN_RELEASE_STORE="${RELEASE_STORE}" \
   AUTOFORM_CHAIN_ASSET_DOWNLOAD_LOG="${ASSET_DOWNLOAD_LOG}" \
   AUTOFORM_CHAIN_GH_COMMAND_LOG="${GH_COMMAND_LOG}" \
+  AUTOFORM_CHAIN_METADATA_CAPTURE_LOG="${METADATA_CAPTURE_LOG}" \
   AUTOFORM_CHAIN_PRIVATE_WORDLIST="${PRIVATE_WORDLIST}" \
   AUTOFORM_CHAIN_TREE_REPORT="${TREE_REPORT}" \
   AUTOFORM_CHAIN_WORKTREE_REPORT="${WORKTREE_REPORT}" \
@@ -1407,9 +1584,14 @@ run_publish() {
   AUTOFORM_CHAIN_MANIFEST_REPORT="${MANIFEST_REPORT}" \
   AUTOFORM_CHAIN_SOURCE_PROVENANCE_REPORT="${SOURCE_PROVENANCE_REPORT}" \
   AUTOFORM_CHAIN_HISTORY_COMMIT_REPORT="${HISTORY_COMMIT_REPORT}" \
+  AUTOFORM_CHAIN_HISTORY_REMOTE_REFS_RAW_FIXTURE="${HISTORY_REMOTE_REFS_RAW_FIXTURE}" \
   AUTOFORM_CHAIN_HISTORY_REMOTE_REFS_REPORT="${HISTORY_REMOTE_REFS_REPORT}" \
+  AUTOFORM_CHAIN_HISTORY_REF_API_REPORT="${HISTORY_REF_API_REPORT}" \
   AUTOFORM_CHAIN_HISTORY_RELEASES_REPORT="${HISTORY_RELEASES_REPORT}" \
+  AUTOFORM_CHAIN_HISTORY_BRANCHES_API_FIXTURE="${HISTORY_BRANCHES_API_FIXTURE}" \
+  AUTOFORM_CHAIN_HISTORY_TAGS_API_FIXTURE="${HISTORY_TAGS_API_FIXTURE}" \
   AUTOFORM_CHAIN_HISTORY_RELEASES_API_FIXTURE="${HISTORY_RELEASES_API_FIXTURE}" \
+  AUTOFORM_CHAIN_HISTORY_REPOSITORY_API_FIXTURE="${HISTORY_REPOSITORY_API_FIXTURE}" \
   AUTOFORM_CHAIN_PANEL_CONFIG="${PANEL_CONFIG_EVIDENCE}" \
   AUTOFORM_CHAIN_PANEL_CATALOG="${PANEL_CATALOG_EVIDENCE}" \
   AUTOFORM_CHAIN_PANEL_MANIFEST="${PANEL_MANIFEST_EVIDENCE}" \
@@ -1503,6 +1685,8 @@ run_publish false "${SUCCESS_LOG}" || {
   die "private gate did not run exactly once in success chain"
 [[ "$(wc -l < "${RELEASE_CREATE_LOG}" | tr -d ' ')" == "1" ]] || \
   die "fake Release creation did not run exactly once"
+[[ "$(wc -l < "${METADATA_CAPTURE_LOG}" | tr -d ' ')" == "3" ]] || \
+  die "success chain did not capture remote metadata exactly three times"
 [[ "$(tr '\n' ' ' < "${EVENT_LOG}")" == "verifier gate verifier release " ]] || \
   die "success chain did not preserve verifier/gate/reverification/release ordering"
 [[ "$(wc -l < "${GATE_EXEC_PATH_LOG}" | tr -d ' ')" == "1" ]] || \
@@ -1569,6 +1753,76 @@ if grep -Fq "${CATALOG_READ_KEY}" "${SUCCESS_LOG}" "${VERIFIER_CAPTURE}" \
   "${GATE_ENV_CAPTURE}" "${GH_COMMAND_LOG}"; then
   die "private catalog key leaked into a success-chain log or report"
 fi
+
+BRANCH_METADATA_BACKUP="${STATE_DIR}/branches-api.backup.json"
+cp "${HISTORY_BRANCHES_API_FIXTURE}" "${BRANCH_METADATA_BACKUP}"
+POST_GATE_CONTEXT_TOCTOU_LOG="${STATE_DIR}/post-gate-context-toctou.log"
+if AUTOFORM_CHAIN_MUTATE_REF_CONTEXT_AFTER_GATE=true \
+  run_publish false "${POST_GATE_CONTEXT_TOCTOU_LOG}"; then
+  die "publisher accepted a required-status context changing after the private gate"
+fi
+grep -Eq 'public file audit selected the wrong bytes|public commit/repository/ref/status/Release metadata changed after private attestation' \
+  "${POST_GATE_CONTEXT_TOCTOU_LOG}" || \
+  die "publisher did not detect a post-gate required-status context change"
+[[ "$(wc -l < "${VERIFIER_CALL_LOG}" | tr -d ' ')" == "1" \
+  && "$(wc -l < "${GATE_LOG}" | tr -d ' ')" == "1" \
+  && "$(wc -l < "${METADATA_CAPTURE_LOG}" | tr -d ' ')" == "2" \
+  && ! -s "${RELEASE_CREATE_LOG}" ]] || \
+  die "post-gate context TOCTOU reached reverification or Release creation"
+mv "${BRANCH_METADATA_BACKUP}" "${HISTORY_BRANCHES_API_FIXTURE}"
+
+REPOSITORY_METADATA_BACKUP="${STATE_DIR}/repository-api.backup.json"
+cp "${HISTORY_REPOSITORY_API_FIXTURE}" "${REPOSITORY_METADATA_BACKUP}"
+REVERIFY_METADATA_TOCTOU_LOG="${STATE_DIR}/reverify-metadata-toctou.log"
+if AUTOFORM_CHAIN_MUTATE_METADATA_DURING_REVERIFY=true \
+  run_publish false "${REVERIFY_METADATA_TOCTOU_LOG}"; then
+  die "publisher accepted remote metadata changing during private reverification"
+fi
+grep -q 'source repository identity or selected public metadata changed during audit' \
+  "${REVERIFY_METADATA_TOCTOU_LOG}" || \
+  die "publisher did not re-audit remote metadata after private reverification"
+[[ "$(wc -l < "${VERIFIER_CALL_LOG}" | tr -d ' ')" == "2" \
+  && "$(wc -l < "${GATE_LOG}" | tr -d ' ')" == "1" \
+  && "$(wc -l < "${METADATA_CAPTURE_LOG}" | tr -d ' ')" == "2" \
+  && ! -s "${RELEASE_CREATE_LOG}" ]] || \
+  die "remote metadata TOCTOU did not stop after reverification and before Release creation"
+mv "${REPOSITORY_METADATA_BACKUP}" "${HISTORY_REPOSITORY_API_FIXTURE}"
+
+MIGRATION_REPORT_BACKUP="${STATE_DIR}/private-migration-report.backup.json"
+cp "${PRIVATE_MIGRATION_REPORT}" "${MIGRATION_REPORT_BACKUP}"
+jq '.publicHistoryReleaseInputSha256 = ("0" * 64)' \
+  "${PRIVATE_MIGRATION_REPORT}" > "${STATE_DIR}/private-migration-report.mismatch.json"
+mv "${STATE_DIR}/private-migration-report.mismatch.json" "${PRIVATE_MIGRATION_REPORT}"
+chmod 600 "${PRIVATE_MIGRATION_REPORT}"
+METADATA_BINDING_MISMATCH_LOG="${STATE_DIR}/metadata-binding-mismatch.log"
+if run_publish false "${METADATA_BINDING_MISMATCH_LOG}"; then
+  die "publisher accepted a private full-history audit for another Release envelope"
+fi
+grep -q 'trusted private evidence verification failed' \
+  "${METADATA_BINDING_MISMATCH_LOG}" || \
+  die "publisher did not explain the private/public Release metadata mismatch"
+[[ ! -s "${GATE_LOG}" && ! -s "${RELEASE_CREATE_LOG}" ]] || \
+  die "private/public Release metadata mismatch reached the gate or Release creation"
+mv "${MIGRATION_REPORT_BACKUP}" "${PRIVATE_MIGRATION_REPORT}"
+chmod 600 "${PRIVATE_MIGRATION_REPORT}"
+
+cp "${PRIVATE_MIGRATION_REPORT}" "${MIGRATION_REPORT_BACKUP}"
+jq '.publicHistoryRemoteRefsInputSha256 = ("0" * 64)' \
+  "${PRIVATE_MIGRATION_REPORT}" > "${STATE_DIR}/private-migration-report.refs-mismatch.json"
+mv "${STATE_DIR}/private-migration-report.refs-mismatch.json" \
+  "${PRIVATE_MIGRATION_REPORT}"
+chmod 600 "${PRIVATE_MIGRATION_REPORT}"
+REF_BINDING_MISMATCH_LOG="${STATE_DIR}/ref-binding-mismatch.log"
+if run_publish false "${REF_BINDING_MISMATCH_LOG}"; then
+  die "publisher accepted a private full-history audit for another ref envelope"
+fi
+grep -q 'trusted private evidence verification failed' \
+  "${REF_BINDING_MISMATCH_LOG}" || \
+  die "publisher did not explain the private/public ref metadata mismatch"
+[[ ! -s "${GATE_LOG}" && ! -s "${RELEASE_CREATE_LOG}" ]] || \
+  die "private/public ref metadata mismatch reached the gate or Release creation"
+mv "${MIGRATION_REPORT_BACKUP}" "${PRIVATE_MIGRATION_REPORT}"
+chmod 600 "${PRIVATE_MIGRATION_REPORT}"
 
 SNAPSHOT_PATH_SWAP_LOG="${STATE_DIR}/snapshot-path-swap.log"
 run_publish false "${SNAPSHOT_PATH_SWAP_LOG}" false true || {

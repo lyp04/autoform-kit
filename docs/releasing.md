@@ -95,7 +95,7 @@ tools/release.sh \
   --notes "Example release notes"
 ```
 
-所有版本、路径和说明均为虚构示意。`--previous-apk` 与至少一个 `--private-wordlist` 都是强制项；后者可重复，文件可使用逐行 literal、JSON 字符串数组，或扫描器支持的严格 `{ "term", "matchMode" }` 条目数组。结构化条目用于明确选择 `literal`、`identifier` 或 `deployment-token` 匹配；不允许额外字段。词表必须是仓库外的普通非符号链接文件；路径、条目和词表文件哈希不会写入扫描报告、candidate manifest、attestation 或日志。脚本会：
+所有版本、路径和说明均为虚构示意。标准升级候选必须提供 `--previous-apk`；唯一例外是下节所述、严格限定为 v1.0.0–v1.0.6 的 inventory-bound 历史净化重建。至少一个 `--private-wordlist` 始终是强制项；后者可重复，文件可使用逐行 literal、JSON 字符串数组，或扫描器支持的严格 `{ "term", "matchMode" }` 条目数组。结构化条目用于明确选择 `literal`、`identifier` 或 `deployment-token` 匹配；不允许额外字段。词表必须是仓库外的普通非符号链接文件；路径、条目和词表文件哈希不会写入扫描报告、candidate manifest、attestation 或日志。脚本会：
 
 1. 验证版本、signing config，要求从 `main` 构建，记录 source commit，并要求构建前后 working tree 均干净且 HEAD / branch 未变化；
 2. 选择 JDK 17+；
@@ -103,10 +103,10 @@ tools/release.sh \
 4. 在任何签名动作前，用仓库内固定来源 verifier 验证 unsigned APK 的公开 AAR、嵌套来源 entry、合并/编译产物和 DEX 完整字符串来源链；
 5. 对齐并签名 APK，再对最终 signed APK 重跑同一来源验证；
 6. 验证 alignment 与签名；
-7. 比较上一版 APK 的 package 与 signer，并要求新 `versionCode` 更高；
-8. 用 `aapt` 验证新旧 APK 的 package、versionCode、versionName；
+7. 标准升级模式比较上一版 APK 的 package 与 signer，并要求新 `versionCode` 更高；历史模式把每个原始 APK 的 package/version/code/signer 与重写前 inventory 精确绑定，并要求 v1.0.0 从 code 1 开始、后续 code 严格递增；
+8. 用 `aapt` 验证新 APK，并按模式验证上一版 APK，或所选原始历史 APK及紧邻的上一份重建候选；
 9. 使用仓库内固定扫描器分别现场审计 source commit 原始对象（含作者、提交者和 message）、该 commit 的 exact Git tree、当前 tracked/untracked non-ignored worktree 和已签名 APK；findings、缺失报告或操作错误都会失败；
-10. 生成 `update.json`、规范化的 release notes，以及绑定 source/clean state、APK/update/notes hash、package/version/signer、上一版 APK identity，以及扫描器/policy/input/report SHA 和最终来源 verifier/report/counts 的 schema v2 `candidate-manifest.json`；
+10. 生成 `update.json`、规范化的 release notes 和 candidate manifest；标准升级候选使用 schema 2 并绑定上一版 APK identity，全部历史候选使用 schema 4、显式 `publicationMode`、原始 Release/inventory binding 与无歧义的连续重建 lineage；两者都绑定 source/clean state、APK/update/notes hash、package/version/signer，以及扫描器/policy/input/report SHA 和最终来源 verifier/report/counts；
 11. 再用同一扫描器和私有词表逐字节审计将公开的 `update.json`、`release-notes.txt` 与 `candidate-manifest.json`，任一 finding 或扫描期间字节变化都会失败。
 
 输出：
@@ -118,7 +118,62 @@ dist/release-candidates/v1.2.3/release-notes.txt
 dist/release-candidates/v1.2.3/candidate-manifest.json
 ```
 
-`dist/` 被 Git 忽略。同版本候选目录已经存在时脚本会停止，不会覆盖；审查开始后不要修改其中任一文件，任何字节变化都会在第二阶段被拒绝。六个完整扫描报告（tree、worktree、APK 和三个公开 release metadata 文件）及来源 verifier 的完整报告只存在于权限受限的临时目录，候选落盘前即删除；manifest 只保存公开安全的 scanner/verifier/policy/input/report SHA、Git tree OID 与无值计数，不保存 findings、受审常量或任何私有词表标识。三个 metadata 文件已经由其 artifact SHA 精确绑定，发布阶段还会用同一 scanner/policy 重新现场扫描并重跑来源 verifier。`tools/release.sh --publish` 已停用并会明确报错。
+`dist/` 被 Git 忽略。同版本候选目录已经存在时脚本会停止，不会覆盖；审查开始后不要修改其中任一文件，任何字节变化都会在第二阶段被拒绝。七个完整扫描报告（commit object、tree、worktree、APK 和三个公开 release metadata 文件）及来源 verifier 的完整报告只存在于权限受限的临时目录，候选落盘前即删除。Candidate manifest 保存 tree、worktree、APK、`update.json` 与 release notes 的公开安全 scanner/policy/input/report SHA、Git tree OID、来源 verifier binding 与无值计数；commit object 由 `source.commit` 选定并在发布阶段重新捕获扫描，candidate manifest 自身的 fresh exact-file report 则因不能自引用而在第二阶段单独交给私有 gate。任何报告都不保存 findings、受审常量或私有词表标识。发布阶段还会用同一 scanner/policy 重新现场扫描全部公开输入并重跑来源 verifier。`tools/release.sh --publish` 已停用并会明确报错。
+
+### 历史 v1.0.0–v1.0.6 净化重建
+
+此模式只用于公开历史重写时按顺序重新生成七个安全历史资产，不是创建新项目首版或正常升级的通用开关。先在仓库外保存重写前的 mode-`0600` inventory，以及每个 tag 目录中精确的原始 APK 与 `update.json`。传给候选生成器的 inventory、原始 APK 和 title 文件必须都是仓库外、当前用户拥有、权限精确为 `0600`、单链接的普通非符号链接文件；脚本会在关键边界重复核对。再生成只读历史合同：
+
+```sh
+AAPT=/path/to/aapt APKSIGNER=/path/to/apksigner \
+node dist/private-migration/build-historical-release-inventory.mjs \
+  --before-inventory /secure/history/before.private.json \
+  --asset-dir /secure/history/original-assets \
+  --out /secure/history/rebuild-inventory.private.json
+```
+
+该 builder 要求 v1.0.0–v1.0.6 各有且仅有一个 APK 和一个 `update.json`，逐项核对文件名、大小、SHA-256、package/version/code/signer 以及 update→APK 关系，并以不可覆盖方式创建 mode-`0600` 输出。此 inventory 绑定重写前文件 SHA、refs/Release metadata identity、七个 title 的 SHA/字符数、draft/prerelease、资产名称/数量/大小/摘要及全链 identity；它与原始资产都不得进入 Git 或 Release。
+
+为每个 tag 准备一个 mode-`0600`、无换行的精确 Release title 文件。v1.0.0 示例：
+
+```sh
+tools/release.sh \
+  --version 1.0.0 \
+  --version-code 1 \
+  --historical-inventory /secure/history/rebuild-inventory.private.json \
+  --historical-original-apk /secure/history/original-assets/v1.0.0/autoform-kit-1.0.0.apk \
+  --historical-title-file /secure/history/titles/v1.0.0.txt \
+  --private-wordlist /secure/example/private-publication-wordlist.json \
+  --offline
+```
+
+v1.0.1–v1.0.6 使用相同参数，并额外把 `--historical-previous-candidate` 指向 `dist/release-candidates/<紧邻前一 tag>/candidate-manifest.json`。脚本拒绝跳版、混用 inventory、复用任何旧资产字节或旧的未绑定 `--historical-initial-*` 参数。原始 APK 只用于私下验证 identity；不会复制进候选，也绝不能重新上传。所有七个历史候选均使用 schema 4 与固定 `publicationMode:"historical-rewrite-non-latest"`，Release body 只能是源码绑定的通用固定文本；旧 Release body 已知不安全，绝不继承。
+
+标准 `tools/publish-release.sh` 在 gate/GitHub 操作前拒绝所有 schema 3/4、任何 `publicationMode`，以及伪装成 schema 2 的 v1.0.0–v1.0.6。历史候选只能按 tag 顺序交给独立发布器。
+
+每一版发布前都要从当前 fresh branches、tags、Releases、repository、完整 raw refs 及已下载资产重新运行私有 full-history audit，并生成该目标 tag 专用、不可覆盖的 mode-`0600` publication attestation。历史审计和历史发布器必须使用同一组仓库外 JSON wordlist；每个 wordlist 都必须由当前用户拥有、权限精确为 `0600`、单链接且为普通非符号链接文件。逐行文本 wordlist 虽可用于一般候选扫描，但不能作为此 publication attestation 的输入。下面只列出历史模式新增的环境变量；其余输入仍使用私有 migration workspace 中同一审计器记录的完整路径：
+
+```sh
+AUTOFORM_PRIVATE_PUBLIC_HISTORY_AUDIT_MODE=historical-incremental \
+AUTOFORM_PRIVATE_PUBLIC_HISTORY_EXCLUDED_RELEASE_TAG=v1.0.0 \
+AUTOFORM_PRIVATE_PUBLIC_HISTORY_PUBLICATION_ATTESTATION=/secure/history/v1.0.0.publication-attestation.json \
+AUTOFORM_PRIVATE_PUBLIC_HISTORY_WORDLISTS_JSON='["/secure/example/private-publication-wordlist.json"]' \
+node dist/private-migration/audit-public-history-and-releases.mjs
+```
+
+`EXCLUDED_RELEASE_TAG` 必须等于本次尚未创建的目标 tag。它只让发布器在创建 draft 后仍能用同一份 pre-existing Release envelope 复核增量；已发布前缀的数量、顺序、manifest、APK 与 `update.json` 仍由发布器递归严格校验。此 wrapper 的 nested audit 必须显式为 `historical-incremental`，不能用标准发布所需的 `final` migration audit 代替，反向也不允许。确认 attestation 已由审计器以 `0600`、当前用户、单链接方式创建后，计算其 exact file SHA-256，再调用发布器：
+
+```sh
+node tools/publish-historical-release.mjs \
+  --candidate dist/release-candidates/v1.0.0/candidate-manifest.json \
+  --inventory /secure/history/rebuild-inventory.private.json \
+  --inventory-file-sha256 <exact-file-sha256> \
+  --private-history-audit /secure/history/v1.0.0.publication-attestation.json \
+  --private-history-audit-file-sha256 <exact-attestation-file-sha256> \
+  --private-wordlist /secure/example/private-publication-wordlist.json
+```
+
+历史发布器要求 sanitized tag 已存在且精确指向 candidate source commit；它绝不创建、移动或删除 tag。两次完整 preflight 在任何远端副作用前绑定并扫描 commit/tree/worktree、候选四文件、Git refs、GitHub branches/tags（含 protection status contexts/checks）、repository 与 Releases；每次还在隔离 bare repository 中精确 fetch heads、tags 和 pull refs，从这些 roots 逐对象读取并扫描内容，再把 object count、content hash 和 canonical reachable closure 与 incremental attestation 精确比对。第一轮还下载、核对并扫描全部已发布历史前缀的 APK 与 `update.json`。它只上传本次重建 APK 和 `update.json`，先创建 `--draft --latest=false`，下载两项资产重新核对 identity/SHA 并扫描，原 Release 非 draft 时才以 `--draft=false --latest=false` 发布，再次下载和扫描。title、draft/prerelease、资产数量/名称来自 inventory；body 始终使用固定通用文本；历史 Release 永不成为 latest。开始时 `/releases/latest` 只能不存在或精确为 v1.0.7，结束时必须保持同一状态，否则明确失败。
 
 Candidate manifest 的 `publicAudit` 绑定结构如下；示例值均为占位符：
 
@@ -218,7 +273,7 @@ Package identity、图标和签名属于构建时例外，不能由 Panel 在 AP
 
 ## 发布 GitHub Release
 
-先人工检查候选目录，并让仓库外或 Git-ignored 的私有 gate 汇总所有私有迁移、真实回放与设备证据。然后从干净、已完整推送的 `main` 执行第二阶段：
+先人工检查标准 schema-2 候选目录，并让仓库外或 Git-ignored 的私有 gate 汇总所有私有迁移、真实回放与设备证据。然后从干净、已完整推送的 `main` 执行第二阶段。该命令拒绝 schema 3/4、任何 historical `publicationMode` 以及保留给重建流程的 v1.0.0–v1.0.6 tag：
 
 ```sh
 tools/publish-release.sh \
@@ -262,9 +317,10 @@ device/inode/mode/owner，cleanup 只删除仍指向同一非符号链接目录�
 - 用同一固定扫描器和私有词表重新扫描 exact `update.json`、release notes 与 candidate manifest；前两者必须命中 candidate 中的 exact input/report binding，manifest fresh report 必须绑定 manifest 当前实际 SHA；三者的扫描前后字节和实际上传路径必须保持一致；
 - `gh` 已对 GitHub 登录；
 - GitHub API 返回的 source repository 为 public，且仓库全名与 candidate 中的 owner/repo 精确一致；
+- 完整 `git ls-remote origin` 只含一个指向 default branch head 的 literal `HEAD`、heads、tags 与格式严格的 `refs/pull/<正整数>/(head|merge)`；GitHub branches/tags API 与 Git transport 的 branch/tag identity 完全一致，branch protection 的 required-status contexts/checks 也进入敏感词扫描；
 - 本地 / 远端 tag 与同名 GitHub Release 均不存在。
 
-以上检查先执行一次，私有 gate 通过后还会立即重新读取候选、remote ref、扫描器、来源 verifier、词表与全部 public surface，并重跑 source tree、worktree、APK、三份发布文件以及 commit/ref/Release metadata 共九个扫描和来源验证；live private-evidence verifier 也会再次完整执行，第二份 report SHA-256 必须与 gate 所绑定的第一份完全相同。Source repository 的 public 状态还会在发布前再次查询，随后才执行唯一的 `gh release create --latest`。脚本从不把旧报告或人工布尔值当作公开安全结论；旧报告即使 JSON 合法，只要 input/report binding 或计数不同也会失败。每次扫描前后还会重算 verifier、扫描器、词表和相应输入字节，阻止扫描中的 TOCTOU。第二阶段不调用 Gradle，因此必须保留生成该候选时的 exact `app/build` intermediates 和 policy 绑定的 Gradle cache AAR；缺失或改变会 fail closed，不能用 candidate manifest 中的旧计数代替现场验证。Release 上传候选中的 APK、`update.json` 与 `candidate-manifest.json`，并把同一候选中的 `release-notes.txt` 作为正文；不会覆盖已有 tag / Release。
+以上检查先执行一次。私有 gate 通过后会第二次完整读取候选、扫描器、来源 verifier、词表与全部 public surface，并重跑 source tree、worktree、APK、三份发布文件以及 commit/完整 remote refs/refs API/Releases metadata 共十个扫描和来源验证。随后 live private-evidence verifier 再次完整执行，其 report SHA-256 必须与 gate 所绑定的第一份完全相同；verifier 返回后还会第三次捕获并扫描 repository、完整 remote refs、GitHub branches/tags 与 Releases，并与第一次 metadata binding 逐项比较，之后才执行唯一的 `gh release create --latest`。脚本从不把旧报告或人工布尔值当作公开安全结论；旧报告即使 JSON 合法，只要 input/report binding 或计数不同也会失败。每次扫描前后还会重算 verifier、normalizer、扫描器、词表和相应输入字节，阻止扫描中的 TOCTOU。第二阶段不调用 Gradle，因此必须保留生成该候选时的 exact `app/build` intermediates 和 policy 绑定的 Gradle cache AAR；缺失或改变会 fail closed，不能用 candidate manifest 中的旧计数代替现场验证。Release 上传候选中的 APK、`update.json` 与 `candidate-manifest.json`，并把同一候选中的 `release-notes.txt` 作为正文；不会覆盖已有 tag / Release。
 
 `publish-release.sh` 只接受稳定版 candidate；带 `-beta`、`-rc` 等 prerelease 后缀的版本会在私有 gate 和发布之前停止。beta 更新使用 App 已有的固定 `beta` tag 路由，必须由独立流程发布且明确设置 `--latest=false`，不能替换 stable `/releases/latest`。
 
@@ -398,7 +454,9 @@ fail closed。手填 status/hash/boolean 不构成启用依据。
 - `AUTOFORM_RELEASE_PUBLIC_MANIFEST_INPUT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_MANIFEST_REPORT_SHA256`；
 - `AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_FILE`、`AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_INPUT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_REPORT_SHA256`；
 - `AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_FILE`、`AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256`；
+- `AUTOFORM_RELEASE_PUBLIC_REF_API_FILE`、`AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256`；
 - `AUTOFORM_RELEASE_PUBLIC_RELEASES_FILE`、`AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256`；
+- `AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256`、`AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256`、`AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256`、`AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256` 与 `AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256`；
 - `AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256`、`AUTOFORM_RELEASE_PRIVATE_EVIDENCE_REPORT_SHA256` 与 `AUTOFORM_RELEASE_PRIVATE_MIGRATION_REPORT_SHA256`；
 - `AUTOFORM_RELEASE_PRIVATE_PANEL_CONFIG_SHA256`、`AUTOFORM_RELEASE_PRIVATE_PANEL_CATALOG_SHA256`、`AUTOFORM_RELEASE_PRIVATE_PANEL_PAIR_SHA256` 与 `AUTOFORM_RELEASE_PRIVATE_CATALOG_VERSION`；
 - `AUTOFORM_RELEASE_PRIVATE_DEPLOYMENT_EVIDENCE_SHA256`、`AUTOFORM_RELEASE_PRIVATE_PANEL_WORKER_VERSION_ID`、`AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_TYPE`、`AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256`、`AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_REVISION` 与 `AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256`；
@@ -479,10 +537,21 @@ Gate 可在私有工作区运行迁移、worktree/full-history/Release asset 扫
           "inputSha256": "<64-hex>",
           "reportSha256": "<64-hex>"
         },
+        "refsApi": {
+          "inputSha256": "<64-hex>",
+          "reportSha256": "<64-hex>"
+        },
         "releases": {
           "inputSha256": "<64-hex>",
           "reportSha256": "<64-hex>"
-        }
+        },
+        "refIdentitySha256": "<64-hex>",
+        "pullRefIdentitySha256": "<64-hex>",
+        "remoteRefsRawSnapshotSha256": "<64-hex>",
+        "refApiSnapshotSha256": "<64-hex>",
+        "releaseApiSnapshotSha256": "<64-hex>",
+        "repositoryBindingSha256": "<64-hex>",
+        "metadataBindingSha256": "<64-hex>"
       }
     },
     "privateEvidence": {
@@ -520,7 +589,27 @@ Gate 可在私有工作区运行迁移、worktree/full-history/Release asset 扫
 }
 ```
 
-`bindings` 与 `checks` 必须和上面对象精确相等，不能用非空字符串、`ok:true` 或 `structuralOk:true` 代替。发布脚本会现场捕获并用同一外部私有词表扫描 source commit 对象、全部公开 branch/tag refs，以及稳定化后的 GitHub Release/asset metadata；私有 gate 必须绑定这些 exact input/report SHA-256，单独写 `publicHistory:true` 已不再被接受。上述三个只读文件路径也会交给 gate，以便其完整历史与 Release asset 下载审计核对同一时刻的公开状态；公开脚本对 metadata 的扫描不替代私有 gate 对历史可达对象和实际 asset 字节的逐项扫描。gate 返回后，发布脚本会重新捕获并要求三组字节及报告完全相同，发生并发 ref/Release 变化即 fail closed。
+`bindings` 与 `checks` 必须和上面对象精确相等，不能用非空字符串、`ok:true` 或 `structuralOk:true` 代替。发布脚本会现场捕获并用同一外部私有词表独立扫描 source commit 对象、完整 Git transport refs、GitHub refs API 投影，以及稳定化后的 GitHub Release/asset metadata；四份 scan input/report 都是 owner-only mode-`0600` 普通单链接文件。私有 gate 必须绑定这些 exact input/report SHA-256 及上述 identities/snapshots/v2 metadata binding，单独写 `publicHistory:true` 已不再被接受。上述四个只读文件路径也会交给 gate，以便其完整历史与 Release asset 下载审计核对同一时刻的公开状态；公开脚本对 metadata 的扫描不替代私有 gate 对历史可达对象和实际 asset 字节的逐项扫描。gate 返回后先完整复捕获，live private verifier 复核后再做第三次关键 metadata 捕获；任一并发 ref/status/Release/repository metadata 变化都会 fail closed。
+
+GitHub metadata 不直接把 REST 响应整块交给私有词表。GitHub 会在 repository、actor、uploader
+和派生 URL 中机械重复公开 owner；若 owner 本身也在部署词表中，整块扫描会产生不可消除的误报。
+发布器使用 source-commit 绑定的 `tools/normalize-github-releases-for-audit.mjs` 严格验证
+repository id/node ID/full name/public/private、branch/tag/release/asset/user/reaction schema，以及所有
+GitHub/API/download URL 的 host、路径和对象 ID。Release/tag/title/body/target commitish、asset
+name/label/content type、branch/tag name、required-status context，以及 repository
+description/homepage/topics/default branch 等管理员可编辑文本会逐字进入扫描投影。只有与
+repository owner 精确相同的 actor/uploader login 可从文本投影省略；任何第三方 Release author 或
+asset uploader 的 login/type 都会进入扫描。owner 与服务器派生 URL 仍只进入 canonical raw
+snapshot/hash binding。未知 Release、asset、user、reaction、
+branch 或 tag 字段一律失败。Release raw snapshot 只排除会自然变化的 `download_count` 和
+`reactions`；remote-ref raw snapshot 保留 literal `HEAD`、annotated-tag object OID/peeled commit 以及 pull head/merge OID。严格 normalizer 拒绝缺失、重复或错指向 default branch 的 `HEAD`，也拒绝 heads/tags/pull 之外的任何未知 ref namespace；pull refs 另有独立 `pullRefIdentitySha256`，不会被 branch/tag identity 掩盖。
+
+标准最终发布的私有 full-history audit 必须使用 `auditMode:"final"`，并把规范化完整 Git refs（包括全部 `refs/pull/*`）、GitHub refs API 与 Release exact-input SHA、remote raw/refs API/Release API snapshot、branch/tag identity、pull-ref identity、repository identity、v2 组合 metadata binding，以及从 heads/tags/pull refs 出发的完整 reachable-object closure SHA/report SHA/count 写入原有 mode-`0600` migration report。source-commit 绑定的私有 verifier 要求这些值与发布器第一次现场捕获完全一致。历史逐版发布使用前述独立的 `historical-incremental` wrapper；两种证据的 kind/mode/Release envelope 不可互换。私有 gate 后进行第二次完整捕获，live verifier 复核后再进行第三次关键 metadata 捕获；因此同名仓库删除重建、pull/head/tag/status/Release 并发变化或可编辑仓库说明变化都会停止发布。
+
+这个边界只覆盖发布流程明确读取的 repository selection、branches、tags、完整 Git refs（含 pull refs）、Releases/assets 和 Git
+可达对象；pull ref 的对象可达性被覆盖不等于 PR 页面正文/评论已被覆盖，也不代表已扫描 GitHub Pages、Wiki、issues、PR body/comments、Actions 日志/产物或 repository
+custom properties。若这些功能已公开启用，必须另做逐面审计并把结果纳入私有 gate；在此之前不能
+声称“GitHub 全部公开面已审完”。本发布流程同时把 Release tag 限制为无斜杠的安全单段名称。
 
 上面的 schema v4 已使用 generic authority fields 接收 verifier schema v2 的 GitHub/R2 结果。
 `catalogAuthorityRevision` 对 GitHub 是 exact commit，对 R2 是 current pointer 绑定的 `stateSha256`；
@@ -623,7 +712,7 @@ Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布
 1. 冻结发布；从所有 remote branch/tag 和 GitHub API 重新盘点 refs、Releases/assets、Actions artifacts/caches、issues/PR/comments/attachments、Packages、Pages/deployments、Wiki 与 forks。
 2. 在离线 clone 中生成 sanitized history。逐个扫描所有将保留 commit 的 exact Git tree，并把 commit/tag/ref metadata 作为 exact file 扫描；最终 worktree 只能包含通用框架、虚构 example Panel/config 和明确的自定义位置。
 3. 先删除不再保留的 Release（从而删除其 assets）与 tags，再 force-update经过审计的 branches；不复用旧 APK、`update.json` 或 notes。额外 branch 若无长期用途应删除，否则必须指向独立扫描通过的新 history。
-4. 从 sanitized main 创建经过当前 release gate 的新 tags/Releases。需要保留的历史 Release 先建且明确不成为 latest；唯一稳定升级 Release 最后创建并验证 `/releases/latest` 与所有现场固定-tag channel。App 兼容要求见上一节。
+4. 从 sanitized main 创建经过当前 release gate 的新 tags/Releases。v1.0.0–v1.0.6 全部使用本页限定的 inventory-bound schema-4 连续重建链，并由独立历史发布器按顺序、以 `latest=false` 发布；不得把任一历史 tag 送入标准 schema-2 发布链。若现有 v1.0.7 保留为 latest，历史发布全程必须证明它未改变；若开始时没有 latest，历史发布结束后仍必须没有 latest。唯一的新稳定升级 Release 最后通过标准流程创建并验证 `/releases/latest` 与所有现场固定-tag channel。App 兼容要求见上一节。
 5. PR 的 `refs/pull/*` 不能通过普通 branch/tag force-push 删除。关闭 PR、删除 head branch 也不等于 purge；向 GitHub Support 申请移除敏感 cached views/hidden pull refs 和已删除 Release asset 缓存。若平台无法完成，评估删除并重建同名 repository，但仍不能声称已控制外部 clone、搜索缓存或第三方镜像。
 6. 重建后从全新位置 mirror-clone，再次扫描 `git ls-remote` 可见的全部 refs、GitHub pull refs、每个 commit tree/metadata、全部 Release assets 与 API 可控 metadata；同时重新核对 Actions、Packages、Pages、Wiki 和 forks。只要 hidden pull ref、旧 object URL 或 CDN asset 仍可匿名读取，公开清理门禁就不能通过。
 

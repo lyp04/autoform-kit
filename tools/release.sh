@@ -10,6 +10,7 @@ PUBLIC_AUDIT_SCANNER="${SCRIPT_DIR}/public-surface-audit.mjs"
 APK_THIRD_PARTY_POLICY="${SCRIPT_DIR}/apk-third-party-components.json"
 ANDROID_RUNTIME_LOCK="${SCRIPT_DIR}/android-runtime-dependencies.lock.json"
 APK_SOURCE_PROVENANCE_VERIFIER="${SCRIPT_DIR}/verify-apk-third-party-sources.mjs"
+HISTORICAL_RELEASE_CONTRACT="${SCRIPT_DIR}/historical-release-contract.mjs"
 cd "${ROOT_DIR}"
 
 die() {
@@ -35,9 +36,18 @@ Options:
   --version VERSION       Version name (default: app/build.gradle)
   --version-code CODE     Positive Android version code (default: app/build.gradle)
   --config PATH           Signing JSON (default: config/signing.local.json)
-  --notes TEXT            Update/release notes (default: "autoform-kit <version>")
-  --notes-file PATH       Read update/release notes from a UTF-8 file
+  --notes TEXT            Standard update/release notes (default: "autoform-kit <version>")
+  --notes-file PATH       Read standard update/release notes from a UTF-8 file
   --previous-apk PATH     Previous signed release (required; verifies upgrade identity)
+  --historical-inventory PATH
+                          Exact mode-0600 v1.0.0-v1.0.6 pre-rewrite inventory
+  --historical-original-apk PATH
+                          Exact mode-0600 original APK selected by that inventory
+  --historical-title-file PATH
+                          Mode-0600 file containing the exact original Release title
+  --historical-previous-candidate PATH
+                          Previous schema-4 rebuilt candidate manifest; required for
+                          v1.0.1-v1.0.6 and forbidden for v1.0.0
   --private-wordlist PATH External private line/JSON wordlist used by every
                           public-surface audit (required; repeatable)
   --offline               Pass --offline to Gradle; requires a complete local cache
@@ -54,8 +64,12 @@ Relative config, notes, and keystore paths are resolved from the repository
 root. A relative keystore path is also tried relative to the config directory.
 
 This command never creates a tag or GitHub Release. After private review, use
-tools/publish-release.sh to publish the exact candidate bytes. The retired
---publish option is rejected.
+tools/publish-release.sh for a standard schema-2 upgrade candidate. Every
+historical candidate is schema 4 with publicationMode
+"historical-rewrite-non-latest" and is accepted only by the separate reviewed
+tools/publish-historical-release.mjs flow. Historical mode always uses the fixed,
+source-bound generic body; --notes and --notes-file are rejected in that mode.
+The retired --publish option is rejected.
 EOF
 }
 
@@ -273,6 +287,79 @@ canonical_private_wordlist() {
   printf '%s\n' "${resolved}"
 }
 
+private_file_mode() {
+  local file="$1"
+  local mode
+
+  if mode="$(stat -f '%Lp' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
+    return
+  fi
+  if mode="$(stat -c '%a' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${mode}"
+    return
+  fi
+  return 1
+}
+
+private_file_owner() {
+  local file="$1"
+  local owner
+
+  if owner="$(stat -f '%u' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${owner}"
+    return
+  fi
+  if owner="$(stat -c '%u' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${owner}"
+    return
+  fi
+  return 1
+}
+
+private_file_link_count() {
+  local file="$1"
+  local links
+
+  if links="$(stat -f '%l' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${links}"
+    return
+  fi
+  if links="$(stat -c '%h' "${file}" 2>/dev/null)"; then
+    printf '%s\n' "${links}"
+    return
+  fi
+  return 1
+}
+
+canonical_historical_private_file() {
+  local label="$1"
+  local value="$2"
+  local absolute directory name resolved mode owner links
+
+  case "${value}" in
+    /*) absolute="${value}" ;;
+    *) absolute="${ROOT_DIR}/${value}" ;;
+  esac
+  [[ -f "${absolute}" && ! -L "${absolute}" ]] || \
+    die "${label} must be a regular non-symlink file"
+  directory="$(cd "$(dirname "${absolute}")" 2>/dev/null && pwd -P)" || \
+    die "${label} parent could not be resolved"
+  name="$(basename "${absolute}")"
+  resolved="${directory}/${name}"
+  case "${resolved}" in
+    "${ROOT_DIR}"|"${ROOT_DIR}"/*)
+      die "${label} must stay outside the repository"
+      ;;
+  esac
+  mode="$(private_file_mode "${resolved}" 2>/dev/null || true)"
+  owner="$(private_file_owner "${resolved}" 2>/dev/null || true)"
+  links="$(private_file_link_count "${resolved}" 2>/dev/null || true)"
+  [[ "${mode}" == "600" && "${owner}" == "${EUID}" && "${links}" == "1" ]] || \
+    die "${label} must be owned by the current user, have mode 0600, and have one link"
+  printf '%s\n' "${resolved}"
+}
+
 assert_scanner_matches_source() {
   local commit="$1"
   assert_source_file_matches_commit \
@@ -289,6 +376,15 @@ assert_apk_source_verifier_matches_source() {
     "tools/verify-apk-third-party-sources.mjs" \
     "${APK_SOURCE_PROVENANCE_VERIFIER}" \
     "APK source provenance verifier"
+}
+
+assert_historical_contract_matches_source() {
+  local commit="$1"
+  assert_source_file_matches_commit \
+    "${commit}" \
+    "tools/historical-release-contract.mjs" \
+    "${HISTORICAL_RELEASE_CONTRACT}" \
+    "historical release contract"
 }
 
 assert_source_file_matches_commit() {
@@ -534,6 +630,48 @@ signer_sha256() {
   printf '%s\n' "${digest}"
 }
 
+assert_lineage_input_unchanged() {
+  if [[ "${LINEAGE_MODE}" == "standard-upgrade" ]]; then
+    [[ "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
+      die "previous APK changed while building the candidate"
+  else
+    assert_historical_inputs_unchanged
+  fi
+}
+
+assert_historical_inputs_unchanged() {
+  local inventory_resolved original_resolved title_resolved selection selection_sha
+  assert_historical_contract_matches_source "${SOURCE_HEAD}"
+  inventory_resolved="$(canonical_historical_private_file \
+    "historical inventory" "${HISTORICAL_INVENTORY}")"
+  original_resolved="$(canonical_historical_private_file \
+    "historical original APK" "${HISTORICAL_ORIGINAL_APK}")"
+  title_resolved="$(canonical_historical_private_file \
+    "historical Release title" "${HISTORICAL_TITLE_FILE}")"
+  [[ "${inventory_resolved}" == "${HISTORICAL_INVENTORY}" \
+    && "${original_resolved}" == "${HISTORICAL_ORIGINAL_APK}" \
+    && "${title_resolved}" == "${HISTORICAL_TITLE_FILE}" ]] || \
+    die "a historical private input path changed after validation"
+  [[ "$(sha256_file "${HISTORICAL_INVENTORY}")" == "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+    && "$(sha256_file "${HISTORICAL_ORIGINAL_APK}")" == "${HISTORICAL_ORIGINAL_APK_SHA256}" \
+    && "$(sha256_file "${HISTORICAL_TITLE_FILE}")" == "${HISTORICAL_TITLE_SHA256}" ]] || \
+    die "a historical private input changed while building the candidate"
+  selection="$(node "${HISTORICAL_RELEASE_CONTRACT}" \
+    --inventory "${HISTORICAL_INVENTORY}" \
+    --inventory-file-sha256 "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+    --tag "${TAG}" 2>/dev/null)" || \
+    die "historical inventory no longer validates"
+  selection_sha="$(printf '%s' "${selection}" | sha256_stdin)"
+  [[ "${selection_sha}" == "${HISTORICAL_SELECTION_SHA256}" ]] || \
+    die "historical inventory selection changed while building the candidate"
+  if [[ "${LINEAGE_MODE}" == "historical-upgrade" ]]; then
+    [[ "$(sha256_file "${HISTORICAL_PREVIOUS_MANIFEST}")" \
+      == "${HISTORICAL_PREVIOUS_MANIFEST_SHA256}" \
+      && "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
+      die "previous historical rebuilt candidate changed while building the candidate"
+  fi
+}
+
 VERSION=""
 VERSION_CODE=""
 EXPECTED_PACKAGE=""
@@ -541,6 +679,11 @@ CONFIG_PATH="config/signing.local.json"
 NOTES=""
 NOTES_FILE=""
 PREVIOUS_APK=""
+HISTORICAL_INVENTORY=""
+HISTORICAL_ORIGINAL_APK=""
+HISTORICAL_TITLE_FILE=""
+HISTORICAL_PREVIOUS_CANDIDATE=""
+LINEAGE_MODE="standard-upgrade"
 PRIVATE_WORDLISTS=()
 PRIVATE_WORDLIST_FINGERPRINTS=()
 GRADLE_OFFLINE=false
@@ -579,6 +722,29 @@ while [[ $# -gt 0 ]]; do
       PREVIOUS_APK="$2"
       shift 2
       ;;
+    --historical-inventory)
+      [[ $# -ge 2 ]] || die "--historical-inventory requires a path"
+      HISTORICAL_INVENTORY="$2"
+      shift 2
+      ;;
+    --historical-original-apk)
+      [[ $# -ge 2 ]] || die "--historical-original-apk requires a path"
+      HISTORICAL_ORIGINAL_APK="$2"
+      shift 2
+      ;;
+    --historical-title-file)
+      [[ $# -ge 2 ]] || die "--historical-title-file requires a path"
+      HISTORICAL_TITLE_FILE="$2"
+      shift 2
+      ;;
+    --historical-previous-candidate)
+      [[ $# -ge 2 ]] || die "--historical-previous-candidate requires a path"
+      HISTORICAL_PREVIOUS_CANDIDATE="$2"
+      shift 2
+      ;;
+    --historical-initial-identity-apk|--historical-initial-identity-sha256)
+      die "the unbound historical identity options were removed; use the exact pre-rewrite inventory"
+      ;;
     --private-wordlist)
       [[ $# -ge 2 ]] || die "--private-wordlist requires a path"
       PRIVATE_WORDLISTS+=("$2")
@@ -613,6 +779,8 @@ require_command node
   die "Android runtime dependency lock is missing or is not a regular file"
 [[ -f "${APK_SOURCE_PROVENANCE_VERIFIER}" && ! -L "${APK_SOURCE_PROVENANCE_VERIFIER}" ]] || \
   die "APK source provenance verifier is missing or is not a regular file"
+[[ -f "${HISTORICAL_RELEASE_CONTRACT}" && ! -L "${HISTORICAL_RELEASE_CONTRACT}" ]] || \
+  die "historical release contract is missing or is not a regular file"
 [[ ${#PRIVATE_WORDLISTS[@]} -gt 0 ]] || die "at least one --private-wordlist is required"
 for ((PRIVATE_WORDLIST_INDEX = 0; PRIVATE_WORDLIST_INDEX < ${#PRIVATE_WORDLISTS[@]}; PRIVATE_WORDLIST_INDEX++)); do
   PRIVATE_WORDLISTS[PRIVATE_WORDLIST_INDEX]="$(canonical_private_wordlist "${PRIVATE_WORDLISTS[PRIVATE_WORDLIST_INDEX]}")"
@@ -636,20 +804,114 @@ EXPECTED_PACKAGE="$(default_application_id)"
 [[ "${EXPECTED_PACKAGE}" =~ ^[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z][A-Za-z0-9_]*)+$ ]] || \
   die "could not determine a valid applicationId from app/build.gradle"
 
-if [[ -n "${NOTES_FILE}" ]]; then
-  NOTES_FILE="$(absolute_repo_path "${NOTES_FILE}")"
-  [[ -f "${NOTES_FILE}" ]] || die "notes file not found: ${NOTES_FILE}"
-  NOTES="$(<"${NOTES_FILE}")"
+TAG="v${VERSION}"
+CANDIDATES_DIR="${ROOT_DIR}/dist/release-candidates"
+HISTORICAL_REQUESTED=false
+if [[ -n "${HISTORICAL_INVENTORY}" || -n "${HISTORICAL_ORIGINAL_APK}" \
+  || -n "${HISTORICAL_TITLE_FILE}" || -n "${HISTORICAL_PREVIOUS_CANDIDATE}" ]]; then
+  HISTORICAL_REQUESTED=true
 fi
-if [[ -z "${NOTES}" ]]; then
-  NOTES="autoform-kit ${VERSION}"
+
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  [[ -n "${HISTORICAL_INVENTORY}" && -n "${HISTORICAL_ORIGINAL_APK}" \
+    && -n "${HISTORICAL_TITLE_FILE}" ]] || \
+    die "historical mode requires inventory, original APK, and exact title file"
+  [[ -z "${PREVIOUS_APK}" ]] || \
+    die "historical mode does not accept --previous-apk"
+  [[ -z "${NOTES}" && -z "${NOTES_FILE}" ]] || \
+    die "historical mode uses the fixed audited body and does not accept custom notes"
+  case "${TAG}" in
+    v1.0.0|v1.0.1|v1.0.2|v1.0.3|v1.0.4|v1.0.5|v1.0.6) ;;
+    *) die "historical mode is restricted to v1.0.0-v1.0.6" ;;
+  esac
+  HISTORICAL_INVENTORY="$(canonical_historical_private_file \
+    "historical inventory" "${HISTORICAL_INVENTORY}")"
+  HISTORICAL_ORIGINAL_APK="$(canonical_historical_private_file \
+    "historical original APK" "${HISTORICAL_ORIGINAL_APK}")"
+  HISTORICAL_TITLE_FILE="$(canonical_historical_private_file \
+    "historical Release title" "${HISTORICAL_TITLE_FILE}")"
+  HISTORICAL_INVENTORY_FILE_SHA256="$(sha256_file "${HISTORICAL_INVENTORY}")"
+  HISTORICAL_ORIGINAL_APK_SHA256="$(sha256_file "${HISTORICAL_ORIGINAL_APK}")"
+  HISTORICAL_TITLE_SHA256="$(sha256_file "${HISTORICAL_TITLE_FILE}")"
+  HISTORICAL_SELECTION_JSON="$(node "${HISTORICAL_RELEASE_CONTRACT}" \
+    --inventory "${HISTORICAL_INVENTORY}" \
+    --inventory-file-sha256 "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+    --tag "${TAG}" 2>/dev/null)" || die "historical inventory selection failed"
+  HISTORICAL_SELECTION_SHA256="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" | sha256_stdin)"
+  HISTORICAL_INVENTORY_SHA256="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
+    | jq -er '.inventorySha256')"
+  HISTORICAL_SOURCE_INVENTORY_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
+    | jq -ce '.sourceInventory')"
+  HISTORICAL_RELEASE_ENTRY_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
+    | jq -ce '.release')"
+  HISTORICAL_ORIGINAL_ASSET_SHA256_JSON="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
+    | jq -ce '.originalAssetSha256')"
+  HISTORICAL_PUBLICATION_MODE="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" \
+    | jq -er '.publicationMode')"
+  NOTES="$(printf '%s' "${HISTORICAL_SELECTION_JSON}" | jq -er '.body')"
+  HISTORICAL_SEQUENCE="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.sequence | tostring')"
+  HISTORICAL_APK_ASSET_NAME="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.originalApk.assetName')"
+  HISTORICAL_ORIGINAL_PACKAGE="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.originalApk.packageName')"
+  HISTORICAL_ORIGINAL_CODE="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.originalApk.versionCode | tostring')"
+  HISTORICAL_ORIGINAL_VERSION="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.originalApk.versionName')"
+  HISTORICAL_ORIGINAL_SIGNER="$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+    | jq -er '.originalApk.signerSha256')"
+  HISTORICAL_RELEASE_TITLE="$(<"${HISTORICAL_TITLE_FILE}")"
+  HISTORICAL_TITLE_LENGTH="$(jq -Rs 'explode | length' "${HISTORICAL_TITLE_FILE}")"
+  jq -e -Rs 'length > 0
+    and (contains("\u0000") | not)
+    and (contains("\r") | not)
+    and (contains("\n") | not)' \
+    "${HISTORICAL_TITLE_FILE}" >/dev/null 2>&1 || \
+    die "historical Release title file must contain one non-empty line without a trailing newline"
+  [[ "${HISTORICAL_TITLE_SHA256}" == "$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+      | jq -er '.titleSha256')" \
+    && "${HISTORICAL_TITLE_LENGTH}" == "$(printf '%s' "${HISTORICAL_RELEASE_ENTRY_JSON}" \
+      | jq -er '.titleLength | tostring')" ]] || \
+    die "historical Release title does not match the pre-rewrite inventory"
+  [[ "$(basename "${HISTORICAL_ORIGINAL_APK}")" == "${HISTORICAL_APK_ASSET_NAME}" \
+    && "${HISTORICAL_ORIGINAL_APK_SHA256}" == "$(printf '%s' \
+      "${HISTORICAL_RELEASE_ENTRY_JSON}" | jq -er '.originalApk.sha256')" ]] || \
+    die "historical original APK does not match the selected inventory asset"
+  [[ "${VERSION}" == "${HISTORICAL_ORIGINAL_VERSION}" \
+    && "${VERSION_CODE}" == "${HISTORICAL_ORIGINAL_CODE}" ]] || \
+    die "historical candidate version does not match the selected original Release"
+  if [[ "${HISTORICAL_SEQUENCE}" == "0" ]]; then
+    [[ -z "${HISTORICAL_PREVIOUS_CANDIDATE}" ]] || \
+      die "historical v1.0.0 must not declare a previous rebuilt candidate"
+    LINEAGE_MODE="historical-initial"
+  else
+    [[ -n "${HISTORICAL_PREVIOUS_CANDIDATE}" ]] || \
+      die "historical v1.0.1-v1.0.6 require the immediately previous rebuilt candidate"
+    LINEAGE_MODE="historical-upgrade"
+  fi
+else
+  case "${TAG}" in
+    v1.0.0|v1.0.1|v1.0.2|v1.0.3|v1.0.4|v1.0.5|v1.0.6)
+      die "reserved historical versions require the inventory-bound historical mode"
+      ;;
+  esac
+  if [[ -n "${NOTES_FILE}" ]]; then
+    NOTES_FILE="$(absolute_repo_path "${NOTES_FILE}")"
+    [[ -f "${NOTES_FILE}" ]] || die "notes file not found: ${NOTES_FILE}"
+    NOTES="$(<"${NOTES_FILE}")"
+  fi
+  if [[ -z "${NOTES}" ]]; then
+    NOTES="autoform-kit ${VERSION}"
+  fi
+  if [[ -n "${PREVIOUS_APK}" ]]; then
+    PREVIOUS_APK="$(absolute_repo_path "${PREVIOUS_APK}")"
+    [[ -f "${PREVIOUS_APK}" && ! -L "${PREVIOUS_APK}" ]] || \
+      die "previous APK must be a regular non-symlink file"
+  fi
+  [[ -n "${PREVIOUS_APK}" ]] || \
+    die "--previous-apk is required so package, signer, and version continuity are bound to the candidate"
 fi
-if [[ -n "${PREVIOUS_APK}" ]]; then
-  PREVIOUS_APK="$(absolute_repo_path "${PREVIOUS_APK}")"
-  [[ -f "${PREVIOUS_APK}" ]] || die "previous APK not found: ${PREVIOUS_APK}"
-fi
-[[ -n "${PREVIOUS_APK}" ]] || \
-  die "--previous-apk is required so package, signer, and version continuity are bound to the candidate"
 
 SOURCE_HEAD="$(git rev-parse HEAD)"
 SOURCE_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
@@ -660,6 +922,58 @@ SOURCE_BRANCH="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
 assert_clean_source "${SOURCE_HEAD}" "${SOURCE_BRANCH}"
 assert_scanner_matches_source "${SOURCE_HEAD}"
 assert_apk_source_verifier_matches_source "${SOURCE_HEAD}"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  assert_historical_contract_matches_source "${SOURCE_HEAD}"
+  if [[ "${LINEAGE_MODE}" == "historical-upgrade" ]]; then
+    HISTORICAL_PREVIOUS_SEQUENCE="$((10#${HISTORICAL_SEQUENCE} - 1))"
+    HISTORICAL_PREVIOUS_TAG="v1.0.${HISTORICAL_PREVIOUS_SEQUENCE}"
+    HISTORICAL_PREVIOUS_CANDIDATE="$(absolute_repo_path \
+      "${HISTORICAL_PREVIOUS_CANDIDATE}")"
+    [[ -f "${HISTORICAL_PREVIOUS_CANDIDATE}" \
+      && ! -L "${HISTORICAL_PREVIOUS_CANDIDATE}" \
+      && "$(basename "${HISTORICAL_PREVIOUS_CANDIDATE}")" == "candidate-manifest.json" ]] || \
+      die "previous historical candidate manifest must be one regular candidate-manifest.json"
+    HISTORICAL_PREVIOUS_MANIFEST_DIRECTORY="$(cd \
+      "$(dirname "${HISTORICAL_PREVIOUS_CANDIDATE}")" && pwd -P)"
+    HISTORICAL_PREVIOUS_MANIFEST="${HISTORICAL_PREVIOUS_MANIFEST_DIRECTORY}/candidate-manifest.json"
+    [[ "${HISTORICAL_PREVIOUS_MANIFEST}" \
+      == "${CANDIDATES_DIR}/${HISTORICAL_PREVIOUS_TAG}/candidate-manifest.json" ]] || \
+      die "historical continuation must use the immediately previous candidate directory"
+    jq -e \
+      --arg tag "${HISTORICAL_PREVIOUS_TAG}" \
+      --arg publicationMode "${HISTORICAL_PUBLICATION_MODE}" \
+      --arg inventoryFile "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+      --arg inventory "${HISTORICAL_INVENTORY_SHA256}" \
+      --argjson sequence "${HISTORICAL_PREVIOUS_SEQUENCE}" \
+      '.schemaVersion == 4
+        and .publicationMode == $publicationMode
+        and .tag == $tag
+        and .lineage.sequence == $sequence
+        and .historicalRelease.inventory.fileSha256 == $inventoryFile
+        and .historicalRelease.inventory.inventorySha256 == $inventory
+        and (.artifacts.apk.file | type == "string")
+        and (.artifacts.apk.sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+        and (.app.packageName | type == "string")
+        and (.app.versionCode | type == "number" and floor == . and . > 0)
+        and .app.versionName == ($tag | ltrimstr("v"))
+        and (.app.signerSha256 | type == "string" and test("^[a-f0-9]{64}$"))' \
+      "${HISTORICAL_PREVIOUS_MANIFEST}" >/dev/null 2>&1 || \
+      die "previous historical rebuilt candidate has invalid mode, inventory, or lineage"
+    HISTORICAL_PREVIOUS_MANIFEST_SHA256="$(sha256_file \
+      "${HISTORICAL_PREVIOUS_MANIFEST}")"
+    HISTORICAL_PREVIOUS_APK_FILE="$(jq -er '.artifacts.apk.file' \
+      "${HISTORICAL_PREVIOUS_MANIFEST}")"
+    [[ "${HISTORICAL_PREVIOUS_APK_FILE}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,179}$ ]] || \
+      die "previous historical candidate APK filename is invalid"
+    PREVIOUS_APK="${HISTORICAL_PREVIOUS_MANIFEST_DIRECTORY}/${HISTORICAL_PREVIOUS_APK_FILE}"
+    [[ -f "${PREVIOUS_APK}" && ! -L "${PREVIOUS_APK}" ]] || \
+      die "previous historical candidate APK is missing"
+    PREVIOUS_APK_SHA256="$(sha256_file "${PREVIOUS_APK}")"
+    [[ "${PREVIOUS_APK_SHA256}" == "$(jq -er '.artifacts.apk.sha256' \
+      "${HISTORICAL_PREVIOUS_MANIFEST}")" ]] || \
+      die "previous historical candidate APK does not match its manifest"
+  fi
+fi
 
 # Signing configuration is deliberately validated before a Gradle build, so an
 # unprepared checkout fails quickly and creates no artifact.
@@ -692,8 +1006,6 @@ esac
 STORE_PASSWORD="$(read_secret "${CONFIG_PATH}" storePassword storePasswordEnv)"
 KEY_PASSWORD="$(read_secret "${CONFIG_PATH}" keyPassword keyPasswordEnv)"
 
-TAG="v${VERSION}"
-CANDIDATES_DIR="${ROOT_DIR}/dist/release-candidates"
 FINAL_DIR="${CANDIDATES_DIR}/${TAG}"
 [[ ! -e "${FINAL_DIR}" ]] || die "candidate already exists: ${FINAL_DIR}"
 
@@ -705,6 +1017,32 @@ info "using JDK ${JAVA_MAJOR}"
 ZIPALIGN_BIN="$(find_android_tool zipalign "${ZIPALIGN:-}")"
 APKSIGNER_BIN="$(find_android_tool apksigner "${APKSIGNER:-}")"
 AAPT_BIN="$(find_android_tool aapt "${AAPT:-}")"
+
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  assert_historical_inputs_unchanged
+  HISTORICAL_ORIGINAL_PACKAGE_LINE="$("${AAPT_BIN}" dump badging \
+    "${HISTORICAL_ORIGINAL_APK}" | sed -n '1p')"
+  HISTORICAL_ORIGINAL_ACTUAL_PACKAGE="$(printf '%s\n' \
+    "${HISTORICAL_ORIGINAL_PACKAGE_LINE}" \
+    | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+  HISTORICAL_ORIGINAL_ACTUAL_CODE="$(printf '%s\n' \
+    "${HISTORICAL_ORIGINAL_PACKAGE_LINE}" \
+    | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"
+  HISTORICAL_ORIGINAL_ACTUAL_VERSION="$(printf '%s\n' \
+    "${HISTORICAL_ORIGINAL_PACKAGE_LINE}" \
+    | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")"
+  HISTORICAL_ORIGINAL_ACTUAL_SIGNER="$(
+    signer_sha256 "${HISTORICAL_ORIGINAL_APK}"
+  )"
+  [[ "${HISTORICAL_ORIGINAL_ACTUAL_PACKAGE}" == "${EXPECTED_PACKAGE}" \
+    && "${HISTORICAL_ORIGINAL_ACTUAL_PACKAGE}" == "${HISTORICAL_ORIGINAL_PACKAGE}" \
+    && "${HISTORICAL_ORIGINAL_ACTUAL_CODE}" == "${HISTORICAL_ORIGINAL_CODE}" \
+    && "${HISTORICAL_ORIGINAL_ACTUAL_VERSION}" == "${HISTORICAL_ORIGINAL_VERSION}" \
+    && "${HISTORICAL_ORIGINAL_ACTUAL_SIGNER}" == "${HISTORICAL_ORIGINAL_SIGNER}" ]] || \
+    die "historical original APK identity does not match its pre-rewrite inventory entry"
+  assert_historical_inputs_unchanged
+  info "validated exact private pre-rewrite APK identity"
+fi
 
 mkdir -p "${CANDIDATES_DIR}"
 TMP_DIR="$(mktemp -d "${CANDIDATES_DIR}/.${TAG}.XXXXXX")"
@@ -721,7 +1059,11 @@ trap cleanup EXIT HUP INT TERM
 
 UNSIGNED_APK="${ROOT_DIR}/app/build/outputs/apk/release/app-release-unsigned.apk"
 ALIGNED_APK="${TMP_DIR}/aligned.apk"
-SIGNED_APK="${TMP_DIR}/autoform-kit-${VERSION}.apk"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  SIGNED_APK="${TMP_DIR}/${HISTORICAL_APK_ASSET_NAME}"
+else
+  SIGNED_APK="${TMP_DIR}/autoform-kit-${VERSION}.apk"
+fi
 UPDATE_JSON="${TMP_DIR}/update.json"
 RELEASE_NOTES="${TMP_DIR}/release-notes.txt"
 CANDIDATE_MANIFEST="${TMP_DIR}/candidate-manifest.json"
@@ -763,12 +1105,25 @@ KEY_PASSWORD=""
 info "verifying alignment and signature"
 "${ZIPALIGN_BIN}" -c -p 4 "${SIGNED_APK}"
 "${APKSIGNER_BIN}" verify --verbose --print-certs "${SIGNED_APK}"
-PREVIOUS_APK_SHA256="$(sha256_file "${PREVIOUS_APK}")"
-PREVIOUS_SIGNER="$(signer_sha256 "${PREVIOUS_APK}")"
 CURRENT_SIGNER="$(signer_sha256 "${SIGNED_APK}")"
-[[ "${CURRENT_SIGNER}" == "${PREVIOUS_SIGNER}" ]] || \
-  die "signed APK certificate does not match the previous release"
-info "signer certificate matches the previous release"
+if [[ "${LINEAGE_MODE}" == "standard-upgrade" ]]; then
+  PREVIOUS_APK_SHA256="$(sha256_file "${PREVIOUS_APK}")"
+  PREVIOUS_SIGNER="$(signer_sha256 "${PREVIOUS_APK}")"
+  [[ "${CURRENT_SIGNER}" == "${PREVIOUS_SIGNER}" ]] || \
+    die "signed APK certificate does not match the previous release"
+  info "signer certificate matches the previous release"
+else
+  [[ "${CURRENT_SIGNER}" == "${HISTORICAL_ORIGINAL_SIGNER}" ]] || \
+    die "signed APK certificate does not match the selected original historical APK"
+  if [[ "${LINEAGE_MODE}" == "historical-upgrade" ]]; then
+    PREVIOUS_SIGNER="$(signer_sha256 "${PREVIOUS_APK}")"
+    [[ "${PREVIOUS_SIGNER}" == "${CURRENT_SIGNER}" \
+      && "${PREVIOUS_SIGNER}" == "$(jq -er '.app.signerSha256' \
+        "${HISTORICAL_PREVIOUS_MANIFEST}")" ]] || \
+      die "previous rebuilt candidate signer does not continue the historical chain"
+  fi
+  info "signer certificate matches the pre-rewrite inventory chain"
+fi
 
 PACKAGE_LINE="$("${AAPT_BIN}" dump badging "${SIGNED_APK}" | sed -n '1p')"
 ACTUAL_PACKAGE="$(printf '%s\n' "${PACKAGE_LINE}" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
@@ -781,21 +1136,66 @@ ACTUAL_VERSION="$(printf '%s\n' "${PACKAGE_LINE}" | sed -n "s/.* versionName='\(
 [[ "${ACTUAL_VERSION}" == "${VERSION}" ]] || \
   die "signed APK versionName ${ACTUAL_VERSION} does not match ${VERSION}"
 
-PREVIOUS_PACKAGE_LINE="$("${AAPT_BIN}" dump badging "${PREVIOUS_APK}" | sed -n '1p')"
-PREVIOUS_PACKAGE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
-PREVIOUS_CODE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"
-PREVIOUS_VERSION="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")"
-[[ "${PREVIOUS_PACKAGE}" == "${ACTUAL_PACKAGE}" ]] || \
-  die "previous APK package ${PREVIOUS_PACKAGE} does not match ${ACTUAL_PACKAGE}"
-[[ "${PREVIOUS_CODE}" =~ ^[1-9][0-9]*$ ]] || \
-  die "could not read a valid versionCode from the previous APK"
-(( 10#${VERSION_CODE} > 10#${PREVIOUS_CODE} )) || \
-  die "candidate versionCode ${VERSION_CODE} must be greater than previous APK versionCode ${PREVIOUS_CODE}"
-[[ -n "${PREVIOUS_VERSION}" ]] || die "could not read versionName from the previous APK"
-[[ "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
-  die "previous APK changed while its identity was being verified"
+if [[ "${LINEAGE_MODE}" == "standard-upgrade" ]]; then
+  PREVIOUS_PACKAGE_LINE="$("${AAPT_BIN}" dump badging "${PREVIOUS_APK}" | sed -n '1p')"
+  PREVIOUS_PACKAGE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+  PREVIOUS_CODE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"
+  PREVIOUS_VERSION="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")"
+  [[ "${PREVIOUS_PACKAGE}" == "${ACTUAL_PACKAGE}" ]] || \
+    die "previous APK package ${PREVIOUS_PACKAGE} does not match ${ACTUAL_PACKAGE}"
+  [[ "${PREVIOUS_CODE}" =~ ^[1-9][0-9]*$ ]] || \
+    die "could not read a valid versionCode from the previous APK"
+  (( 10#${VERSION_CODE} > 10#${PREVIOUS_CODE} )) || \
+    die "candidate versionCode ${VERSION_CODE} must be greater than previous APK versionCode ${PREVIOUS_CODE}"
+  [[ -n "${PREVIOUS_VERSION}" ]] || die "could not read versionName from the previous APK"
+  [[ "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
+    die "previous APK changed while its identity was being verified"
+  LINEAGE_APK_SHA256="${PREVIOUS_APK_SHA256}"
+  LINEAGE_PACKAGE="${PREVIOUS_PACKAGE}"
+  LINEAGE_CODE="${PREVIOUS_CODE}"
+  LINEAGE_VERSION="${PREVIOUS_VERSION}"
+  LINEAGE_SIGNER="${PREVIOUS_SIGNER}"
+else
+  [[ "${ACTUAL_PACKAGE}" == "${HISTORICAL_ORIGINAL_PACKAGE}" \
+    && "${ACTUAL_CODE}" == "${HISTORICAL_ORIGINAL_CODE}" \
+    && "${ACTUAL_VERSION}" == "${HISTORICAL_ORIGINAL_VERSION}" ]] || \
+    die "historical candidate identity does not exactly match its original inventory entry"
+  if [[ "${LINEAGE_MODE}" == "historical-upgrade" ]]; then
+    PREVIOUS_PACKAGE_LINE="$("${AAPT_BIN}" dump badging "${PREVIOUS_APK}" | sed -n '1p')"
+    PREVIOUS_PACKAGE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" \
+      | sed -n "s/^package: name='\([^']*\)'.*/\1/p")"
+    PREVIOUS_CODE="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" \
+      | sed -n "s/.* versionCode='\([^']*\)'.*/\1/p")"
+    PREVIOUS_VERSION="$(printf '%s\n' "${PREVIOUS_PACKAGE_LINE}" \
+      | sed -n "s/.* versionName='\([^']*\)'.*/\1/p")"
+    [[ "${PREVIOUS_PACKAGE}" == "${ACTUAL_PACKAGE}" \
+      && "${PREVIOUS_PACKAGE}" == "$(jq -er '.app.packageName' \
+        "${HISTORICAL_PREVIOUS_MANIFEST}")" \
+      && "${PREVIOUS_CODE}" == "$(jq -er '.app.versionCode | tostring' \
+        "${HISTORICAL_PREVIOUS_MANIFEST}")" \
+      && "${PREVIOUS_VERSION}" == "${HISTORICAL_PREVIOUS_TAG#v}" \
+      && "${PREVIOUS_VERSION}" == "$(jq -er '.app.versionName' \
+        "${HISTORICAL_PREVIOUS_MANIFEST}")" ]] || \
+      die "previous rebuilt candidate APK identity does not match its manifest or predecessor tag"
+    (( 10#${ACTUAL_CODE} > 10#${PREVIOUS_CODE} )) || \
+      die "historical rebuilt candidate versionCode must increase from its immediate predecessor"
+  fi
+  assert_historical_inputs_unchanged
+  LINEAGE_APK_SHA256="${HISTORICAL_ORIGINAL_APK_SHA256}"
+  LINEAGE_PACKAGE="${HISTORICAL_ORIGINAL_PACKAGE}"
+  LINEAGE_CODE="${HISTORICAL_ORIGINAL_CODE}"
+  LINEAGE_VERSION="${HISTORICAL_ORIGINAL_VERSION}"
+  LINEAGE_SIGNER="${HISTORICAL_ORIGINAL_SIGNER}"
+fi
 
 APK_SHA256="$(sha256_file "${SIGNED_APK}")"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  [[ "${APK_SHA256}" != "${HISTORICAL_ORIGINAL_APK_SHA256}" ]] || \
+    die "historical rebuilt APK must be different bytes from the original asset"
+  printf '%s' "${HISTORICAL_ORIGINAL_ASSET_SHA256_JSON}" \
+    | jq -e --arg apk "${APK_SHA256}" 'index($apk) == null' >/dev/null 2>&1 || \
+    die "historical rebuilt APK must not reuse any original Release asset bytes"
+fi
 info "verifying signed APK public AAR, class, DEX-string, and runtime-profile provenance"
 run_apk_source_provenance_verification "${APK_SOURCE_PROVENANCE_REPORT}" "${SIGNED_APK}"
 APK_SOURCE_PROVENANCE_REPORT_FILE_SHA256="$(sha256_file "${APK_SOURCE_PROVENANCE_REPORT}")"
@@ -803,7 +1203,7 @@ jq -n \
   --arg packageName "${ACTUAL_PACKAGE}" \
   --argjson versionCode "${VERSION_CODE}" \
   --arg versionName "${VERSION}" \
-  --arg apkAsset "autoform-kit-${VERSION}.apk" \
+  --arg apkAsset "$(basename "${SIGNED_APK}")" \
   --arg sha256 "${APK_SHA256}" \
   --arg notes "${NOTES}" \
   '{
@@ -814,15 +1214,23 @@ jq -n \
     sha256: $sha256,
     notes: $notes
   }' > "${UPDATE_JSON}"
-printf '%s\n' "${NOTES}" > "${RELEASE_NOTES}"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  printf '%s' "${NOTES}" > "${RELEASE_NOTES}"
+else
+  printf '%s\n' "${NOTES}" > "${RELEASE_NOTES}"
+fi
 UPDATE_SHA256="$(sha256_file "${UPDATE_JSON}")"
 NOTES_SHA256="$(sha256_file "${RELEASE_NOTES}")"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  printf '%s' "${HISTORICAL_ORIGINAL_ASSET_SHA256_JSON}" \
+    | jq -e --arg update "${UPDATE_SHA256}" 'index($update) == null' >/dev/null 2>&1 || \
+    die "historical rebuilt update manifest must not reuse original Release asset bytes"
+fi
 
-# The source and previous APK may have changed during a long build. Recheck
-# both immediately before auditing and creating the immutable candidate manifest.
+# The source and lineage identity input may have changed during a long build.
+# Recheck both immediately before auditing and creating the immutable manifest.
 assert_clean_source "${SOURCE_HEAD}" "${SOURCE_BRANCH}"
-[[ "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
-  die "previous APK changed while building the candidate"
+assert_lineage_input_unchanged
 
 PUBLIC_TREE_REPORT="${TMP_DIR}/.public-source-tree-audit.json"
 PUBLIC_WORKTREE_REPORT="${TMP_DIR}/.public-worktree-audit.json"
@@ -926,6 +1334,8 @@ PUBLIC_NOTES_REPORT_SHA256="$(jq -er '.reportSha256' "${PUBLIC_NOTES_REPORT}")"
   && "${PUBLIC_NOTES_INPUT_SHA256}" == "${NOTES_SHA256}" ]] || \
   die "public release metadata audits are not bound to the exact candidate files"
 
+APK_SIZE="$(wc -c < "${SIGNED_APK}" | tr -d '[:space:]')"
+UPDATE_SIZE="$(wc -c < "${UPDATE_JSON}" | tr -d '[:space:]')"
 jq -nS \
   --arg tag "${TAG}" \
   --arg sourceCommit "${SOURCE_HEAD}" \
@@ -934,15 +1344,33 @@ jq -nS \
   --argjson versionCode "${VERSION_CODE}" \
   --arg versionName "${VERSION}" \
   --arg signerSha256 "${CURRENT_SIGNER}" \
-  --arg apkFile "autoform-kit-${VERSION}.apk" \
+  --arg apkFile "$(basename "${SIGNED_APK}")" \
   --arg apkSha256 "${APK_SHA256}" \
+  --argjson apkSize "${APK_SIZE}" \
   --arg updateSha256 "${UPDATE_SHA256}" \
+  --argjson updateSize "${UPDATE_SIZE}" \
   --arg notesSha256 "${NOTES_SHA256}" \
-  --arg previousApkSha256 "${PREVIOUS_APK_SHA256}" \
-  --arg previousPackageName "${PREVIOUS_PACKAGE}" \
-  --argjson previousVersionCode "${PREVIOUS_CODE}" \
-  --arg previousVersionName "${PREVIOUS_VERSION}" \
-  --arg previousSignerSha256 "${PREVIOUS_SIGNER}" \
+  --arg lineageMode "${LINEAGE_MODE}" \
+  --arg lineageApkSha256 "${LINEAGE_APK_SHA256}" \
+  --arg lineagePackageName "${LINEAGE_PACKAGE}" \
+  --argjson lineageVersionCode "${LINEAGE_CODE}" \
+  --arg lineageVersionName "${LINEAGE_VERSION}" \
+  --arg lineageSignerSha256 "${LINEAGE_SIGNER}" \
+  --arg publicationMode "${HISTORICAL_PUBLICATION_MODE:-}" \
+  --arg historicalTitle "${HISTORICAL_RELEASE_TITLE:-}" \
+  --arg historicalBody "${NOTES}" \
+  --arg historicalInventoryFileSha256 "${HISTORICAL_INVENTORY_FILE_SHA256:-}" \
+  --arg historicalInventorySha256 "${HISTORICAL_INVENTORY_SHA256:-}" \
+  --argjson historicalSourceInventory "${HISTORICAL_SOURCE_INVENTORY_JSON:-null}" \
+  --argjson historicalEntry "${HISTORICAL_RELEASE_ENTRY_JSON:-null}" \
+  --argjson historicalSequence "${HISTORICAL_SEQUENCE:-0}" \
+  --arg historicalPreviousTag "${HISTORICAL_PREVIOUS_TAG:-}" \
+  --arg historicalPreviousManifestSha256 "${HISTORICAL_PREVIOUS_MANIFEST_SHA256:-}" \
+  --arg historicalPreviousApkSha256 "${PREVIOUS_APK_SHA256:-}" \
+  --arg historicalPreviousPackageName "${PREVIOUS_PACKAGE:-}" \
+  --argjson historicalPreviousVersionCode "${PREVIOUS_CODE:-0}" \
+  --arg historicalPreviousVersionName "${PREVIOUS_VERSION:-}" \
+  --arg historicalPreviousSignerSha256 "${PREVIOUS_SIGNER:-}" \
   --arg publicAuditScannerSha256 "${PUBLIC_AUDIT_SCANNER_SHA256}" \
   --arg publicAuditPolicySha256 "${PUBLIC_AUDIT_POLICY_SHA256}" \
   --arg publicTreeOid "${PUBLIC_TREE_OID}" \
@@ -972,8 +1400,8 @@ jq -nS \
   --arg publicUpdateReportSha256 "${PUBLIC_UPDATE_REPORT_SHA256}" \
   --arg publicNotesInputSha256 "${PUBLIC_NOTES_INPUT_SHA256}" \
   --arg publicNotesReportSha256 "${PUBLIC_NOTES_REPORT_SHA256}" \
-  '{
-    schemaVersion: 2,
+  '({
+    schemaVersion: (if $lineageMode == "standard-upgrade" then 2 else 4 end),
     tag: $tag,
     source: {
       commit: $sourceCommit,
@@ -990,13 +1418,6 @@ jq -nS \
       apk: { file: $apkFile, sha256: $apkSha256 },
       update: { file: "update.json", sha256: $updateSha256 },
       notes: { file: "release-notes.txt", sha256: $notesSha256 }
-    },
-    previousApk: {
-      sha256: $previousApkSha256,
-      packageName: $previousPackageName,
-      versionCode: $previousVersionCode,
-      versionName: $previousVersionName,
-      signerSha256: $previousSignerSha256
     },
     publicAudit: {
       scannerSha256: $publicAuditScannerSha256,
@@ -1047,8 +1468,73 @@ jq -nS \
         }
       }
     }
-  }' > "${CANDIDATE_MANIFEST}"
+  } + (if $lineageMode == "standard-upgrade" then {
+    previousApk: {
+      sha256: $lineageApkSha256,
+      packageName: $lineagePackageName,
+      versionCode: $lineageVersionCode,
+      versionName: $lineageVersionName,
+      signerSha256: $lineageSignerSha256
+    }
+  } else ({
+    publicationMode: $publicationMode,
+    historicalRelease: {
+      inventory: {
+        fileSha256: $historicalInventoryFileSha256,
+        inventorySha256: $historicalInventorySha256,
+        sourceInventory: $historicalSourceInventory
+      },
+      original: $historicalEntry,
+      publication: {
+        title: $historicalTitle,
+        body: $historicalBody,
+        bodyPolicy: "fixed-source-bound-generic-v1",
+        draft: $historicalEntry.draft,
+        prerelease: $historicalEntry.prerelease,
+        makeLatest: false,
+        assets: ([
+          {file: $apkFile, name: $historicalEntry.originalApk.assetName,
+            sha256: $apkSha256, size: $apkSize},
+          {file: "update.json", name: $historicalEntry.originalUpdate.assetName,
+            sha256: $updateSha256, size: $updateSize}
+        ] | sort_by(.name))
+      }
+    },
+    lineage: {
+      kind: (if $lineageMode == "historical-initial"
+        then "historical-initial-rebuild" else "historical-upgrade-rebuild" end),
+      sequence: $historicalSequence,
+      originalApk: $historicalEntry.originalApk,
+      previousRebuiltCandidate: (if $lineageMode == "historical-initial" then null else {
+        tag: $historicalPreviousTag,
+        candidateManifestSha256: $historicalPreviousManifestSha256,
+        apkSha256: $historicalPreviousApkSha256,
+        packageName: $historicalPreviousPackageName,
+        versionCode: $historicalPreviousVersionCode,
+        versionName: $historicalPreviousVersionName,
+        signerSha256: $historicalPreviousSignerSha256
+      } end)
+    }
+  }) end))' > "${CANDIDATE_MANIFEST}"
 CANDIDATE_MANIFEST_SHA256="$(sha256_file "${CANDIDATE_MANIFEST}")"
+if [[ "${HISTORICAL_REQUESTED}" == true ]]; then
+  HISTORICAL_CONTRACT_REPORT="${TMP_DIR}/.historical-candidate-contract.json"
+  assert_historical_contract_matches_source "${SOURCE_HEAD}"
+  node "${HISTORICAL_RELEASE_CONTRACT}" \
+    --candidate "${CANDIDATE_MANIFEST}" \
+    --inventory "${HISTORICAL_INVENTORY}" \
+    --inventory-file-sha256 "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+    > "${HISTORICAL_CONTRACT_REPORT}" 2>"${HISTORICAL_CONTRACT_REPORT}.stderr" || {
+      rm -f "${HISTORICAL_CONTRACT_REPORT}.stderr"
+      die "historical candidate failed its exact publication and lineage contract"
+    }
+  rm -f "${HISTORICAL_CONTRACT_REPORT}.stderr"
+  jq -e --arg manifest "${CANDIDATE_MANIFEST_SHA256}" \
+    --arg inventory "${HISTORICAL_INVENTORY_FILE_SHA256}" \
+    '.candidateFileSha256 == $manifest and .inventoryFileSha256 == $inventory' \
+    "${HISTORICAL_CONTRACT_REPORT}" >/dev/null 2>&1 || \
+    die "historical candidate contract report is not bound to exact inputs"
+fi
 
 PUBLIC_MANIFEST_REPORT="${TMP_DIR}/.public-candidate-manifest-audit.json"
 info "auditing the exact candidate manifest"
@@ -1074,6 +1560,9 @@ rm -f \
   "${PUBLIC_NOTES_REPORT}" \
   "${PUBLIC_MANIFEST_REPORT}" \
   "${APK_SOURCE_PROVENANCE_REPORT}"
+if [[ -n "${HISTORICAL_CONTRACT_REPORT:-}" ]]; then
+  rm -f "${HISTORICAL_CONTRACT_REPORT}"
+fi
 for FINAL_CANDIDATE_FILE in \
   "${SIGNED_APK}" "${UPDATE_JSON}" "${RELEASE_NOTES}" "${CANDIDATE_MANIFEST}"; do
   [[ -f "${FINAL_CANDIDATE_FILE}" && ! -L "${FINAL_CANDIDATE_FILE}" ]] || \
@@ -1087,8 +1576,7 @@ FINAL_CANDIDATE_ENTRY_COUNT="$(
 assert_clean_source "${SOURCE_HEAD}" "${SOURCE_BRANCH}"
 assert_scanner_matches_source "${SOURCE_HEAD}"
 assert_apk_source_verifier_matches_source "${SOURCE_HEAD}"
-[[ "$(sha256_file "${PREVIOUS_APK}")" == "${PREVIOUS_APK_SHA256}" ]] || \
-  die "previous APK changed while finalizing the candidate"
+assert_lineage_input_unchanged
 [[ "$(sha256_file "${SIGNED_APK}")" == "${APK_SHA256}" \
   && "$(sha256_file "${UPDATE_JSON}")" == "${UPDATE_SHA256}" \
   && "$(sha256_file "${RELEASE_NOTES}")" == "${NOTES_SHA256}" \
@@ -1099,4 +1587,9 @@ mv "${TMP_DIR}" "${FINAL_DIR}"
 TMP_DIR=""
 info "created ${FINAL_DIR#"${ROOT_DIR}"/}"
 info "candidate APK sha256 ${APK_SHA256}"
-info "review candidate-manifest.json, then publish these exact bytes with tools/publish-release.sh"
+if [[ "${LINEAGE_MODE}" == "standard-upgrade" ]]; then
+  info "review candidate-manifest.json, then publish these exact bytes with tools/publish-release.sh"
+else
+  info "historical schema 4 candidate is only for the reviewed non-latest history-rewrite workflow"
+  info "tools/publish-release.sh intentionally rejects this candidate"
+fi
