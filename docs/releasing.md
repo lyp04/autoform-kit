@@ -326,6 +326,67 @@ device/inode/mode/owner，cleanup 只删除仍指向同一非符号链接目录�
 
 创建后，脚本通过 GitHub API 重新读取 `/releases/latest`，要求 tag、title 与 release body（即 exact `release-notes.txt` 字节）精确匹配、`draft:false`、`prerelease:false`，且资产恰好只有 candidate APK、`update.json`、`candidate-manifest.json` 三项；随后逐项通过 authenticated asset API 下载实际公开字节并核对 SHA-256。`gh release create` 可能在返回失败前已经创建 tag、draft、Release 或部分资产；创建失败或创建后复核失败时，脚本会明确报告“远端可能已有部分发布”，且不会自动删除或声称已回滚。此时必须冻结重试并人工核对远端状态。
 
+### 固定 `beta` tag 发布
+
+当前独立 Beta publisher 只接受 package `com.autoformkit.app`、`versionCode=9`、
+`versionName=1.0.8-beta.1`、candidate tag `v1.0.8-beta.1`。公开 Release 使用 App 协议固定读取的
+`beta` tag。Release title 固定为 `autoform-kit 1.0.8-beta.1`，body 与
+`update.json.notes` 固定为：
+
+```text
+Public beta build of the autoform-kit framework. No site-specific configuration is included.
+```
+
+先用 code 8、name `1.0.7` 的 exact 已签名 APK 作为 `--previous-apk` 生成并审查 schema-2
+candidate；该文件和所有私有词表必须是仓库外、owner-only mode-`0600` 文件。随后从 candidate
+绑定的干净、已完整推送 source commit 执行：
+
+```sh
+AUTOFORM_BETA_SINGLE_WRITER_WINDOW=EXCLUSIVE_BETA_RELEASE_WRITER_CONFIRMED \
+  tools/publish-beta-release.mjs \
+  --candidate dist/release-candidates/v1.0.8-beta.1/candidate-manifest.json \
+  --previous-apk /secure/example/autoform-kit-1.0.7-installed.apk \
+  --private-wordlist /secure/example/private-publication-wordlist.json
+```
+
+该命令不调用或复用 stable publisher。首个远端写之前，它执行两次完整 preflight：重新核对
+candidate directory closure、APK/update/notes/manifest SHA、package/code/name/signer、previous APK、
+source commit/tree/clean worktree、source commit 原始对象（含 author/committer/message）、scanner 与
+第三方来源 verifier；扫描固定 title/body、candidate 和公开 repository/refs/branches/tags/Releases
+投影；要求公开引用恰好只有唯一 default branch、v1.0.0-v1.0.6 七个同指净化祖先提交的轻量 tag、
+可选的唯一 stable latest tag，且没有额外 branch/tag/pull ref。publisher 从这些 exact remote roots
+在本地逐对象读取全部可达 commit/tree/blob，扫描包含对象位置、元数据和原始字节的完整闭包，并要求
+`beta` tag 与 Release 都不存在；同时把历史语义和 `/releases/latest` 的 exact 状态冻结为只读基线。
+`latest` 可以在开始时为 404，也可以是一份已存在且非 draft、非 prerelease 的 exact stable Release，
+但整个 Beta 发布期间必须逐字段不变。历史逐版 publisher 的 `historical-incremental` attestation 明确
+绑定一个 v1.0.0-v1.0.6 excluded tag，不能冒充 Beta 证明；Beta 因而每轮现场重建并扫描完整可达闭包。
+
+唯一写流程先执行 `gh release create beta --draft --prerelease --latest=false`，只上传 candidate APK、
+`update.json` 与 `candidate-manifest.json`。publisher 随即读取固定 tag/target commit、下载三项实际远端
+资产并重新核对 SHA、APK identity、signer、source provenance 和敏感扫描。紧邻 PATCH 之前还会再次
+完整获取 repository/refs/branches/tags/Releases 与 direct tag/Release，重建可达对象闭包，并第二次下载、
+扫描和逐字节核对三项资产；该边界的任何 metadata、ref 或 asset 并发变化都会在 PATCH 前停止。全部通过
+后才用 REST PATCH 提交字符串字段 `make_latest: "false"`，同时明确保持 `prerelease:true` 并改为
+`draft:false`；PATCH 响应和随后完整远端复核也必须精确通过。最终响应不要求出现 `make_latest` 字段；
+是否意外成为 latest 只以发布前后 `/releases/latest` exact identity 复核为准。
+
+`AUTOFORM_BETA_SINGLE_WRITER_WINDOW` 是操作员对“从 draft create 到最终复核期间已暂停其他 repository /
+Release 写入者和自动化”的显式确认，不是 GitHub 锁、ETag CAS 或对外部写权限的技术约束。当前使用的
+GitHub Release PATCH endpoint 没有在本流程中实测出可依赖的条件写语义，因此不得把该环境变量描述成
+防并发保证；若不能维持实际单写入窗口就不能运行。任何 create 后错误都只报告远端可能存在 draft、tag
+或 partial assets，绝不自动删除、移动 tag、覆盖或重试；此时必须冻结并人工审计远端。
+
+离线 fake-tool 自测不联网，也不会执行真实 Git、设备或 GitHub 写入：
+
+```sh
+node tools/beta-release-publisher-selftest.mjs
+```
+
+旧 code-8 `v1.0.7` candidate 已作废，不能作为 Beta 或 stable 发布。通过 Beta 后的未来 stable 使用
+`versionCode=10`、`versionName=1.0.8` 和 tag `v1.0.8`，仍由 stable publisher 独立发布为 latest；
+code-9 Beta 设备必须显式切回 stable 通道并完成 code9→code10 真机升级证据。Beta 发布和未来 stable
+都不得改变 v1.0.0-v1.0.6 的历史 Release/title/body/assets 语义。
+
 ### Catalog authority 与 live manifest 证据
 
 Mode-`0600` private deployment evidence 必须显式选择且只选择一条 authority 分支。正式发布只接受
