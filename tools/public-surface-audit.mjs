@@ -1638,12 +1638,13 @@ function isAsciiHexCharacter(value) {
   return (lower >= 0x61 && lower <= 0x66) || (lower >= 0x30 && lower <= 0x39);
 }
 
-function containedByCompleteSha256HexDigest(text, start, end) {
+function containedByCompleteHashHexDigest(text, start, end) {
   let digestStart = start;
   while (digestStart > 0 && isAsciiHexCharacter(text[digestStart - 1])) digestStart -= 1;
   let digestEnd = end;
   while (digestEnd < text.length && isAsciiHexCharacter(text[digestEnd])) digestEnd += 1;
-  return digestEnd - digestStart === 64;
+  const digestLength = digestEnd - digestStart;
+  return digestLength === 40 || digestLength === 64;
 }
 
 function containedByDexNumericMetadata(start, end, ranges) {
@@ -1734,8 +1735,9 @@ function auditGenericTextView(entry, text, textual, add) {
   forEachMatch(CN_MOBILE_PATTERN, text, (match) => {
     const numberStart = match.index + match[0].length - 11;
     const numberEnd = match.index + match[0].length;
-    // Decimal runs occur by chance in digests; exempt only an entire, bounded SHA-256 hex token.
-    if (!containedByCompleteSha256HexDigest(text, numberStart, numberEnd)) {
+    // Decimal runs occur by chance in Git SHA-1 and SHA-256 object IDs. Exempt only an entire,
+    // bounded 40- or 64-character hex token; near-length tokens remain findings.
+    if (!containedByCompleteHashHexDigest(text, numberStart, numberEnd)) {
       add(entry, "pii-phone", textual ? lineAt(text, match.index) : null);
     }
   });

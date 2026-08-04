@@ -792,7 +792,16 @@ try {
     "an 11-digit run wholly inside one complete SHA-256 hex digest is not a phone");
   assert.ok(!findingRules(digestOnlyAudit.report).has("pii-phone"));
 
-  for (const hexLength of [63, 65]) {
+  const gitObjectIdWithPhoneDigits = `${"a".repeat(10)}${syntheticMobile}${"b".repeat(19)}`;
+  assert.equal(gitObjectIdWithPhoneDigits.length, 40);
+  const gitObjectIdFile = path.join(temporary, "git-object-id-with-phone-digits.txt");
+  fs.writeFileSync(gitObjectIdFile, `oid=${gitObjectIdWithPhoneDigits}\n`, "utf8");
+  const gitObjectIdAudit = audit(["--file", gitObjectIdFile]);
+  assert.equal(gitObjectIdAudit.status, 0,
+    "an 11-digit run wholly inside one complete Git SHA-1 object ID is not a phone");
+  assert.ok(!findingRules(gitObjectIdAudit.report).has("pii-phone"));
+
+  for (const hexLength of [39, 41, 63, 65]) {
     const paddingLength = (hexLength - syntheticMobile.length) / 2;
     const nearDigest = `${"a".repeat(paddingLength)}${syntheticMobile}${"b".repeat(paddingLength)}`;
     assert.equal(nearDigest.length, hexLength);
