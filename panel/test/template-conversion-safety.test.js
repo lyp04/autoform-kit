@@ -5,7 +5,7 @@ import { readFile } from "node:fs/promises";
 import { templateToProfile } from "../src/convert.js";
 import { confirmChoiceValue } from "../public/form-preview.js";
 import { validateFormProfile } from "../src/profile.js";
-import { validateProfilesForPublish } from "../src/worker.js";
+import { clientCatalog, validateProfilesForPublish } from "../src/worker.js";
 
 const seed = JSON.parse(await readFile(
   new URL("../../app/assets/form-profiles.seed.json", import.meta.url), "utf8"));
@@ -38,6 +38,47 @@ test("number/text fields never become the primary scanner because of backend ord
     { field: "example_identifier", key: "primary", search: true, scan: true },
     { field: "example_extra_scan", key: "example_extra_scan", search: false, scan: false }
   ]);
+});
+
+test("configured input labels survive template conversion and App catalog delivery", () => {
+  const profile = templateToProfile(template([
+    {
+      field: "example_primary_identifier",
+      title: "Configured primary label",
+      kind: "serial",
+      required: true
+    },
+    {
+      field: "example_replacement_identifier",
+      title: "Configured replacement label",
+      kind: "text",
+      required: false
+    }
+  ]));
+  profile.snPlugins[0].labelI18n = {
+    en: "Localized primary label",
+    es: "Etiqueta principal localizada"
+  };
+
+  assert.deepEqual(profile.snPlugins.map(({ field, label }) => ({ field, label })), [
+    {
+      field: "example_primary_identifier",
+      label: "Configured primary label"
+    },
+    {
+      field: "example_replacement_identifier",
+      label: "Configured replacement label"
+    }
+  ]);
+
+  const served = clientCatalog({
+    version: 7,
+    profiles: [profile],
+    settings: { brand: "Fictional" }
+  });
+  assert.deepEqual(served.profiles[0].snPlugins, profile.snPlugins);
+  assert.deepEqual(served.profiles[0].snPlugins[0].labelI18n,
+    profile.snPlugins[0].labelI18n);
 });
 
 test("a template with only ordinary inputs remains unbound instead of inventing an identifier", () => {

@@ -22,7 +22,7 @@
     "files": [
       {
         "path": "app/build.gradle",
-        "sha256": "a1cd960455827d787e32b0f68e2e6edaf053a445511ffcab6813767bd9abc075"
+      "sha256": "15240babb854185a8f839d1bf5978f1769f29bb6b1fb7f123d163fc579e762f5"
       },
       {
         "path": "build.gradle",

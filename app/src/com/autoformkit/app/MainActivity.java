@@ -822,6 +822,10 @@ public class MainActivity extends Activity {
         showFormPage(true);
     }
 
+    private void showFormPage(boolean promptSavedDraft) {
+        showFormPage(promptSavedDraft, true);
+    }
+
     /** Re-read the cached catalog (freshly synced from the panel) into the in-memory profile list, so a
      *  fresh install or a new publish shows the real forms without needing an app restart. Keeps the
      *  current selection if its id still exists. No-op if nothing usable is cached. */
@@ -860,7 +864,7 @@ public class MainActivity extends Activity {
         return ProfilePickerRules.visibleProfiles(all);
     }
 
-    private void showFormPage(boolean promptSavedDraft) {
+    private void showFormPage(boolean promptSavedDraft, boolean reloadCatalog) {
         alternateEntryPageOpen = false;
         if (savedToken().isEmpty() && !localSamplePreviewEnabled()) {
             showSettingsPage();
@@ -872,7 +876,10 @@ public class MainActivity extends Activity {
             showSettingsPage();
             return;
         }
-        reloadCatalogProfiles(); // pick up a freshly-synced catalog (fresh install / new publish) without an app restart
+        // Normal navigation picks up a freshly-synced catalog without an app restart. An internal
+        // presentation-only rebuild must keep the already selected, already validated profile so a
+        // draft cannot cross a catalog-semantics boundary between validation and restore.
+        if (reloadCatalog) reloadCatalogProfiles();
         if (!AppConfig.panelBase(this).isEmpty() && !activePanelPairCompatible()) {
             notifyBackendUnconfigured();
             showSettingsPage();
@@ -965,6 +972,10 @@ public class MainActivity extends Activity {
                         return;
                     }
                     saveLastProfile();
+                    // Labels, placeholders, scan controls, extra identifiers and alternate-entry
+                    // actions are all owned by the selected Panel profile. Rebuild before restoring
+                    // its queue so no view from the previous profile can survive the switch.
+                    showFormPage(false, false);
                     restoreCurrentProfileDraftOrEmpty();
                 } catch (JSONException exc) {
                     toast(exc.getMessage());
@@ -11965,6 +11976,11 @@ public class MainActivity extends Activity {
 
     private String draftUnitSummary(JSONObject draft) {
         List<String> lines = new ArrayList<>();
+        String draftProfileId = draft == null ? "" : draft.optString("profileId", "");
+        JSONObject draftProfile = uniqueProfile(allProfiles, draftProfileId);
+        if (draftProfile == null) draftProfile = uniqueProfile(profiles, draftProfileId);
+        String draftPrimaryLabel = inputLabel(draftProfile, false);
+        String draftSecondaryLabel = inputLabel(draftProfile, true);
         JSONArray array = draft == null ? null : draft.optJSONArray("units");
         int shown = 0;
         int total = 0;
@@ -11976,8 +11992,10 @@ public class MainActivity extends Activity {
             total++;
             if (shown < 5) {
                 String base = item.optString("baseSn", "").trim();
-                String baseText = base.isEmpty() ? "" : " " + secondaryInputLabel() + "=" + base;
-                lines.add("#" + item.optInt("sequence", i + 1) + " SN=" + sn + baseText + " " + t("status") + "=" + item.optString("status", "pending"));
+                String baseText = base.isEmpty() ? "" : " " + draftSecondaryLabel + "=" + base;
+                lines.add("#" + item.optInt("sequence", i + 1) + " "
+                    + draftPrimaryLabel + "=" + sn + baseText + " " + t("status") + "="
+                    + item.optString("status", "pending"));
                 shown++;
             }
         }
@@ -12575,10 +12593,23 @@ public class MainActivity extends Activity {
         restoringDraft = true;
         int restored = 0;
         try {
+            String enteringProfileId = currentProfileId();
             String profileId = prepared.optString("profileId", "");
             int profileIndex = findProfileIndex(profileId);
             if (profileIndex < 0) throw new JSONException("draft profile is not selectable");
+            boolean profileChanged = !profileId.equals(enteringProfileId);
             profile = profiles.getJSONObject(profileIndex);
+            // Saved-draft and queue-snapshot restore can jump directly to another profile without
+            // passing through the Spinner's normal change branch. Rebuild first so every
+            // Panel-owned input is bound to the restored profile; restore then reapplies the
+            // draft's snapshotted photo order and contents.
+            if (profileChanged) {
+                saveLastProfile();
+                showFormPage(false, false);
+                profileIndex = findProfileIndex(profileId);
+                if (profileIndex < 0) throw new JSONException("draft profile is not selectable");
+                profile = profiles.getJSONObject(profileIndex);
+            }
             if (profileSpinner != null) profileSpinner.setSelection(profileIndex);
             restored = restorePreparedDraftContents(prepared);
             saveLastProfile();
@@ -14076,13 +14107,17 @@ public class MainActivity extends Activity {
         return null;
     }
 
-    private String inputLabel(boolean secondary) {
-        JSONObject plugin = snPlugin(secondary ? "secondary" : "primary");
+    private String inputLabel(JSONObject sourceProfile, boolean secondary) {
+        JSONObject plugin = snPlugin(sourceProfile, secondary ? "secondary" : "primary");
         String configured = plugin == null ? "" : localized(plugin, "label", "labelI18n");
         if (!configured.isEmpty()) return configured;
         if ("en".equals(lang)) return secondary ? "Secondary identifier" : "Primary identifier";
         if ("es".equals(lang)) return secondary ? "Identificador secundario" : "Identificador principal";
         return secondary ? "次要标识" : "主要标识";
+    }
+
+    private String inputLabel(boolean secondary) {
+        return inputLabel(profile, secondary);
     }
 
     private String primaryInputLabel() { return inputLabel(false); }
