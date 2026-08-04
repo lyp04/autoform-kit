@@ -15,6 +15,101 @@ const methodBody = (start, end) => {
   const to = main.indexOf(end, from + start.length);
   return from >= 0 && to > from ? main.slice(from, to) : "";
 };
+const matchingJavaDelimiter = (source, openAt, open, close) => {
+  if (source[openAt] !== open) return -1;
+  let depth = 0;
+  let state = "code";
+  for (let index = openAt; index < source.length; index += 1) {
+    const current = source[index];
+    const next = source[index + 1];
+    if (state === "line-comment") {
+      if (current === "\n") state = "code";
+      continue;
+    }
+    if (state === "block-comment") {
+      if (current === "*" && next === "/") {
+        state = "code";
+        index += 1;
+      }
+      continue;
+    }
+    if (state === "string" || state === "character") {
+      if (current === "\\") {
+        index += 1;
+      } else if ((state === "string" && current === "\"")
+          || (state === "character" && current === "'")) {
+        state = "code";
+      }
+      continue;
+    }
+    if (current === "/" && next === "/") {
+      state = "line-comment";
+      index += 1;
+    } else if (current === "/" && next === "*") {
+      state = "block-comment";
+      index += 1;
+    } else if (current === "\"") {
+      state = "string";
+    } else if (current === "'") {
+      state = "character";
+    } else if (current === open) {
+      depth += 1;
+    } else if (current === close && --depth === 0) {
+      return index;
+    }
+  }
+  return -1;
+};
+const javaMethodBody = (source, signature) => {
+  const match = source.match(signature);
+  if (match == null || match.index == null) return "";
+  const open = source.indexOf("{", match.index + match[0].length);
+  const declarationEnd = source.indexOf(";", match.index + match[0].length);
+  if (open < 0 || (declarationEnd >= 0 && declarationEnd < open)) return "";
+  const close = matchingJavaDelimiter(source, open, "{", "}");
+  return close > open ? source.slice(open + 1, close) : "";
+};
+const skipJavaTrivia = (source, from) => {
+  let index = from;
+  while (index < source.length) {
+    if (/\s/.test(source[index])) {
+      index += 1;
+    } else if (source.startsWith("//", index)) {
+      const newline = source.indexOf("\n", index + 2);
+      index = newline < 0 ? source.length : newline + 1;
+    } else if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      index = end < 0 ? source.length : end + 2;
+    } else {
+      break;
+    }
+  }
+  return index;
+};
+const guardedIf = (body, guard) => {
+  const ifPattern = /\bif\s*\(/g;
+  for (let match = ifPattern.exec(body); match != null; match = ifPattern.exec(body)) {
+    const conditionOpen = body.indexOf("(", match.index);
+    const conditionClose = matchingJavaDelimiter(body, conditionOpen, "(", ")");
+    if (conditionClose < 0) return null;
+    const condition = body.slice(conditionOpen + 1, conditionClose);
+    if (!condition.includes(guard)) {
+      ifPattern.lastIndex = conditionClose + 1;
+      continue;
+    }
+    const blockOpen = skipJavaTrivia(body, conditionClose + 1);
+    if (body[blockOpen] !== "{") return null;
+    const blockClose = matchingJavaDelimiter(body, blockOpen, "{", "}");
+    if (blockClose < 0) return null;
+    return {
+      condition,
+      consequent: body.slice(blockOpen + 1, blockClose),
+      start: match.index,
+      end: blockClose + 1,
+    };
+  }
+  return null;
+};
 const alternateSubmitMethod = methodBody(
   "private void submitAlternateEntry()", "private JSONObject resolveAlternateEntryDynamicOverrides(");
 const alternateOcrMethod = methodBody(
@@ -22,6 +117,16 @@ const alternateOcrMethod = methodBody(
 const printCaptureMethod = methodBody(
   "private PrintRemoteContext capturePrintRemoteContext(",
   "private synchronized boolean printRemoteBindingStillCurrent(");
+const profileSelectionMethod = javaMethodBody(main,
+  /@Override\s+public void onItemSelected\s*\(\s*AdapterView<\?> parent,\s*View view,\s*int position,\s*long id\s*\)/);
+const safePanelSnapshotMethod = javaMethodBody(main,
+  /private boolean safeToInstallBoundPanelSnapshot\s*\(\s*\)/);
+const savePanelConnectionMethod = javaMethodBody(main,
+  /private void savePanelConnection\s*\(\s*String panelBaseInput,\s*String catalogKeyInput,\s*String expectedOldBase,\s*String expectedOldKey,\s*PanelConnectionInputRules\.Source source,\s*boolean discardConfirmed,\s*String approvedAlternateEvidenceSha256\s*\)/);
+const reprintGuard = "hasStoredOrUnreadableReprintAttempt()";
+const profileSelectionReprintGuard = guardedIf(profileSelectionMethod, reprintGuard);
+const safePanelSnapshotReprintGuard = guardedIf(safePanelSnapshotMethod, reprintGuard);
+const savePanelConnectionReprintGuard = guardedIf(savePanelConnectionMethod, reprintGuard);
 const latestPrintJobMethod = main.match(
   /private PrintJobLookup latestPrintJobForSn\([\s\S]*?\n    \}\n/,
 )?.[0] ?? "";
@@ -91,10 +196,26 @@ const checks = new Map([
   ["same remote job remains blocked after session or policy change", /sameRemoteTarget/.test(printBinding)
     && /store\.blocking\(target\)/.test(main)
     && /duplicate unresolved print target/.test(reprintAttempt)],
-  ["unresolved reprint pins profile Panel and hot catalog boundaries", /hasStoredOrUnreadableReprintAttempt\(\)/.test(main)
-    && /changing && \(submitting[\s\S]{0,260}hasStoredOrUnreadableReprintAttempt\(\)/.test(main)
-    && /safeToInstallBoundPanelSnapshot\(\)[\s\S]{0,360}hasStoredOrUnreadableReprintAttempt\(\)/.test(main)
-    && /connectionChanged[\s\S]{0,260}hasStoredOrUnreadableReprintAttempt\(\)/.test(main)],
+  ["unresolved reprint pins profile Panel and hot catalog boundaries",
+    profileSelectionReprintGuard != null
+    && profileSelectionReprintGuard.condition.includes("changing")
+    && profileSelectionReprintGuard.consequent.includes("bounceProfileSelection(locked)")
+    && profileSelectionReprintGuard.consequent.includes("return;")
+    && profileSelectionReprintGuard.end
+      < profileSelectionMethod.indexOf("profile = profiles.getJSONObject(position)")
+    && safePanelSnapshotReprintGuard != null
+    && safePanelSnapshotReprintGuard.consequent.includes("return false;")
+    && safePanelSnapshotReprintGuard.end
+      < safePanelSnapshotMethod.indexOf("legacyPanelStateReadyForCachePromotion()")
+    && savePanelConnectionReprintGuard != null
+    && savePanelConnectionReprintGuard.condition.includes("connectionChanged")
+    && savePanelConnectionReprintGuard.consequent.includes(
+      'alert(t("draft_save_failed"), t("panel_connect_failed"))')
+    && savePanelConnectionReprintGuard.consequent.includes("return;")
+    && savePanelConnectionReprintGuard.end
+      < savePanelConnectionMethod.indexOf("SharedPreferences.Editor editor = prefs.edit()")
+    && savePanelConnectionReprintGuard.end
+      < savePanelConnectionMethod.indexOf("saved = editor.commit()")],
   ["reprint POST is journaled before exact bytes are sent", /PrintReprintAttempt\.Attempt attempt = beginReprintAttempt\(target, exactPayload\);[\s\S]{0,900}postStarted = true;[\s\S]{0,200}retryPrintExact\(exactPayload\)/.test(main)],
   ["failed terminal journal cleanup restores the blocking in-memory record", /failed removal must therefore restore[\s\S]{0,320}putString\(REPRINT_ATTEMPTS_KEY, store\.serialize\(\)\)\.apply\(\)/.test(main)],
   ["exact successful printed status is the only automatic uncertain resolution", /resolveConfirmedPrintedReprint\(/.test(main)
