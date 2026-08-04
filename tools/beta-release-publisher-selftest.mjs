@@ -205,7 +205,11 @@ const history = () => Array.from({ length: 7 }, (_, i) => {
     assets: [asset(200 + i * 2, "autoform-kit-" + version + ".apk", Buffer.from("h-apk-" + i)),
       asset(201 + i * 2, "update.json", Buffer.from("h-update-" + i))] };
 });
-const releases = () => [...history(), ...(state.beta ? [state.beta] : [])];
+const releases = () => {
+  const historical = history();
+  if (state.duplicateHistoricalRelease) historical.push({ ...historical[0], id: 777 });
+  return [...historical, ...(state.beta ? [state.beta] : [])];
+};
 const a = process.argv.slice(2);
 if (a[0] === "auth") process.exit(0);
 if (a[0] === "release" && a[1] === "create") {
@@ -258,6 +262,12 @@ if (endpoint === "repos/example/autoform-kit") {
       prerelease: false, immutable: false, assets: [asset(801, "autoform-kit-1.0.8.apk", Buffer.from("stable"))] }));
     process.exit(0);
   }
+  if (state.historicalLatest) {
+    const latest = history()[0];
+    if (state.latestHistoricalMetadataDrift) latest.name = "drift";
+    if (state.latestHistoricalAssetDrift) latest.assets[0].digest = "sha256:" + "d".repeat(64);
+    process.stdout.write(JSON.stringify(latest)); process.exit(0);
+  }
   process.stderr.write("HTTP 404 Not Found\n"); process.exit(1);
 } else if (endpoint.endsWith("/releases/tags/beta")) {
   if (!state.beta) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
@@ -309,7 +319,9 @@ function verifierReport(root, apk) {
 }
 
 function fixture({ tagExists = false, historyDrift = false, historyTagDrift = false,
-  latestDrift = false, createFails = false, assetDrift = false,
+  historicalLatest = true, latestDrift = false, latestHistoricalMetadataDrift = false,
+  latestHistoricalAssetDrift = false, duplicateHistoricalRelease = false,
+  createFails = false, assetDrift = false,
   betaWrongTarget = false, apkIdentityDrift = false, signerDrift = false,
   sourceDrift = false, updateBytesDrift = false, releaseFlagDrift = false,
   extraAsset = false, stealLatest = false, assetBytesDrift = false,
@@ -335,7 +347,9 @@ function fixture({ tagExists = false, historyDrift = false, historyTagDrift = fa
     `private-fixture-term\n${PRIVATE_EMAIL}\n`, 0o600);
   const stateFile = path.join(root, "private", "state.json");
   write(stateFile, JSON.stringify({ source: SOURCE, tree: TREE, beta: null, betaTagOnly: tagExists,
-    historyDrift, historyTagDrift, latestDrift, createFails, assetDrift, betaWrongTarget,
+    historyDrift, historyTagDrift, historicalLatest, latestDrift, latestHistoricalMetadataDrift,
+    latestHistoricalAssetDrift, duplicateHistoricalRelease,
+    createFails, assetDrift, betaWrongTarget,
     apkIdentityDrift, signerDrift, sourceDrift, releaseFlagDrift, extraAsset, stealLatest,
     assetBytesDrift, patchFails, finalFlagDrift, commitMetadataLeak, privateEmail: PRIVATE_EMAIL,
     publicActor: PUBLIC_ACTOR, publicNoreply: PUBLIC_NOREPLY,
@@ -442,6 +456,10 @@ assert.equal(happy.state.patchBody.make_latest, "false");
 assert.equal(happy.state.assetDownloadReads, 9);
 assert.equal(fs.readFileSync(PUBLISHER, "utf8").includes("publish-release.sh"), false);
 
+const noExistingLatest = runScenario({ historicalLatest: false });
+assert.equal(noExistingLatest.result.status, 0, noExistingLatest.result.stderr);
+assert.equal(noExistingLatest.state.writes, 2);
+
 const missingSingleWriter = runScenario({}, { confirmSingleWriter: false });
 assert.equal(missingSingleWriter.result.status, 1);
 assert.equal(missingSingleWriter.state.writes, 0);
@@ -474,6 +492,16 @@ assert.equal(historyTagDrift.state.writes, 0);
 const latestDrift = runScenario({ latestDrift: true });
 assert.equal(latestDrift.result.status, 1);
 assert.equal(latestDrift.state.writes, 0);
+
+for (const options of [
+  { latestHistoricalMetadataDrift: true },
+  { latestHistoricalAssetDrift: true },
+  { duplicateHistoricalRelease: true },
+]) {
+  const rejected = runScenario(options);
+  assert.equal(rejected.result.status, 1);
+  assert.equal(rejected.state.writes, 0);
+}
 
 const partialCreate = runScenario({ createFails: true });
 assert.equal(partialCreate.result.status, 1);
@@ -542,5 +570,6 @@ process.stdout.write(`${JSON.stringify({
   assetDriftRejected: true, candidateIdentityRejected: true, sourceDriftRejected: true,
   commitMetadataRejected: true, exactRefClosureEnforced: true,
   singleWriterWindowEnforced: true, publicationBoundaryRaceRejected: true,
-  releaseFlagsRejected: true, patchFailureFrozen: true, scenarioCount: 29,
+  historicalLatestPreserved: true, historicalLatestDriftRejected: true,
+  releaseFlagsRejected: true, patchFailureFrozen: true, scenarioCount: 33,
 })}\n`);

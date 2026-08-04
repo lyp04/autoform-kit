@@ -751,15 +751,24 @@ function assertHistoryAndLatestState(state, sourceCommit, options = {}) {
   if (state.latest.kind === "absent") {
     if (nonHistory.length !== 0) fail("unexpected non-historical Release exists without latest");
   } else {
-    const stableTag = nonHistory.length === 1
-      ? state.tags.find((tag) => tag.name === nonHistory[0].tagName) : null;
-    if (nonHistory.length !== 1 || !stableTag
-        || canonicalJson(nonHistory[0]) !== canonicalJson(state.latest.release)
-        || nonHistory[0].draft !== false || nonHistory[0].prerelease !== false
-        || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:\+[0-9A-Za-z.-]+)?$/u.test(nonHistory[0].tagName)
-        || nonHistory[0].targetCommitish !== stableTag.commitSha
-        || remoteTagCommit(state, nonHistory[0].tagName) !== stableTag.commitSha) {
-      fail("existing latest is not one exact stable Release");
+    const historicalLatest = HISTORICAL_TAGS.includes(state.latest.release.tagName)
+      ? state.releases.find((release) => release.tagName === state.latest.release.tagName) : null;
+    if (historicalLatest) {
+      if (nonHistory.length !== 0
+          || canonicalJson(historicalLatest) !== canonicalJson(state.latest.release)) {
+        fail("existing latest is not one exact validated historical Release");
+      }
+    } else {
+      const stableTag = nonHistory.length === 1
+        ? state.tags.find((tag) => tag.name === nonHistory[0].tagName) : null;
+      if (nonHistory.length !== 1 || !stableTag
+          || canonicalJson(nonHistory[0]) !== canonicalJson(state.latest.release)
+          || nonHistory[0].draft !== false || nonHistory[0].prerelease !== false
+          || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:\+[0-9A-Za-z.-]+)?$/u.test(nonHistory[0].tagName)
+          || nonHistory[0].targetCommitish !== stableTag.commitSha
+          || remoteTagCommit(state, nonHistory[0].tagName) !== stableTag.commitSha) {
+        fail("existing latest is not one exact stable Release");
+      }
     }
   }
   const allowedTags = new Set([
