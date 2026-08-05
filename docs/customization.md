@@ -24,7 +24,8 @@
 | Backend 协议、field conversion、optional operations、上一工序 recipe outcome policy、上一工序与独立入口 live resolver/builder、响应文案、重复日期解析、打印协议，以及 release-only `operations.recovery` 公钥/证据 capability | Panel global `backendAdapter` | 私有 `form-profiles.json` |
 | 通知 provider URL、body、v2 event template，或 v3 `summary` / `problem` message template、formatter、响应标记与超时 | Panel global `notificationAdapter` | 可选的私有 Worker-only `panel-settings.json`；未配置 Worker-only setting 时可不存在 |
 | 最小化 runtime diagnostics 总开关 | Panel global `diagnosticsPolicy` | 私有 `form-profiles.json` |
-| 登录页跨表单结果汇总的分组、顺序、标签、颜色与精确 result key | Panel global `dailyStats` structured editor | 私有 `form-profiles.json` |
+| 旧 App 登录页汇总的 result-key 分组、顺序、标签与颜色 | Panel global `dailyStats` structured editor | 私有 `form-profiles.json` |
+| 新版 App 登录页汇总的精确 profile/result pair 分组、扁平汇总、顺序、标签、颜色与显式 legacy 计数归属 | Panel global `dailyStatsV2` structured editor | 私有 `form-profiles.json` |
 | 可选 AI 辅助编辑的临时 instruction、draft 文案与翻译建议；只有经校验、审核并发布的最终字段才成为运行配置 | Panel optional AI editor | 私有 draft；发布后最终字段进入私有 `form-profiles.json` |
 | 设置页标题的 Brand 前缀、版本化公开更新源 `updateSource` v1（仅 owner/repo，并保留旧 App 所需的同值 flat 字段）、最低 App version、request override，以及迁移期旧 flat backend/`notifyWebhook` | Panel global settings | 私有 `form-profiles.json` + 派生 `manifest.json` |
 | 默认 GitHub catalog repository/branch、可选 `CATALOG_R2` bucket binding 与受审 cutover、Worker identity/routes、Panel public URL、`CF_VERSION_METADATA` binding、精确 source-tag deploy/runtime provenance、AI endpoint/model | Cloudflare deployment config | Cloudflare 与受控私有部署证据 |
@@ -59,7 +60,8 @@ GitHub。首次 R2-only publish 后 GitHub 可能过期，移除 binding 或直�
 - `backendAdapter`：Panel、Worker 与 App 共用的版本化 backend contract；
 - `notificationAdapter`：只由 Worker 使用的 provider contract；v2 使用 `eventTemplates`，v3 使用两个私有 `summary` / `problem` delivery，并可为固定 round 字段配置受限 formatter；
 - `diagnosticsPolicy`：最小化结构化故障事件总开关，缺失或 `enabled:false` 时关闭；
-- `dailyStats`：可选的登录页全表单汇总；只按 Panel 显式列出的精确 result key 分组，并由组自身保存顺序、标签和颜色，缺失时不启用；
+- `dailyStats`：给旧 App 保留的可选 result-key 汇总，迁移期间保持原值；
+- `dailyStatsV2`：新版 App 的可选精确汇总；selector 结构化选择 profile/result pair，groups 组成总数，flat summaries 只附加显示，缺失时新版 App 回退 v1；
 - `brand`：设置页标题前缀；不改变 launcher 或普通表单页标题；
 - `updateSource` v1：公开 GitHub Releases 更新源，只允许 `version:1`、`owner`、`repo`；Panel 同时保留同值的 `updateOwner` / `updateRepo` 供旧 App 读取；
 - `minAppVersionCode`：允许应用新 catalog 的最低 Android versionCode；

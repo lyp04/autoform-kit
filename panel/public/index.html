@@ -130,7 +130,7 @@
 </main>
 
 <!-- 全局设置：表单排序、后端适配与结构化通知。用原生 <dialog>，::backdrop 自带遮罩，Esc 可关。 -->
-<dialog id="globalSettingsDlg" style="border:1px solid var(--line);border-radius:12px;padding:0;max-width:640px;width:calc(100% - 32px)">
+<dialog id="globalSettingsDlg" style="border:1px solid var(--line);border-radius:12px;padding:0;max-width:640px;width:calc(100% - 32px);max-height:calc(100vh - 32px);overflow:auto">
   <div style="padding:16px 18px">
     <div class="row" style="align-items:center">
       <h2 style="margin:0;font-size:17px;flex:1">⚙ 全局设置</h2>
@@ -148,14 +148,32 @@
     </div>
 
     <div class="fsec">
-      <h3>App 登录页全表单结果汇总</h3>
-      <div class="h">可选。每组把所有显式可见表单中选定的精确 result key 汇总到一张卡片；组顺序就是 App 显示顺序。Panel 不根据标签、提交值或机型名称猜测分组。</div>
+      <h3>旧版 App 全表单结果汇总（dailyStats v1）</h3>
+      <div class="h">为旧 App 保留。v1 只能按 result key 跨表单汇总；当不同表单复用同一个 key 表示不同含义时，请改用下面的 v2 精确汇总。Panel 不根据标签、提交值或机型名称猜测分组。</div>
       <div class="muted" style="font-size:12px;margin-bottom:8px">固定范围：<code>all_profiles</code></div>
       <div id="dailyStatsGroups"></div>
       <div class="row" style="margin-top:8px;align-items:center">
         <button id="addDailyStatsGroupBtn" class="ghost sm" type="button">＋ 添加汇总组</button>
         <button id="saveDailyStatsBtn" class="sm" type="button">保存汇总</button>
         <span id="dailyStatsMsg" class="muted" style="flex:1"></span>
+      </div>
+    </div>
+
+    <div class="fsec">
+      <h3>新版 App 精确今日统计（dailyStatsV2）</h3>
+      <div class="h">可选。每项按“表单 + result key”精确选择，避免同名 key 在不同表单中被误合并。分组显示为顶部统计卡片；扁平汇总显示在卡片下方且不重复计入今日总数。旧 App 继续读取上面的 v1 配置。</div>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">固定版本：<code>2</code>　固定范围：<code>all_profiles</code></div>
+      <h4 style="margin:10px 0 6px;font-size:13px">统计卡片分组</h4>
+      <div id="dailyStatsV2Groups"></div>
+      <div class="row" style="margin:8px 0 12px;align-items:center">
+        <button id="addDailyStatsV2GroupBtn" class="ghost sm" type="button">＋ 添加精确分组</button>
+      </div>
+      <h4 style="margin:10px 0 6px;font-size:13px">卡片下方扁平汇总</h4>
+      <div id="dailyStatsV2FlatSummaries"></div>
+      <div class="row" style="margin-top:8px;align-items:center">
+        <button id="addDailyStatsV2FlatBtn" class="ghost sm" type="button">＋ 添加扁平汇总</button>
+        <button id="saveDailyStatsV2Btn" class="sm" type="button">保存 v2 统计</button>
+        <span id="dailyStatsV2Msg" class="muted" style="flex:1"></span>
       </div>
     </div>
 
@@ -1253,6 +1271,8 @@ $("publishBtn").onclick = async () => {
 // 「保存顺序」把整份重排后的 profiles 数组 POST 给后端。保存成功后 loadCatalog() 刷新。
 let ORDER_WORKING = [];
 let DAILY_STATS_WORKING = [];
+let DAILY_STATS_V2_GROUPS_WORKING = [];
+let DAILY_STATS_V2_FLAT_WORKING = [];
 function renderOrderList(){
   const box=$("orderList"); box.innerHTML="";
   if(!ORDER_WORKING.length){ box.innerHTML='<span class="muted">还没有任何表单。</span>'; return; }
@@ -1373,9 +1393,250 @@ $("addDailyStatsGroupBtn").onclick=()=>{
   DAILY_STATS_WORKING.push({id:nextDailyStatsGroupId(),label:"",uiColor:"#0F766E",resultKeys:[]});
   renderDailyStatsGroups();
 };
+
+function dailyStatsV2PairKey(profileId,resultKey){
+  return JSON.stringify([String(profileId||""),String(resultKey||"")]);
+}
+function dailyStatsV2AvailableSelectors(){
+  const selectors=[]; const seen=new Set();
+  CATALOG_PROFILES.forEach(profile=>{
+    if(profile?.pickerVisible!==true || !profile.gradeMap || typeof profile.gradeMap!=="object" || Array.isArray(profile.gradeMap)) return;
+    const profileId=String(profile.id||"");
+    if(!profileId) return;
+    const profileLabel=String(profile.displayName||profileId);
+    Object.entries(profile.gradeMap).forEach(([resultKey,entry])=>{
+      const pairKey=dailyStatsV2PairKey(profileId,resultKey);
+      if(seen.has(pairKey)) return; seen.add(pairKey);
+      const resultLabel=String(entry?.operatorLabel||entry?.label||resultKey);
+      selectors.push({profileId,resultKey,profileLabel,resultLabel});
+    });
+  });
+  return selectors;
+}
+function nextDailyStatsV2ItemId(prefix){
+  const used=new Set([...DAILY_STATS_V2_GROUPS_WORKING,...DAILY_STATS_V2_FLAT_WORKING]
+    .map(item=>String(item?.id||"")));
+  let index=1;
+  while(used.has(prefix+"-"+index)) index++;
+  return prefix+"-"+index;
+}
+function dailyStatsV2SelectorText(selector){
+  if(selector.profileLabel){
+    return selector.profileLabel+" · "+selector.resultLabel
+      +"（"+selector.profileId+" / "+selector.resultKey+"）";
+  }
+  return selector.profileId+" / "+selector.resultKey+"（当前无显式可见表单声明）";
+}
+function renderDailyStatsV2Items(boxId,items,kind){
+  const box=$(boxId); box.innerHTML="";
+  const available=dailyStatsV2AvailableSelectors();
+  const availableByPair=new Map(available.map(item=>[
+    dailyStatsV2PairKey(item.profileId,item.resultKey),item
+  ]));
+  if(!items.length){
+    const empty=document.createElement("div"); empty.className="muted";
+    empty.style.cssText="font-size:12px;margin-bottom:8px";
+    empty.textContent=kind==="group"
+      ? "未配置 v2 分组时，dailyStatsV2 整体关闭。"
+      : "未配置扁平汇总时，卡片下方不显示附加统计。";
+    box.appendChild(empty);
+  }
+  items.forEach((item,index)=>{
+    if(!item.labelI18n || typeof item.labelI18n!=="object" || Array.isArray(item.labelI18n)) item.labelI18n={};
+    if(!Array.isArray(item.selectors)) item.selectors=[];
+    if(kind==="group" && !Array.isArray(item.legacyResultKeys)) item.legacyResultKeys=[];
+    const card=document.createElement("div"); card.className="slot";
+    const head=document.createElement("div"); head.className="row"; head.style.cssText="flex-basis:100%;width:100%";
+    const name=document.createElement("b"); name.className="g";
+    name.textContent=(kind==="group"?"精确分组 ":"扁平汇总 ")+(index+1); head.appendChild(name);
+    const up=document.createElement("button"); up.type="button"; up.className="ghost sm"; up.textContent="▲"; up.disabled=index===0;
+    up.onclick=()=>{ [items[index-1],items[index]]=[items[index],items[index-1]]; renderDailyStatsV2Editors(); };
+    const down=document.createElement("button"); down.type="button"; down.className="ghost sm"; down.textContent="▼"; down.disabled=index===items.length-1;
+    down.onclick=()=>{ [items[index+1],items[index]]=[items[index],items[index+1]]; renderDailyStatsV2Editors(); };
+    const remove=document.createElement("button"); remove.type="button"; remove.className="danger sm"; remove.textContent="删除";
+    remove.onclick=()=>{ items.splice(index,1); renderDailyStatsV2Editors(); };
+    head.appendChild(up); head.appendChild(down); head.appendChild(remove); card.appendChild(head);
+
+    const idInput=inputCtl(item.id||"",value=>{ item.id=value; }); idInput.maxLength=128;
+    card.appendChild(field("稳定 ID",idInput,"g"));
+    const labelInput=inputCtl(item.label||"",value=>{ item.label=value; }); labelInput.maxLength=160;
+    card.appendChild(field("显示标签",labelInput,"g"));
+    const color=document.createElement("input"); color.type="color";
+    color.value=/^#[0-9A-Fa-f]{6}$/.test(String(item.uiColor||""))?item.uiColor:"#0F766E";
+    if(!item.uiColor) item.uiColor=color.value;
+    color.oninput=()=>{ item.uiColor=color.value; };
+    card.appendChild(field("颜色",color));
+    const enInput=inputCtl(item.labelI18n.en||"",value=>{ item.labelI18n.en=value; }); enInput.maxLength=160;
+    const esInput=inputCtl(item.labelI18n.es||"",value=>{ item.labelI18n.es=value; }); esInput.maxLength=160;
+    card.appendChild(field("英文标签（可选）",enInput,"g"));
+    card.appendChild(field("西语标签（可选）",esInput,"g"));
+
+    const selectorWrap=document.createElement("div"); selectorWrap.style.cssText="flex-basis:100%;width:100%";
+    const selectorLabel=document.createElement("label"); selectorLabel.textContent="精确表单 + result key（至少选择一项）"; selectorWrap.appendChild(selectorLabel);
+    const choices=document.createElement("div"); choices.className="skipmat";
+    const selected=item.selectors
+      .filter(selector=>selector&&typeof selector.profileId==="string"&&typeof selector.resultKey==="string")
+      .map(selector=>({profileId:selector.profileId,resultKey:selector.resultKey}));
+    const selectedPairs=new Set(selected.map(selector=>dailyStatsV2PairKey(selector.profileId,selector.resultKey)));
+    const choicesInOrder=available.slice();
+    selected.forEach(selector=>{
+      const key=dailyStatsV2PairKey(selector.profileId,selector.resultKey);
+      if(!availableByPair.has(key)) choicesInOrder.push(selector);
+    });
+    if(!choicesInOrder.length){
+      const none=document.createElement("span"); none.className="err";
+      none.textContent="当前没有显式 pickerVisible:true 且带结果映射的表单。"; choices.appendChild(none);
+    }
+    choicesInOrder.forEach(selector=>{
+      const pairKey=dailyStatsV2PairKey(selector.profileId,selector.resultKey);
+      const resolved=availableByPair.get(pairKey)||selector;
+      const option=document.createElement("label");
+      const checkbox=document.createElement("input"); checkbox.type="checkbox"; checkbox.checked=selectedPairs.has(pairKey);
+      checkbox.onchange=()=>{
+        if(checkbox.checked){
+          if(!item.selectors.some(candidate=>dailyStatsV2PairKey(candidate?.profileId,candidate?.resultKey)===pairKey)){
+            item.selectors.push({profileId:selector.profileId,resultKey:selector.resultKey});
+          }
+        }else{
+          item.selectors=item.selectors.filter(candidate=>dailyStatsV2PairKey(candidate?.profileId,candidate?.resultKey)!==pairKey);
+          if(kind==="group"){
+            const stillSelected=new Set(item.selectors.map(candidate=>String(candidate?.resultKey||"")));
+            item.legacyResultKeys=item.legacyResultKeys.filter(key=>stillSelected.has(key));
+          }
+        }
+        renderDailyStatsV2Editors();
+      };
+      const text=document.createElement("span"); text.className="mn";
+      text.textContent=dailyStatsV2SelectorText(resolved); text.title=text.textContent;
+      option.appendChild(checkbox); option.appendChild(text); choices.appendChild(option);
+    });
+    selectorWrap.appendChild(choices); card.appendChild(selectorWrap);
+
+    if(kind==="group"){
+      const legacyWrap=document.createElement("div"); legacyWrap.style.cssText="flex-basis:100%;width:100%";
+      const legacyLabel=document.createElement("label");
+      legacyLabel.textContent="旧版未分表单计数 key（可选，仅用于已存在的 legacyResults）"; legacyWrap.appendChild(legacyLabel);
+      const legacyHelp=document.createElement("div"); legacyHelp.className="muted";
+      legacyHelp.style.cssText="font-size:12px;margin-bottom:5px";
+      legacyHelp.textContent="只能从本组已选 selector 的 result key 中明确选择；不选择时不会猜旧计数归属。";
+      legacyWrap.appendChild(legacyHelp);
+      const legacyChoices=document.createElement("div"); legacyChoices.className="skipmat";
+      const selectorKeys=[]; const selectorKeySet=new Set();
+      item.selectors.forEach(selector=>{
+        const key=String(selector?.resultKey||"");
+        if(key&&!selectorKeySet.has(key)){ selectorKeySet.add(key); selectorKeys.push(key); }
+      });
+      const selectedLegacy=new Set(item.legacyResultKeys.filter(key=>typeof key==="string"));
+      selectedLegacy.forEach(key=>{ if(!selectorKeySet.has(key)) selectorKeys.push(key); });
+      if(!selectorKeys.length){
+        const none=document.createElement("span"); none.className="muted"; none.textContent="先选择至少一个精确 selector。"; legacyChoices.appendChild(none);
+      }
+      selectorKeys.forEach(key=>{
+        const option=document.createElement("label");
+        const checkbox=document.createElement("input"); checkbox.type="checkbox"; checkbox.checked=selectedLegacy.has(key);
+        checkbox.onchange=()=>{
+          if(checkbox.checked){ if(!item.legacyResultKeys.includes(key)) item.legacyResultKeys.push(key); }
+          else item.legacyResultKeys=item.legacyResultKeys.filter(candidate=>candidate!==key);
+        };
+        const text=document.createElement("span"); text.className="mn";
+        text.textContent=key+(selectorKeySet.has(key)?"":"（当前不属于本组 selector）"); text.title=key;
+        option.appendChild(checkbox); option.appendChild(text); legacyChoices.appendChild(option);
+      });
+      legacyWrap.appendChild(legacyChoices); card.appendChild(legacyWrap);
+    }
+    box.appendChild(card);
+  });
+}
+function renderDailyStatsV2Editors(){
+  renderDailyStatsV2Items("dailyStatsV2Groups",DAILY_STATS_V2_GROUPS_WORKING,"group");
+  renderDailyStatsV2Items("dailyStatsV2FlatSummaries",DAILY_STATS_V2_FLAT_WORKING,"flat");
+  $("addDailyStatsV2GroupBtn").disabled=DAILY_STATS_V2_GROUPS_WORKING.length>=16;
+  $("addDailyStatsV2FlatBtn").disabled=DAILY_STATS_V2_GROUPS_WORKING.length===0
+    || DAILY_STATS_V2_FLAT_WORKING.length>=8;
+}
+function buildDailyStatsV2(){
+  if(!DAILY_STATS_V2_GROUPS_WORKING.length&&!DAILY_STATS_V2_FLAT_WORKING.length) return null;
+  if(!DAILY_STATS_V2_GROUPS_WORKING.length) throw new Error("dailyStatsV2 至少需要一个精确分组");
+  if(DAILY_STATS_V2_GROUPS_WORKING.length>16) throw new Error("dailyStatsV2 精确分组最多 16 项");
+  if(DAILY_STATS_V2_FLAT_WORKING.length>8) throw new Error("dailyStatsV2 扁平汇总最多 8 项");
+  const available=new Set(dailyStatsV2AvailableSelectors().map(selector=>
+    dailyStatsV2PairKey(selector.profileId,selector.resultKey)));
+  const ids=new Set(); const groupPairs=new Set(); const flatPairs=new Set(); const legacyKeys=new Set();
+  const buildItem=(item,index,kind)=>{
+    const title=(kind==="group"?"精确分组 ":"扁平汇总 ")+(index+1);
+    const id=String(item.id||"").trim(); const label=String(item.label||"").trim();
+    if(!id) throw new Error(title+" 的稳定 ID 不能为空");
+    if(id.length>128) throw new Error(title+" 的稳定 ID 最长 128 个字符");
+    if(ids.has(id)) throw new Error("dailyStatsV2 的稳定 ID 不能重复："+id); ids.add(id);
+    if(!label) throw new Error(title+" 的显示标签不能为空");
+    if(label.length>160) throw new Error(title+" 的显示标签最长 160 个字符");
+    const uiColor=String(item.uiColor||"");
+    if(!/^#[0-9A-Fa-f]{6}$/.test(uiColor)) throw new Error(title+" 的颜色必须是 #RRGGBB");
+    if(!Array.isArray(item.selectors)||!item.selectors.length) throw new Error(title+" 至少选择一个表单 + result key");
+    if(item.selectors.length>512) throw new Error(title+" 最多选择 512 个 selector");
+    const localPairs=new Set(); const selectorResultKeys=new Set();
+    const selectors=item.selectors.map((selector,selectorIndex)=>{
+      const profileId=String(selector?.profileId||""); const resultKey=String(selector?.resultKey||"");
+      if(!profileId||profileId!==profileId.trim()||profileId.length>256) throw new Error(title+" 的 selector "+(selectorIndex+1)+" 表单 ID 无效");
+      if(!resultKey||resultKey!==resultKey.trim()||resultKey.length>256) throw new Error(title+" 的 selector "+(selectorIndex+1)+" result key 无效");
+      const pair=dailyStatsV2PairKey(profileId,resultKey);
+      if(localPairs.has(pair)) throw new Error(title+" 不能重复选择同一个表单 + result key"); localPairs.add(pair);
+      if(!available.has(pair)) throw new Error(title+" 包含当前无显式可见表单声明的 selector："+profileId+" / "+resultKey);
+      const owners=kind==="group"?groupPairs:flatPairs;
+      if(owners.has(pair)) throw new Error((kind==="group"?"精确分组":"扁平汇总")+"之间不能重复选择："+profileId+" / "+resultKey);
+      owners.add(pair); selectorResultKeys.add(resultKey);
+      return {profileId,resultKey};
+    });
+    const labelI18n={};
+    for(const locale of ["en","es"]){
+      const value=String(item.labelI18n?.[locale]||"").trim();
+      if(value){ if(value.length>160) throw new Error(title+" 的多语言标签最长 160 个字符"); labelI18n[locale]=value; }
+    }
+    const built={id,label,...(Object.keys(labelI18n).length?{labelI18n}:{}),uiColor,selectors};
+    if(kind==="group"){
+      const rawLegacy=Array.isArray(item.legacyResultKeys)?item.legacyResultKeys:[];
+      if(rawLegacy.length>128) throw new Error(title+" 的旧版计数 key 最多 128 项");
+      const localLegacy=new Set(); const cleaned=[];
+      rawLegacy.forEach((raw,keyIndex)=>{
+        const key=String(raw||"");
+        if(!key||key!==key.trim()||key.length>256) throw new Error(title+" 的旧版计数 key "+(keyIndex+1)+" 无效");
+        if(localLegacy.has(key)) throw new Error(title+" 的旧版计数 key 不能重复："+key); localLegacy.add(key);
+        if(legacyKeys.has(key)) throw new Error("旧版计数 key 不能出现在多个精确分组："+key); legacyKeys.add(key);
+        if(!selectorResultKeys.has(key)) throw new Error(title+" 的旧版计数 key 必须同时出现在本组 selector 中："+key);
+        cleaned.push(key);
+      });
+      if(cleaned.length) built.legacyResultKeys=cleaned;
+    }
+    return built;
+  };
+  return {
+    version:2,
+    scope:"all_profiles",
+    groups:DAILY_STATS_V2_GROUPS_WORKING.map((item,index)=>buildItem(item,index,"group")),
+    flatSummaries:DAILY_STATS_V2_FLAT_WORKING.map((item,index)=>buildItem(item,index,"flat"))
+  };
+}
+$("addDailyStatsV2GroupBtn").onclick=()=>{
+  if(DAILY_STATS_V2_GROUPS_WORKING.length>=16) return;
+  DAILY_STATS_V2_GROUPS_WORKING.push({
+    id:nextDailyStatsV2ItemId("exact-group"),label:"",uiColor:"#0F766E",selectors:[]
+  });
+  renderDailyStatsV2Editors();
+};
+$("addDailyStatsV2FlatBtn").onclick=()=>{
+  if(!DAILY_STATS_V2_GROUPS_WORKING.length||DAILY_STATS_V2_FLAT_WORKING.length>=8) return;
+  DAILY_STATS_V2_FLAT_WORKING.push({
+    id:nextDailyStatsV2ItemId("flat-summary"),label:"",uiColor:"#64748B",selectors:[]
+  });
+  renderDailyStatsV2Editors();
+};
 function applyDailyStatsToLocalSettings(dailyStats){
   if(dailyStats) CATALOG_SETTINGS.dailyStats=dailyStats;
   else delete CATALOG_SETTINGS.dailyStats;
+}
+function applyDailyStatsV2ToLocalSettings(dailyStatsV2){
+  if(dailyStatsV2) CATALOG_SETTINGS.dailyStatsV2=dailyStatsV2;
+  else delete CATALOG_SETTINGS.dailyStatsV2;
 }
 $("saveDailyStatsBtn").onclick=async()=>{
   let dailyStats;
@@ -1389,10 +1650,22 @@ $("saveDailyStatsBtn").onclick=async()=>{
   } catch(e){ $("dailyStatsMsg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
   finally { btn.disabled=false; btn.textContent=label; }
 };
+$("saveDailyStatsV2Btn").onclick=async()=>{
+  let dailyStatsV2;
+  try { dailyStatsV2=buildDailyStatsV2(); }
+  catch(e){ $("dailyStatsV2Msg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return; }
+  const btn=$("saveDailyStatsV2Btn"),label=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("dailyStatsV2Msg").textContent="";
+  try {
+    const saved=await api("/api/settings",{method:"POST",body:{baseVersion:CATALOG_VERSION,dailyStatsV2}});
+    CATALOG_VERSION=saved.version; applyDailyStatsV2ToLocalSettings(dailyStatsV2);
+    $("dailyStatsV2Msg").innerHTML='<span class="ok">✅ 已保存</span>';
+  } catch(e){ $("dailyStatsV2Msg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
+  finally { btn.disabled=false; btn.textContent=label; }
+};
 function openGlobalSettings(){
   ORDER_WORKING = CATALOG_PROFILES.slice(); // 浅拷贝：只重排引用，profile 对象不改
   renderOrderList();
-  $("orderMsg").textContent=""; $("notifyMsg").textContent=""; $("dailyStatsMsg").textContent="";
+  $("orderMsg").textContent=""; $("notifyMsg").textContent=""; $("dailyStatsMsg").textContent=""; $("dailyStatsV2Msg").textContent="";
   $("notifyWebhookInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.notifyWebhook) || "";
   const notificationAdapter = (CATALOG_SETTINGS && CATALOG_SETTINGS.notificationAdapter) || null;
   $("notificationAdapterInput").value = notificationAdapter ? JSON.stringify(notificationAdapter, null, 2) : "";
@@ -1423,6 +1696,14 @@ function openGlobalSettings(){
   DAILY_STATS_WORKING=dailyStats?.scope==="all_profiles"&&Array.isArray(dailyStats.groups)
     ? JSON.parse(JSON.stringify(dailyStats.groups)) : [];
   renderDailyStatsGroups();
+  const dailyStatsV2=CATALOG_SETTINGS?.dailyStatsV2;
+  DAILY_STATS_V2_GROUPS_WORKING=dailyStatsV2?.version===2
+      &&dailyStatsV2?.scope==="all_profiles"&&Array.isArray(dailyStatsV2.groups)
+    ? JSON.parse(JSON.stringify(dailyStatsV2.groups)) : [];
+  DAILY_STATS_V2_FLAT_WORKING=dailyStatsV2?.version===2
+      &&dailyStatsV2?.scope==="all_profiles"&&Array.isArray(dailyStatsV2.flatSummaries)
+    ? JSON.parse(JSON.stringify(dailyStatsV2.flatSummaries)) : [];
+  renderDailyStatsV2Editors();
   const dlg=$("globalSettingsDlg");
   if(dlg.showModal) dlg.showModal(); else dlg.setAttribute("open","");
 }
@@ -1484,7 +1765,7 @@ $("saveNotifyBtn").onclick = async () => {
   // The endpoints textarea is only the legacy flat override. Blank = {}; the complete structured
   // backendAdapter remains required because the App has no deployment endpoint defaults.
   // A bad JSON (or a non-object) aborts the save with an inline error — never POST a malformed body.
-  let endpoints, backendAdapter, notificationAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns, updateSource, dailyStats;
+  let endpoints, backendAdapter, notificationAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns, updateSource, dailyStats, dailyStatsV2;
   try {
     if(!Number.isInteger(minAppVersionCode) || minAppVersionCode<0) throw new Error("最低 App versionCode 必须是非负整数");
     endpoints=parseSettingsObject("endpointsInput", "旧版接口路径");
@@ -1496,15 +1777,17 @@ $("saveNotifyBtn").onclick = async () => {
     backendAdapter.auth=Object.assign({},backendAdapter.auth||{}, { sessionInvalidCodes, sessionInvalidMessagePatterns });
     updateSource=buildUpdateSource(updateOwner, updateRepo);
     dailyStats=buildDailyStats();
+    dailyStatsV2=buildDailyStatsV2();
   } catch (e) {
     $("notifyMsg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return;
   }
   const btn=$("saveNotifyBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("notifyMsg").textContent="";
   try {
-    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationAdapter, diagnosticsPolicy, dailyStats, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
+    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationAdapter, diagnosticsPolicy, dailyStats, dailyStatsV2, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
     CATALOG_VERSION=saved.version;
     CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notificationAdapter, diagnosticsPolicy, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns });
     applyDailyStatsToLocalSettings(dailyStats);
+    applyDailyStatsV2ToLocalSettings(dailyStatsV2);
     BACKEND_ADAPTER = backendAdapter;
     BACKEND_CLIENT = window.BackendClient.createBackendClient(BACKEND_ADAPTER, { fingerprint:FP });
     $("notifyMsg").innerHTML='<span class="ok">✅ 已保存</span>';

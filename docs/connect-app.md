@@ -74,7 +74,9 @@ App picker 只显示 `pickerVisible:true` 的 profiles。没有单独的特殊�
 9. 用 fictional record 完成 upload 与 submit；
 10. 逐一验证上一工序（含 recipe 响应分类/重试）、重复记录、打印（含手动允许状态/确认）、缺失恢复、提交/网络重试和通知中每个显式开启的策略；
 11. 重复日期严格按 adapter 的 transform order / epoch unit / pattern / time-zone source / 可选兼容策略解释，打印任务按精确标识与 numeric job ID 关联；
-12. Offline、wrong key 和 expired token 不会向意外 host 发请求。
+12. 若配置 `dailyStatsV2`，逐项验证 profile/result pair 的归类、flat summary 展示，以及 flat 数值不会再次加入今日总数；同名 result key 在不同 profile 的行为必须分别验证；
+13. 迁移验证中确认旧 App 继续使用未改动的 v1 `dailyStats`，新版 App 优先使用有效 v2，删除 v2 后新版 App 回退 v1；
+14. Offline、wrong key 和 expired token 不会向意外 host 发请求。
 
 ## 5. Notification proxy
 

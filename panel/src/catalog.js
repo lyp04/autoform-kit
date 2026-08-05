@@ -8,7 +8,7 @@
 // The app's FormCatalogManager fetches manifest.json, gates on schemaVersion/version, then
 // downloads profilesUrl and SHA-256-verifies it against manifest.sha256.
 
-import { validateDailyStats } from "./daily-stats.js";
+import { validateDailyStats, validateDailyStatsV2 } from "./daily-stats.js";
 
 export const SCHEMA_VERSION = 2; // keep in sync with FormCatalog.SUPPORTED_SCHEMA_VERSION (Android)
 
@@ -545,6 +545,10 @@ export async function publishCatalog(env, profiles, {
   const dailyStatsErrors = validateDailyStats(mergedSettings?.dailyStats, profiles);
   if (dailyStatsErrors.length) {
     throw new Error(`dailyStats validation failed: ${dailyStatsErrors.join("; ")}`);
+  }
+  const dailyStatsV2Errors = validateDailyStatsV2(mergedSettings?.dailyStatsV2, profiles);
+  if (dailyStatsV2Errors.length) {
+    throw new Error(`dailyStatsV2 validation failed: ${dailyStatsV2Errors.join("; ")}`);
   }
   const configuredMinAppVersionCode = minAppVersionCode !== undefined
     ? minAppVersionCode

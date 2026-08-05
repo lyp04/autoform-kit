@@ -23,6 +23,7 @@ public class CatalogPromotionValidatorTest {
 
         JSONObject legacy = catalog();
         legacy.getJSONObject("settings").remove("dailyStats");
+        legacy.getJSONObject("settings").remove("dailyStatsV2");
         JSONArray profiles = legacy.getJSONArray("profiles");
         for (int index = 0; index < profiles.length(); index++) {
             JSONObject profile = profiles.getJSONObject(index);
@@ -606,6 +607,50 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void dailyStatsV2UsesExactVisibleProfileResultPairsAndStrictLayerOverlap()
+            throws Exception {
+        JSONObject valid = catalog();
+        valid.getJSONObject("settings").put("dailyStatsV2", dailyStatsV2());
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+
+        JSONObject nonIntegerVersion = copy(valid);
+        nonIntegerVersion.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .put("version", 2.0d);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(nonIntegerVersion));
+
+        JSONObject wrongPair = copy(valid);
+        wrongPair.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("groups").getJSONObject(0).getJSONArray("selectors")
+            .getJSONObject(0).put("resultKey", "sample-missing");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(wrongPair));
+
+        JSONObject groupOverlap = copy(valid);
+        JSONObject duplicateGroup = new JSONObject(groupOverlap.getJSONObject("settings")
+            .getJSONObject("dailyStatsV2").getJSONArray("groups").getJSONObject(0).toString())
+            .put("id", "sample-card-two");
+        groupOverlap.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("groups").put(duplicateGroup);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(groupOverlap));
+
+        JSONObject flatAgainstGroup = copy(valid);
+        JSONObject flat = v2Item("sample-flat", "Sample flat",
+            "example-intake", "sample-ready");
+        flatAgainstGroup.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("flatSummaries").put(flat);
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(flatAgainstGroup));
+        flatAgainstGroup.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("flatSummaries")
+            .put(new JSONObject(flat.toString()).put("id", "sample-flat-two"));
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(flatAgainstGroup));
+
+        JSONObject badLegacyAssignment = copy(valid);
+        badLegacyAssignment.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("groups").getJSONObject(0)
+            .put("legacyResultKeys", new JSONArray().put("sample-review"));
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(badLegacyAssignment));
+    }
+
+    @Test
     public void profileAndResultColorsMustUseSixDigitHex() throws Exception {
         JSONObject valid = catalog();
         firstProfile(valid).put("uiColor", "#123ABC");
@@ -645,6 +690,27 @@ public class CatalogPromotionValidatorTest {
                 .put("labelI18n", new JSONObject().put("en", "Sample summary"))
                 .put("uiColor", "#123456")
                 .put("resultKeys", new JSONArray().put(resultKey))));
+    }
+
+    private static JSONObject dailyStatsV2() throws Exception {
+        return new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_V2_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(v2Item(
+                "sample-card", "Sample card", "example-intake", "sample-ready")
+                .put("legacyResultKeys", new JSONArray().put("sample-ready"))))
+            .put("flatSummaries", new JSONArray());
+    }
+
+    private static JSONObject v2Item(String id, String label, String profileId,
+                                     String resultKey) throws Exception {
+        return new JSONObject()
+            .put("id", id)
+            .put("label", label)
+            .put("uiColor", "#123456")
+            .put("selectors", new JSONArray().put(new JSONObject()
+                .put("profileId", profileId)
+                .put("resultKey", resultKey)));
     }
 
     private static JSONObject catalogWithDynamicPreviousStep() throws Exception {

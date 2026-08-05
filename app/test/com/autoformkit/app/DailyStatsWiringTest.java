@@ -51,6 +51,31 @@ public class DailyStatsWiringTest {
     }
 
     @Test
+    public void v2IsPreferredAndFlatSummariesUseExactSelectorsWithoutChangingTotal()
+            throws Exception {
+        String method = section(mainActivitySource(),
+            "private View dailyStatsView()",
+            "private LinearLayout.LayoutParams statCardParams()");
+        int v2At = method.indexOf(
+            "DailyStatsRules.allProfilesV2(catalogSettings, profiles)");
+        int v1At = method.indexOf(
+            "DailyStatsRules.allProfilesGroups(catalogSettings)");
+        assertTrue(v2At >= 0);
+        assertTrue(v1At > v2At);
+        assertTrue(method.contains(
+            "stats, summary.optJSONArray(\"selectors\"), null"));
+        assertTrue(method.contains(
+            "flatStatLabels.add(localized(summary, \"label\", \"labelI18n\"))"));
+        assertTrue(method.contains(
+            "panel.addView(flatStatRow(flatStatLabels.get(index), flatStatCounts.get(index)"));
+
+        String flatLoop = section(method,
+            "JSONArray flatSummaries = configuredV2.optJSONArray(\"flatSummaries\")",
+            "} else if (configuredGroups != null)");
+        assertFalse(flatLoop.contains("total = saturatedAdd"));
+    }
+
+    @Test
     public void unconfiguredCatalogRetainsCurrentProfileFallback() throws Exception {
         String method = section(mainActivitySource(),
             "private View dailyStatsView()",

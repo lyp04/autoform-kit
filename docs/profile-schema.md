@@ -17,14 +17,14 @@ Catalog 当前使用 `schemaVersion: 2`。Profile 是 Panel 发布给 App 的运
 
 - `schemaVersion`：App 可解释的结构版本；过新的 catalog 不会替换有效缓存。
 - `version`：每次发布单调递增；App 只应用更新版本。
-- `settings`：App-facing 全局配置；包括私有部署的可选 exact `{version:1,owner,repo}` `updateSource` 和可选 `dailyStats` 全表单结果汇总，Worker-only 配置不在此文件。更新源必须与旧 flat owner/repo 完全一致，不能包含 channel/tag/asset；省略时保留旧 flat 兼容，不能把真实值写入公开 seed。
+- `settings`：App-facing 全局配置；包括私有部署的可选 exact `{version:1,owner,repo}` `updateSource`、旧 App 使用的可选 `dailyStats` 和新版 App 使用的可选 `dailyStatsV2`，Worker-only 配置不在此文件。更新源必须与旧 flat owner/repo 完全一致，不能包含 channel/tag/asset；省略时保留旧 flat 兼容，不能把真实值写入公开 seed。
 - `profiles`：非空、有序的 profile 数组。
 
 Panel 同步生成 `manifest.json`，包含 payload SHA-256、`profilesUrl` 和可选 `minAppVersionCode`。不要绕过 Panel 分别编辑这两个文件。
 
 ### `settings.dailyStats`
 
-登录页没有一个可安全代表所有表单的“当前 profile”。需要跨表单汇总时，由 Panel 显式定义有序分组；App 不从 result 标签、提交值、机型名称或 profile 顺序猜测业务含义。完全虚构的示例：
+这是为旧 App 保留的 v1 result-key 汇总。登录页没有一个可安全代表所有表单的“当前 profile”；App 不从 result 标签、提交值、机型名称或 profile 顺序猜测业务含义。完全虚构的示例：
 
 ```json
 {
@@ -56,9 +56,61 @@ Panel 同步生成 `manifest.json`，包含 payload SHA-256、`profilesUrl` 和�
 - `groups` 按数组顺序显示，必须包含 `1..16` 项。每项只允许 `id`、`label`、可选 `labelI18n`、`uiColor` 和 `resultKeys`。
 - `id` 必须唯一、非空且最长 128 characters；`label` 及每个 `labelI18n.en/es` 必须为去除首尾空白后的非空文本，最长 160 characters；`uiColor` 必须是完整 `#RRGGBB`。
 - `resultKeys` 必须包含 `1..128` 个组内唯一的精确 key，每个最长 256 characters；同一个 key 不能进入多个组。每个 key 必须由至少一个显式 `pickerVisible:true` profile 的 `gradeMap` 声明，隐藏独立入口目标不能单独授权登录页汇总项。
-- 省略整个 `dailyStats` 表示不启用全表单汇总。Panel 结构化全局编辑器负责添加、排序和删除组；保存时再次执行同一严格校验。
+- 省略整个 `dailyStats` 表示旧 App 不启用全表单汇总。Panel 结构化全局编辑器负责添加、排序和删除组；保存时再次执行同一严格校验。
+
+v1 只有 result key，没有 profile identity；同一个 key 在不同 profile 代表不同结果时无法安全拆分。因此迁移期应保留现有 v1 给旧 App，同时为新版 App 配置下面的 v2，不能把两者互相嵌套或用 App 常量补足歧义。
 
 汇总卡片的文案和颜色属于 `dailyStats.groups`；主表单结果按钮分别使用各 profile 的 `gradeMap[key].operatorLabel` / `operatorLabelI18n`（缺失时回退只读的 `label` / `labelI18n`）和 `uiColor`。两者不得通过 App 内置业务常量绑定。
+
+### `settings.dailyStatsV2`
+
+`dailyStatsV2` 是与 v1 `dailyStats` 同级的精确汇总契约。每个 selector 都同时选择显式可见 profile 与其 `gradeMap` result key，因此相同 key 在不同 profile 中可以分别归类。完全虚构的示例：
+
+```json
+{
+  "dailyStatsV2": {
+    "version": 2,
+    "scope": "all_profiles",
+    "groups": [
+      {
+        "id": "sample-ready-exact",
+        "label": "示例完成精确汇总",
+        "labelI18n": {
+          "en": "Exact sample ready total",
+          "es": "Total exacto de ejemplo listo"
+        },
+        "uiColor": "#2563EB",
+        "selectors": [
+          {"profileId": "example-intake", "resultKey": "sample-ready"}
+        ],
+        "legacyResultKeys": ["sample-ready"]
+      }
+    ],
+    "flatSummaries": [
+      {
+        "id": "sample-attention-flat",
+        "label": "示例需处理统计",
+        "labelI18n": {
+          "en": "Sample attention",
+          "es": "Atención de ejemplo"
+        },
+        "uiColor": "#B45309",
+        "selectors": [
+          {"profileId": "example-checklist", "resultKey": "sample-review"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+- 根对象只允许 `version`、`scope`、`groups`、`flatSummaries`；`version` 必须是整数 `2`，`scope` 必须是 `all_profiles`。`groups` 必须有 `1..16` 项，`flatSummaries` 必须有 `0..8` 项。
+- 每个 group 只允许 `id`、`label`、可选 `labelI18n`、`uiColor`、`selectors` 与可选 `legacyResultKeys`；flat summary 不允许 `legacyResultKeys`。两类 item 的 `id` 在整个 v2 对象内全局唯一，最长 128 characters。标签只允许 fallback 与可选 `en` / `es`，各最长 160 characters；颜色必须是完整 `#RRGGBB`。
+- `selectors` 必须有 `1..512` 项；每项只允许非空、无首尾空白且最长 256 characters 的 `profileId` / `resultKey`。该 pair 必须由对应的显式 `pickerVisible:true` profile 自己的 `gradeMap` 声明，不能只因另一个 profile 有同名 key 而通过。
+- 同一 item 内 pair 不得重复；pair 不得跨 groups 重复，也不得跨 flat summaries 重复。flat summary 可以明确复用 group 中的 pair，因为它是附加展示，不是另一个主分组。
+- `legacyResultKeys` 只用于把旧版本地 `legacyResults` 的未分 profile 计数明确归入某个 group；存在时必须有 `1..128` 个互不重复的 key，每个 key 必须同时出现在该 group selector 的 `resultKey` 中，并且不能分给多个 group。没有可靠归属时必须省略，App 和 Panel 都不会按名称、标签、颜色或 backend value 猜测。
+- `groups` 的计数组成今日总数；`flatSummaries` 在卡片下方单独显示，不再次计入总数。数组顺序就是显示顺序。
+- 省略 v2 时，新 App 回退读取 v1；存在有效 v2 时优先使用 v2。旧 App 忽略同级 v2 并继续读取未改动的 v1，因此升级迁移不要求先删旧配置。
 
 ## 身份、可见性与模板
 

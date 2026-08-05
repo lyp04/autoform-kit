@@ -38,6 +38,8 @@ final class CatalogPromotionValidator {
     private static final int MAX_ALTERNATE_PHOTOS = 20;
     private static final int MAX_DAILY_STATS_GROUPS = 16;
     private static final int MAX_DAILY_STATS_RESULT_KEYS = 128;
+    private static final int MAX_DAILY_STATS_V2_FLAT_SUMMARIES = 8;
+    private static final int MAX_DAILY_STATS_V2_SELECTORS = 512;
     private static final int MAX_DAILY_STATS_ID_LENGTH = 128;
     private static final int MAX_DAILY_STATS_LABEL_LENGTH = 160;
 
@@ -108,6 +110,7 @@ final class CatalogPromotionValidator {
         }
         if (visibleCount == 0) reject("profiles.picker");
         validateDailyStats(catalogRoot.optJSONObject("settings"), states);
+        validateDailyStatsV2(catalogRoot.optJSONObject("settings"), states);
 
         // Resolve alternate links only after all unique profile ids are known.
         for (ProfileState source : states) {
@@ -397,6 +400,113 @@ final class CatalogPromotionValidator {
                 if (!visibleResultKeys.contains(key)) reject(keyPath + ".unreachable");
             }
         }
+    }
+
+    private static void validateDailyStatsV2(JSONObject settings, List<ProfileState> states) {
+        if (settings == null || !settings.has("dailyStatsV2")) return;
+        String path = "settings.dailyStatsV2";
+        JSONObject dailyStats = requiredObject(settings.opt("dailyStatsV2"), path);
+        requireOnlyKeys(dailyStats,
+            setOf("version", "scope", "groups", "flatSummaries"), path);
+        rangedInt(dailyStats.opt("version"), DailyStatsRules.DAILY_STATS_V2_VERSION,
+            DailyStatsRules.DAILY_STATS_V2_VERSION, path + ".version");
+        oneOf(dailyStats.opt("scope"), path + ".scope",
+            DailyStatsRules.ALL_PROFILES_SCOPE);
+        JSONArray groups = requiredArray(dailyStats.opt("groups"), path + ".groups");
+        JSONArray flatSummaries = requiredArray(
+            dailyStats.opt("flatSummaries"), path + ".flatSummaries");
+        if (groups.length() < 1 || groups.length() > MAX_DAILY_STATS_GROUPS) {
+            reject(path + ".groups.length");
+        }
+        if (flatSummaries.length() > MAX_DAILY_STATS_V2_FLAT_SUMMARIES) {
+            reject(path + ".flatSummaries.length");
+        }
+
+        Map<String, Set<String>> visibleResultsByProfile = new LinkedHashMap<>();
+        for (ProfileState state : states) {
+            if (state.visible && Boolean.TRUE.equals(state.profile.opt("pickerVisible"))) {
+                visibleResultsByProfile.put(state.id, state.resultKeys);
+            }
+        }
+        Set<String> itemIds = new LinkedHashSet<>();
+        Set<String> groupPairs = new LinkedHashSet<>();
+        Set<String> flatPairs = new LinkedHashSet<>();
+        Set<String> assignedLegacyKeys = new LinkedHashSet<>();
+        validateDailyStatsV2Items(groups, false, path + ".groups",
+            visibleResultsByProfile, itemIds, groupPairs, assignedLegacyKeys);
+        validateDailyStatsV2Items(flatSummaries, true, path + ".flatSummaries",
+            visibleResultsByProfile, itemIds, flatPairs, null);
+    }
+
+    private static void validateDailyStatsV2Items(
+            JSONArray items, boolean flat, String path,
+            Map<String, Set<String>> visibleResultsByProfile,
+            Set<String> itemIds, Set<String> assignedPairs,
+            Set<String> assignedLegacyKeys) {
+        Set<String> allowedItemKeys = flat
+            ? setOf("id", "label", "labelI18n", "uiColor", "selectors")
+            : setOf("id", "label", "labelI18n", "uiColor", "selectors",
+                "legacyResultKeys");
+        for (int index = 0; index < items.length(); index++) {
+            String itemPath = path + "[" + index + "]";
+            JSONObject item = objectAt(items, index, path);
+            requireOnlyKeys(item, allowedItemKeys, itemPath);
+            String id = boundedText(item.opt("id"), itemPath + ".id",
+                MAX_DAILY_STATS_ID_LENGTH);
+            if (!itemIds.add(id)) reject(itemPath + ".id.duplicate");
+            boundedText(item.opt("label"), itemPath + ".label",
+                MAX_DAILY_STATS_LABEL_LENGTH);
+            validateOptionalLocalizedText(item, "labelI18n", itemPath + ".labelI18n");
+            validateRequiredUiColor(item.opt("uiColor"), itemPath + ".uiColor");
+
+            JSONArray selectors = requiredArray(item.opt("selectors"), itemPath + ".selectors");
+            if (selectors.length() < 1 || selectors.length() > MAX_DAILY_STATS_V2_SELECTORS) {
+                reject(itemPath + ".selectors.length");
+            }
+            Set<String> localPairs = new LinkedHashSet<>();
+            Set<String> selectedResultKeys = new LinkedHashSet<>();
+            for (int selectorIndex = 0; selectorIndex < selectors.length(); selectorIndex++) {
+                String selectorPath = itemPath + ".selectors[" + selectorIndex + "]";
+                JSONObject selector = objectAt(selectors, selectorIndex, itemPath + ".selectors");
+                requireOnlyKeys(selector, setOf("profileId", "resultKey"), selectorPath);
+                String profileId = boundedText(selector.opt("profileId"),
+                    selectorPath + ".profileId", MAX_PROFILE_ID_LENGTH);
+                String resultKey = boundedText(selector.opt("resultKey"),
+                    selectorPath + ".resultKey", MAX_PROFILE_ID_LENGTH);
+                Set<String> profileResults = visibleResultsByProfile.get(profileId);
+                if (profileResults == null || !profileResults.contains(resultKey)) {
+                    reject(selectorPath + ".unreachable");
+                }
+                String pair = profileResultPair(profileId, resultKey);
+                if (!localPairs.add(pair)) reject(selectorPath + ".duplicate");
+                if (!assignedPairs.add(pair)) reject(selectorPath + ".overlap");
+                selectedResultKeys.add(resultKey);
+            }
+
+            if (!flat && item.has("legacyResultKeys")) {
+                JSONArray legacyResultKeys = requiredArray(
+                    item.opt("legacyResultKeys"), itemPath + ".legacyResultKeys");
+                if (legacyResultKeys.length() < 1
+                        || legacyResultKeys.length() > MAX_DAILY_STATS_RESULT_KEYS) {
+                    reject(itemPath + ".legacyResultKeys.length");
+                }
+                Set<String> localLegacyKeys = new LinkedHashSet<>();
+                for (int keyIndex = 0; keyIndex < legacyResultKeys.length(); keyIndex++) {
+                    String keyPath = itemPath + ".legacyResultKeys[" + keyIndex + "]";
+                    String resultKey = boundedText(legacyResultKeys.opt(keyIndex), keyPath,
+                        MAX_PROFILE_ID_LENGTH);
+                    if (!selectedResultKeys.contains(resultKey)) reject(keyPath + ".unreachable");
+                    if (!localLegacyKeys.add(resultKey)) reject(keyPath + ".duplicate");
+                    if (assignedLegacyKeys == null || !assignedLegacyKeys.add(resultKey)) {
+                        reject(keyPath + ".overlap");
+                    }
+                }
+            }
+        }
+    }
+
+    private static String profileResultPair(String profileId, String resultKey) {
+        return profileId.length() + ":" + profileId + resultKey;
     }
 
     private static void validateOptionalLocalizedText(JSONObject owner, String key,

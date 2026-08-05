@@ -16283,9 +16283,40 @@ public class MainActivity extends Activity {
         List<String> statLabels = new ArrayList<>();
         List<Integer> statCounts = new ArrayList<>();
         List<Integer> statColors = new ArrayList<>();
+        List<String> flatStatLabels = new ArrayList<>();
+        List<Integer> flatStatCounts = new ArrayList<>();
+        List<Integer> flatStatColors = new ArrayList<>();
         int total = 0;
-        JSONArray configuredGroups = DailyStatsRules.allProfilesGroups(catalogSettings);
-        if (configuredGroups != null) {
+        JSONObject configuredV2 = DailyStatsRules.allProfilesV2(catalogSettings, profiles);
+        JSONArray configuredGroups = configuredV2 == null
+            ? DailyStatsRules.allProfilesGroups(catalogSettings)
+            : configuredV2.optJSONArray("groups");
+        if (configuredV2 != null) {
+            for (int index = 0; index < configuredGroups.length(); index++) {
+                JSONObject group = configuredGroups.optJSONObject(index);
+                if (group == null) continue;
+                int count = DailyStatsRules.displayedSelectedCount(
+                    stats, group.optJSONArray("selectors"),
+                    group.optJSONArray("legacyResultKeys"));
+                Integer color = parseColor(group.optString("uiColor", ""));
+                statLabels.add(localized(group, "label", "labelI18n"));
+                statCounts.add(count);
+                statColors.add(color == null ? 0xFF64748B : color);
+                total = saturatedAdd(total, count);
+            }
+            JSONArray flatSummaries = configuredV2.optJSONArray("flatSummaries");
+            for (int index = 0; flatSummaries != null
+                    && index < flatSummaries.length(); index++) {
+                JSONObject summary = flatSummaries.optJSONObject(index);
+                if (summary == null) continue;
+                int count = DailyStatsRules.displayedSelectedCount(
+                    stats, summary.optJSONArray("selectors"), null);
+                Integer color = parseColor(summary.optString("uiColor", ""));
+                flatStatLabels.add(localized(summary, "label", "labelI18n"));
+                flatStatCounts.add(count);
+                flatStatColors.add(color == null ? 0xFF64748B : color);
+            }
+        } else if (configuredGroups != null) {
             for (int index = 0; index < configuredGroups.length(); index++) {
                 JSONObject group = configuredGroups.optJSONObject(index);
                 if (group == null) continue;
@@ -16369,6 +16400,10 @@ public class MainActivity extends Activity {
             LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         cardsParams.setMargins(0, dp(12), 0, 0);
         panel.addView(scroller, cardsParams);
+        for (int index = 0; index < flatStatLabels.size(); index++) {
+            panel.addView(flatStatRow(flatStatLabels.get(index), flatStatCounts.get(index),
+                flatStatColors.get(index)));
+        }
         return panel;
     }
 
@@ -16399,6 +16434,31 @@ public class MainActivity extends Activity {
         labelText.setGravity(Gravity.CENTER);
         card.addView(labelText);
         return card;
+    }
+
+    private View flatStatRow(String label, int count, int color) {
+        LinearLayout summary = row();
+        summary.setGravity(Gravity.CENTER_VERTICAL);
+        summary.setPadding(dp(12), dp(9), dp(12), dp(9));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.setMargins(dp(3), dp(9), dp(3), 0);
+        summary.setLayoutParams(params);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(lightenColor(color));
+        bg.setStroke(dp(1), color);
+        bg.setCornerRadius(dp(8));
+        summary.setBackground(bg);
+
+        TextView labelText = text(label, 14, true);
+        labelText.setTextColor(0xFF334155);
+        summary.addView(labelText,
+            new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        TextView countText = text(String.valueOf(count), 20, true);
+        countText.setTextColor(color);
+        countText.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        summary.addView(countText);
+        return summary;
     }
 
     private int saturatedAdd(int left, int right) {

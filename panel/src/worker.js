@@ -60,7 +60,7 @@ import {
   validateUpdateSourceCompatibility
 } from "./update-source.js";
 import { panelRuntimeFromVersionMetadata } from "./panel-runtime.js";
-import { validateDailyStats } from "./daily-stats.js";
+import { validateDailyStats, validateDailyStatsV2 } from "./daily-stats.js";
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -362,6 +362,7 @@ const APP_CATALOG_SETTING_KEYS = Object.freeze([
   "updateRepo",
   "updateSource",
   "dailyStats",
+  "dailyStatsV2",
   "webOrigin",
   "webReferer",
   "endpoints",
@@ -383,6 +384,9 @@ export function clientCatalog(catalog) {
     }
     if (validateDailyStats(copy.settings.dailyStats, copy.profiles).length > 0) {
       delete copy.settings.dailyStats;
+    }
+    if (validateDailyStatsV2(copy.settings.dailyStatsV2, copy.profiles).length > 0) {
+      delete copy.settings.dailyStatsV2;
     }
   }
   return copy;
@@ -800,6 +804,14 @@ async function handleApi(request, env, url) {
         problems: [{ errors: dailyStatsErrors }]
       }, 422);
     }
+    const dailyStatsV2Errors = validateDailyStatsV2(
+      currentCatalog.settings?.dailyStatsV2, finalProfiles);
+    if (dailyStatsV2Errors.length) {
+      return json({
+        error: "dailyStatsV2 validation failed",
+        problems: [{ errors: dailyStatsV2Errors }]
+      }, 422);
+    }
     const capabilityErrors = validateWorkflowCapabilities(finalProfiles, backendAdapter);
     capabilityErrors.push(...validateNotificationWorkflowCapabilities(
       finalProfiles, currentCatalog.settings?.notificationAdapter));
@@ -869,6 +881,10 @@ async function handleApi(request, env, url) {
       // null is an API-only deletion command. publishCatalog's object merge retains undefined in
       // memory and JSON serialization omits it, so null is never stored or served as catalog data.
       settings.dailyStats = b.dailyStats === null ? undefined : b.dailyStats;
+    }
+    if (Object.prototype.hasOwnProperty.call(b, "dailyStatsV2")) {
+      // null is the deletion command; undefined is omitted from the published catalog JSON.
+      settings.dailyStatsV2 = b.dailyStatsV2 === null ? undefined : b.dailyStatsV2;
     }
     if (typeof b.backendApiBase === "string") settings.backendApiBase = b.backendApiBase;
     if (typeof b.brand === "string") settings.brand = b.brand;
@@ -947,6 +963,14 @@ async function handleApi(request, env, url) {
       return json({
         error: "dailyStats validation failed",
         problems: [{ errors: dailyStatsErrors }]
+      }, 400);
+    }
+    const dailyStatsV2Errors = validateDailyStatsV2(
+      effectiveSettings.dailyStatsV2, finalProfiles);
+    if (dailyStatsV2Errors.length) {
+      return json({
+        error: "dailyStatsV2 validation failed",
+        problems: [{ errors: dailyStatsV2Errors }]
       }, 400);
     }
     const updateCompatibilityErrors =

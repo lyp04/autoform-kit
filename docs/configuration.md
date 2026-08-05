@@ -10,7 +10,8 @@ Panel 是运行配置与表单行为的主体，App 只是读取并执行已验�
 | `brand` | 设置页标题前缀 | 是 |
 | `notificationAdapter` | Worker 调用通知提供方的协议 | 否 |
 | `diagnosticsPolicy` | 是否允许发送最小化结构化故障事件 | 是；运行时再派生为 `/api/config.notification.diagnosticsEnabled` |
-| `dailyStats` | 登录页按 Panel 显式 result-key 分组进行全表单汇总 | 是 |
+| `dailyStats` | 旧 App 登录页按显式 result key 分组的兼容汇总 | 是 |
+| `dailyStatsV2` | 新版 App 按精确 profile/result pair 分组，并可显示不重复计入总数的扁平汇总 | 是 |
 | `updateSource` v1 | 版本化公开更新源 contract；只允许精确的 `version:1`、`owner`、`repo` | 是 |
 | `updateOwner` / `updateRepo` | 与 `updateSource` 相同的公开仓库坐标，供 signed v1.0.4/v1.0.6 兼容读取 | 是 |
 | `minAppVersionCode` | 接受新 catalog 所需的最低 Android versionCode | 通过 `manifest.json` |
@@ -25,11 +26,17 @@ Panel 是运行配置与表单行为的主体，App 只是读取并执行已验�
 
 ## `dailyStats`
 
-`settings.dailyStats` 是可选的 App-facing 登录页汇总契约。它只允许 `scope:"all_profiles"` 和一个有序 `groups` 数组；每组由稳定 `id`、显示 `label` / 可选 `labelI18n`、`#RRGGBB` `uiColor` 与一个非空 `resultKeys` 数组组成。组最多 16 项，同一 result key 在组内和组间都不能重复，并且必须由至少一个显式 `pickerVisible:true` profile 的 `gradeMap` 精确声明。
+`settings.dailyStats` 是为旧 App 保留的可选登录页汇总契约。它只允许 `scope:"all_profiles"` 和一个有序 `groups` 数组；每组由稳定 `id`、显示 `label` / 可选 `labelI18n`、`#RRGGBB` `uiColor` 与一个非空 `resultKeys` 数组组成。组最多 16 项，同一 result key 在组内和组间都不能重复，并且必须由至少一个显式 `pickerVisible:true` profile 的 `gradeMap` 精确声明。
 
 Panel 的全局设置提供结构化增删、排序、标签、颜色和 result-key 选择控件。省略该对象表示不启用全表单汇总。它不会改变结果提交值：主表单仍由 profile 的 `gradeMap[key].value` 提交，主表单按钮优先使用 profile 自己的 `operatorLabel` / `operatorLabelI18n` 和颜色，缺失时回退只读的旧版/导入 `label` / `labelI18n`。完整结构与虚构示例见 [Profile schema](./profile-schema.md#settingsdailystats)。
 
 Profile 结果编辑器不会把现场显示需求写回旧版 `gradeMap[key].label`，也不会触碰 `value`；它只维护可选 `operatorLabel` / `operatorLabelI18n`。这样同一 catalog 可让旧 App 继续读取原标签和提交值，同时由新版 App 显示 Panel 配置的短操作员文案。
+
+## `dailyStatsV2`
+
+`settings.dailyStatsV2` 与 v1 同级，使用 `selectors:[{profileId,resultKey}]` 精确选择每个计数来源，避免相同 result key 在不同 profile 中含义不同时被合并。`groups` 组成今日总数；可选 `flatSummaries` 显示在卡片下方但不再次计入总数。Panel 只列出显式 `pickerVisible:true` profile 自己声明的 result pair，并通过结构化复选框保存，不要求手写业务常量。
+
+Group 可选的 `legacyResultKeys` 只用于显式归属旧版本地、尚未区分 profile 的计数；key 必须属于本组 selector，且不能跨 group 重复。没有可靠归属时省略，系统不会根据 key、提交值、标签或颜色推断。省略 v2 时新版 App 回退 v1；存在有效 v2 时新版 App 优先使用它，旧 App 则忽略 v2 并继续使用未改动的 v1。完整结构、边界和虚构示例见 [Profile schema](./profile-schema.md#settingsdailystatsv2)。
 
 ## `backendAdapter`
 

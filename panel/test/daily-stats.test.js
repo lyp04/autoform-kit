@@ -4,7 +4,11 @@ import { readFileSync } from "node:fs";
 
 import {
   DAILY_STATS_MAX_GROUPS,
-  validateDailyStats
+  DAILY_STATS_V2_MAX_FLAT_SUMMARIES,
+  DAILY_STATS_V2_MAX_GROUPS,
+  DAILY_STATS_V2_MAX_SELECTORS,
+  validateDailyStats,
+  validateDailyStatsV2
 } from "../src/daily-stats.js";
 import { validateFormProfile } from "../src/profile.js";
 import { clientCatalog } from "../src/worker.js";
@@ -37,6 +41,36 @@ function validDailyStats() {
   };
 }
 
+function selector(profileId, resultKey) {
+  return { profileId, resultKey };
+}
+
+function statsV2Item(id, label, uiColor, selectors, extra = {}) {
+  return { id, label, uiColor, selectors, ...extra };
+}
+
+function validDailyStatsV2() {
+  return {
+    version: 2,
+    scope: "all_profiles",
+    groups: [
+      statsV2Item("sample-ready-v2", "Sample ready", "#2563EB",
+        [selector("sample-one", "sample-ready")], {
+          labelI18n: { en: "Sample ready", es: "Ejemplo listo" },
+          legacyResultKeys: ["sample-ready"]
+        }),
+      statsV2Item("sample-review-v2", "Sample review", "#7C3AED",
+        [selector("sample-two", "sample-review")])
+    ],
+    flatSummaries: [
+      statsV2Item("sample-total-v2", "Sample total", "#64748B", [
+        selector("sample-one", "sample-ready"),
+        selector("sample-two", "sample-review")
+      ])
+    ]
+  };
+}
+
 test("dailyStats accepts ordered fictional groups backed by visible profile result keys", () => {
   const profiles = [
     visibleProfile("sample-one", ["sample-ready"]),
@@ -57,6 +91,168 @@ test("dailyStats accepts ordered fictional groups backed by visible profile resu
     "sample-ready-summary", "sample-review-summary"
   ]);
   assert.equal("workerOnlyFutureSecret" in served.settings, false);
+});
+
+test("dailyStatsV2 accepts profile-qualified groups and flat summaries", () => {
+  const profiles = [
+    visibleProfile("sample-one", ["sample-ready"]),
+    visibleProfile("sample-two", ["sample-review"])
+  ];
+  const dailyStatsV2 = validDailyStatsV2();
+  assert.deepEqual(validateDailyStatsV2(dailyStatsV2, profiles), []);
+
+  const served = clientCatalog({
+    settings: { dailyStatsV2, workerOnlyFutureSecret: "must-not-leak" },
+    profiles
+  });
+  assert.deepEqual(served.settings.dailyStatsV2, dailyStatsV2);
+  assert.equal("workerOnlyFutureSecret" in served.settings, false);
+});
+
+test("dailyStatsV2 enforces root, item and collection bounds", () => {
+  const profiles = [visibleProfile("sample-one", ["sample-ready"])];
+  const baseItem = (id) => statsV2Item(id, "Sample", "#2563EB",
+    [selector("sample-one", "sample-ready")]);
+  const errors = validateDailyStatsV2({
+    version: 1,
+    scope: "current_profile",
+    groups: [
+      { ...baseItem(" duplicate "), unsupported: true },
+      { ...baseItem("duplicate"), label: "", uiColor: "2563EB" }
+    ],
+    flatSummaries: [{ ...baseItem("duplicate"), legacyResultKeys: ["sample-ready"] }],
+    unsupported: true
+  }, profiles);
+  assert.ok(errors.includes("dailyStatsV2.unsupported is unsupported"));
+  assert.ok(errors.includes("dailyStatsV2.version must equal 2"));
+  assert.ok(errors.includes("dailyStatsV2.scope must equal all_profiles"));
+  assert.ok(errors.includes("dailyStatsV2.groups[0].unsupported is unsupported"));
+  assert.ok(errors.includes("dailyStatsV2.groups[0].id must not have surrounding whitespace"));
+  assert.ok(errors.includes("dailyStatsV2.groups[1].id must be unique across groups and flatSummaries"));
+  assert.ok(errors.includes("dailyStatsV2.groups[1].label must be a non-empty string"));
+  assert.ok(errors.includes("dailyStatsV2.groups[1].uiColor must be a six-digit #RRGGBB color"));
+  assert.ok(errors.includes("dailyStatsV2.flatSummaries[0].id must be unique across groups and flatSummaries"));
+  assert.ok(errors.includes("dailyStatsV2.flatSummaries[0].legacyResultKeys is unsupported"));
+
+  const tooManyGroups = Array.from({ length: DAILY_STATS_V2_MAX_GROUPS + 1 },
+    (_, index) => baseItem(`group-${index}`));
+  assert.ok(validateDailyStatsV2({
+    version: 2, scope: "all_profiles", groups: tooManyGroups, flatSummaries: []
+  }, profiles).includes("dailyStatsV2.groups must contain at most 16 items"));
+  const tooManyFlat = Array.from({ length: DAILY_STATS_V2_MAX_FLAT_SUMMARIES + 1 },
+    (_, index) => baseItem(`flat-${index}`));
+  assert.ok(validateDailyStatsV2({
+    version: 2, scope: "all_profiles", groups: [baseItem("group")],
+    flatSummaries: tooManyFlat
+  }, profiles).includes("dailyStatsV2.flatSummaries must contain at most 8 items"));
+  const tooManySelectors = Array.from({ length: DAILY_STATS_V2_MAX_SELECTORS + 1 },
+    () => selector("sample-one", "sample-ready"));
+  assert.ok(validateDailyStatsV2({
+    version: 2, scope: "all_profiles",
+    groups: [statsV2Item("group", "Sample", "#2563EB", tooManySelectors)],
+    flatSummaries: []
+  }, profiles).includes("dailyStatsV2.groups[0].selectors must contain at most 512 items"));
+  const longReferenceErrors = validateDailyStatsV2({
+    version: 2,
+    scope: "all_profiles",
+    groups: [statsV2Item("long-reference", "Sample", "#2563EB", [
+      selector("p".repeat(257), "r".repeat(257))
+    ])],
+    flatSummaries: []
+  }, profiles);
+  assert.ok(longReferenceErrors.includes(
+    "dailyStatsV2.groups[0].selectors[0].profileId must contain at most 256 characters"));
+  assert.ok(longReferenceErrors.includes(
+    "dailyStatsV2.groups[0].selectors[0].resultKey must contain at most 256 characters"));
+});
+
+test("dailyStatsV2 selector pairs are exact and non-overlapping within each collection", () => {
+  const profiles = [
+    visibleProfile("sample-one", ["sample-ready", "sample-review"]),
+    { ...visibleProfile("sample-hidden", ["sample-hidden-only"]), pickerVisible: false }
+  ];
+  const errors = validateDailyStatsV2({
+    version: 2,
+    scope: "all_profiles",
+    groups: [
+      statsV2Item("group-one", "One", "#2563EB", [
+        selector("sample-one", "sample-ready"),
+        selector("sample-one", "sample-ready"),
+        selector("sample-hidden", "sample-hidden-only")
+      ]),
+      statsV2Item("group-two", "Two", "#7C3AED", [
+        selector("sample-one", "sample-ready"),
+        selector("sample-one", "missing")
+      ])
+    ],
+    flatSummaries: [
+      statsV2Item("flat-one", "Flat one", "#64748B", [
+        selector("sample-one", "sample-ready")
+      ]),
+      statsV2Item("flat-two", "Flat two", "#475569", [
+        selector("sample-one", "sample-ready")
+      ])
+    ]
+  }, profiles);
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[0].selectors[1] pair must be unique within its item"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[1].selectors[0] pair must not appear in more than one group"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.flatSummaries[1].selectors[0] pair must not appear in more than one flat summary"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[0].selectors[2] must reference a gradeMap resultKey on the selected pickerVisible profile"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[1].selectors[1] must reference a gradeMap resultKey on the selected pickerVisible profile"));
+  assert.equal(errors.some((error) => error.includes(
+    "dailyStatsV2.flatSummaries[0].selectors[0] pair must not appear")), false);
+});
+
+test("dailyStatsV2 legacyResultKeys stay selected and globally unique across groups", () => {
+  const profiles = [visibleProfile("sample-one", ["sample-ready", "sample-review"])];
+  const errors = validateDailyStatsV2({
+    version: 2,
+    scope: "all_profiles",
+    groups: [
+      statsV2Item("group-one", "One", "#2563EB", [
+        selector("sample-one", "sample-ready")
+      ], { legacyResultKeys: ["sample-ready", "sample-ready", "sample-review"] }),
+      statsV2Item("group-two", "Two", "#7C3AED", [
+        selector("sample-one", "sample-review")
+      ], { legacyResultKeys: ["sample-ready"] })
+    ],
+    flatSummaries: []
+  }, profiles);
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[0].legacyResultKeys[1] must be unique within its group"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[0].legacyResultKeys[2] must match a resultKey selected by its group"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[1].legacyResultKeys[0] must match a resultKey selected by its group"));
+  assert.ok(errors.includes(
+    "dailyStatsV2.groups[1].legacyResultKeys[0] must not appear in more than one group"));
+});
+
+test("invalid stored dailyStatsV2 is omitted without affecting legacy dailyStats", () => {
+  const profiles = [visibleProfile("sample-one", ["sample-ready", "sample-review"])];
+  const source = {
+    settings: {
+      dailyStats: validDailyStats(),
+      dailyStatsV2: {
+        version: 2,
+        scope: "all_profiles",
+        groups: [statsV2Item("bad", "Bad", "#2563EB", [
+          selector("sample-one", "missing")
+        ])],
+        flatSummaries: []
+      }
+    },
+    profiles
+  };
+  const served = clientCatalog(source);
+  assert.deepEqual(served.settings.dailyStats, source.settings.dailyStats);
+  assert.equal("dailyStatsV2" in served.settings, false);
+  assert.equal(source.settings.dailyStatsV2.groups[0].selectors[0].resultKey, "missing");
 });
 
 test("public sample catalog dailyStats is fictional and closes over its visible profiles", () => {
@@ -149,6 +345,22 @@ test("Panel structured global editor wires dailyStats groups into the settings s
   assert.match(html, /function buildDailyStats\(\)/u);
   assert.match(html, /scope:"all_profiles",groups/u);
   assert.match(html, /body:\{[^}]*dailyStats/u);
+});
+
+test("Panel structured global editor wires exact groups and flat summaries into both v2 saves", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /id="dailyStatsV2Groups"/u);
+  assert.match(html, /id="dailyStatsV2FlatSummaries"/u);
+  assert.match(html, /id="addDailyStatsV2GroupBtn"/u);
+  assert.match(html, /id="addDailyStatsV2FlatBtn"/u);
+  assert.match(html, /id="saveDailyStatsV2Btn"/u);
+  assert.match(html, /function buildDailyStatsV2\(\)/u);
+  assert.match(html, /version:2,[\s\S]*scope:"all_profiles",[\s\S]*flatSummaries:/u);
+  assert.match(html,
+    /body:\{baseVersion:CATALOG_VERSION,dailyStatsV2\}/u);
+  assert.match(html,
+    /body:\{ baseVersion:CATALOG_VERSION,[^}]*dailyStats, dailyStatsV2,/u);
+  assert.match(html, /applyDailyStatsV2ToLocalSettings\(dailyStatsV2\)/u);
 });
 
 test("profile uiColor accepts only exact six-digit #RRGGBB values", () => {

@@ -138,6 +138,54 @@ test("catalog publish merges settings and preserves unknown/private configuratio
   }
 });
 
+test("catalog publish validates effective dailyStatsV2 even when called below the Worker route", async () => {
+  const profile = sampleProfile();
+  profile.id = "sample-catalog-v2";
+  profile.pickerVisible = true;
+  profile.gradeMap = {
+    "sample-ready": {
+      field: "sample-result",
+      label: "Sample ready",
+      value: "SAMPLE_READY"
+    }
+  };
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({
+      schemaVersion: 2,
+      version: 8,
+      settings: { backendAdapter: validBackendAdapter() },
+      profiles: [profile]
+    }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    await assert.rejects(() => publishCatalog({
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    }, [profile], {
+      publicUrl: "https://catalog.test.invalid",
+      settings: {
+        dailyStatsV2: {
+          version: 2,
+          scope: "all_profiles",
+          groups: [{
+            id: "sample-invalid-v2",
+            label: "Sample invalid",
+            uiColor: "#2563EB",
+            selectors: [{ profileId: profile.id, resultKey: "not-declared" }]
+          }],
+          flatSummaries: []
+        }
+      },
+      expectedVersion: 8
+    }), /dailyStatsV2 validation failed/u);
+    assert.equal(github.refUpdates, 0);
+  } finally {
+    github.restore();
+  }
+});
+
 test("Panel minimum App version setting updates the derived manifest", async () => {
   const files = new Map();
   files.set("form-profiles.json", {
@@ -438,6 +486,133 @@ test("settings API validates and stores App-facing dailyStats groups", async () 
     const deleted = JSON.parse(files.get("form-profiles.json").text);
     assert.equal("dailyStats" in deleted.settings, false);
     assert.equal(github.refUpdates, 2);
+  } finally {
+    github.restore();
+  }
+});
+
+test("settings API validates, stores and deletes App-facing dailyStatsV2", async () => {
+  const adapter = validBackendAdapter();
+  const settings = {
+    backendAdapter: adapter,
+    backendApiBase: adapter.baseUrl,
+    sessionInvalidHttpStatuses: [...adapter.auth.sessionInvalidHttpStatuses],
+    sessionInvalidCodes: [...adapter.auth.sessionInvalidCodes],
+    sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
+  };
+  const profile = sampleProfile();
+  profile.id = "sample-qualified";
+  profile.pickerVisible = true;
+  profile.gradeMap = {
+    "sample-ready": {
+      field: "sample-result",
+      label: "Sample ready",
+      value: "SAMPLE_READY"
+    }
+  };
+  const profiles = [profile];
+  const dailyStatsV2 = {
+    version: 2,
+    scope: "all_profiles",
+    groups: [{
+      id: "sample-ready-qualified",
+      label: "Sample ready",
+      labelI18n: { en: "Sample ready", es: "Ejemplo listo" },
+      uiColor: "#2563EB",
+      selectors: [{ profileId: profile.id, resultKey: "sample-ready" }],
+      legacyResultKeys: ["sample-ready"]
+    }],
+    flatSummaries: [{
+      id: "sample-total-qualified",
+      label: "Sample total",
+      uiColor: "#64748B",
+      selectors: [{ profileId: profile.id, resultKey: "sample-ready" }]
+    }]
+  };
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({ schemaVersion: 2, version: 15, settings, profiles }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    const response = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 15,
+      dailyStatsV2
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).version, 16);
+    const written = JSON.parse(files.get("form-profiles.json").text);
+    assert.deepEqual(written.settings.dailyStatsV2, dailyStatsV2);
+    assert.equal(github.refUpdates, 1);
+
+    const deleteResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 16,
+      dailyStatsV2: null
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(deleteResponse.status, 200);
+    assert.equal((await deleteResponse.json()).version, 17);
+    const deleted = JSON.parse(files.get("form-profiles.json").text);
+    assert.equal("dailyStatsV2" in deleted.settings, false);
+    assert.equal(github.refUpdates, 2);
+  } finally {
+    github.restore();
+  }
+});
+
+test("settings API rejects dailyStatsV2 selectors outside explicit picker-visible profiles", async () => {
+  const adapter = validBackendAdapter();
+  const settings = {
+    backendAdapter: adapter,
+    backendApiBase: adapter.baseUrl,
+    sessionInvalidHttpStatuses: [...adapter.auth.sessionInvalidHttpStatuses],
+    sessionInvalidCodes: [...adapter.auth.sessionInvalidCodes],
+    sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
+  };
+  const profile = sampleProfile();
+  profile.id = "sample-hidden-qualified";
+  profile.pickerVisible = false;
+  profile.gradeMap = {
+    "sample-hidden": {
+      field: "sample-result",
+      label: "Sample hidden",
+      value: "SAMPLE_HIDDEN"
+    }
+  };
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({ schemaVersion: 2, version: 17, settings, profiles: [profile] }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    const response = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 17,
+      dailyStatsV2: {
+        version: 2,
+        scope: "all_profiles",
+        groups: [{
+          id: "sample-hidden-summary",
+          label: "Sample hidden",
+          uiColor: "#2563EB",
+          selectors: [{ profileId: profile.id, resultKey: "sample-hidden" }]
+        }],
+        flatSummaries: []
+      }
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.error, "dailyStatsV2 validation failed");
+    assert.ok(body.problems[0].errors.includes(
+      "dailyStatsV2.groups[0].selectors[0] must reference a gradeMap resultKey on the selected pickerVisible profile"));
+    assert.equal(github.refUpdates, 0);
   } finally {
     github.restore();
   }

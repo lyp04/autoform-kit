@@ -31,6 +31,73 @@
           ]
         }
       ]
+    },
+    "dailyStatsV2": {
+      "version": 2,
+      "scope": "all_profiles",
+      "groups": [
+        {
+          "id": "sample-ready-exact",
+          "label": "示例完成精确汇总",
+          "labelI18n": {
+            "en": "Exact sample ready total",
+            "es": "Total exacto de ejemplo listo"
+          },
+          "uiColor": "#2563EB",
+          "selectors": [
+            {
+              "profileId": "example-intake",
+              "resultKey": "sample-ready"
+            },
+            {
+              "profileId": "example-checklist",
+              "resultKey": "sample-ready"
+            }
+          ],
+          "legacyResultKeys": [
+            "sample-ready"
+          ]
+        },
+        {
+          "id": "sample-review-exact",
+          "label": "示例复核精确汇总",
+          "labelI18n": {
+            "en": "Exact sample review total",
+            "es": "Total exacto de revisión de ejemplo"
+          },
+          "uiColor": "#7C3AED",
+          "selectors": [
+            {
+              "profileId": "example-intake",
+              "resultKey": "sample-review"
+            },
+            {
+              "profileId": "example-checklist",
+              "resultKey": "sample-review"
+            }
+          ],
+          "legacyResultKeys": [
+            "sample-review"
+          ]
+        }
+      ],
+      "flatSummaries": [
+        {
+          "id": "sample-attention-flat",
+          "label": "示例需处理统计",
+          "labelI18n": {
+            "en": "Sample attention",
+            "es": "Atención de ejemplo"
+          },
+          "uiColor": "#B45309",
+          "selectors": [
+            {
+              "profileId": "example-checklist",
+              "resultKey": "sample-review"
+            }
+          ]
+        }
+      ]
     }
   },
   "profiles": [
