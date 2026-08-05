@@ -49,11 +49,12 @@ const SINGLE_WRITER_ENV = "AUTOFORM_BETA_SINGLE_WRITER_WINDOW";
 const SINGLE_WRITER_CONFIRMATION = "EXCLUSIVE_BETA_RELEASE_WRITER_CONFIRMED";
 
 let sideEffectStarted = false;
+let remoteBetaKnown = false;
 let auditDirectory = "";
 let captureSequence = 0;
 
 function fail(message = "beta publication validation failed") {
-  const partial = sideEffectStarted
+  const partial = sideEffectStarted || remoteBetaKnown
     ? " remote may now contain a beta draft, tag, or partial change; do not delete or retry;"
     : "";
   throw new Error(`publish-beta-release:${partial} ${message}`);
@@ -148,6 +149,10 @@ function parseArguments(argv) {
     if (key === "--private-wordlist") output.wordlists.push(value);
     else if (key === "--candidate" && !output.candidate) output.candidate = value;
     else if (key === "--previous-apk" && !output.previousApk) output.previousApk = value;
+    else if (key === "--resume-draft" && output.resumeDraftId === undefined
+        && /^[1-9][0-9]{0,15}$/u.test(value) && Number.isSafeInteger(Number(value))) {
+      output.resumeDraftId = Number(value);
+    }
     else fail("an unsupported or duplicate option was provided");
     index += 2;
   }
@@ -156,9 +161,10 @@ function parseArguments(argv) {
 }
 
 function usage() {
-  process.stdout.write(`Usage: tools/publish-beta-release.mjs \\\n  --candidate PATH --previous-apk PATH \\\n  --private-wordlist PATH [--private-wordlist PATH ...]\n\n`
+  process.stdout.write(`Usage: tools/publish-beta-release.mjs \\\n  --candidate PATH --previous-apk PATH \\\n  --private-wordlist PATH [--private-wordlist PATH ...] \\\n  [--resume-draft RELEASE_ID]\n\n`
   + `Publishes only ${CANDIDATE_TAG} through the fixed ${CHANNEL_TAG} tag as a non-latest `
-  + "public prerelease. It never overwrites or cleans up remote state.\n");
+  + "public prerelease. An explicit Release ID may resume one exact unpublished draft; "
+  + "the publisher never deletes or replaces remote state.\n");
 }
 
 function requiredString(value, maximum = 4096) {
@@ -689,7 +695,7 @@ function remoteTagCommit(state, tag) {
   return peeled?.oid || direct?.oid || "";
 }
 
-function assertExactPublicRefEnvelope(state, sourceCommit, { betaExpected = false } = {}) {
+function assertExactPublicRefEnvelope(state, sourceCommit, { betaRefExpected = false } = {}) {
   const defaultBranch = state.branches.find(
     (branch) => branch.name === state.repository.defaultBranch,
   );
@@ -699,7 +705,9 @@ function assertExactPublicRefEnvelope(state, sourceCommit, { betaExpected = fals
       || head?.oid !== sourceCommit) fail("default branch is not the candidate source");
 
   const expectedTags = new Set(state.tags.map((tag) => tag.name));
-  if (betaExpected !== expectedTags.has(CHANNEL_TAG)) fail("beta ref presence is not exact");
+  if (betaRefExpected !== expectedTags.has(CHANNEL_TAG)) {
+    fail("beta ref presence is not exact");
+  }
   const expectedRefs = new Set([
     "HEAD",
     `refs/heads/${state.repository.defaultBranch}`,
@@ -774,7 +782,7 @@ function assertHistoryAndLatestState(state, sourceCommit, options = {}) {
   const allowedTags = new Set([
     ...HISTORICAL_TAGS,
     ...nonHistory.map((release) => release.tagName),
-    ...(options.betaExpected ? [CHANNEL_TAG] : []),
+    ...(options.betaRefExpected ? [CHANNEL_TAG] : []),
   ]);
   if (state.tags.some((tag) => !allowedTags.has(tag.name))
       || state.tags.length !== allowedTags.size) fail("unexpected public tag exists");
@@ -851,16 +859,23 @@ function captureReachableObjectClosure(state, sourceCommit, wordlists) {
   });
 }
 
-function assertBetaAbsent(slug, state) {
+function assertBetaRefAbsent(slug, state) {
   if (state.tags.some((tag) => tag.name === CHANNEL_TAG)
-      || state.releases.some((release) => release.tagName === CHANNEL_TAG)
       || state.remoteRefs.refs.some((entry) => entry.ref === `refs/tags/${CHANNEL_TAG}`
-        || entry.ref === `refs/tags/${CHANNEL_TAG}^{}`)) fail("beta tag or Release already exists");
-  const release = ghJson(["api", `repos/${slug}/releases/tags/${CHANNEL_TAG}`],
-    { allow404: true });
+        || entry.ref === `refs/tags/${CHANNEL_TAG}^{}`)) fail("beta ref already exists");
   const ref = ghJson(["api", `repos/${slug}/git/ref/tags/${CHANNEL_TAG}`],
     { allow404: true });
-  if (release.found || ref.found) fail("beta tag or Release already exists");
+  if (ref.found) fail("beta ref already exists");
+}
+
+function assertBetaAbsent(slug, state) {
+  assertBetaRefAbsent(slug, state);
+  if (state.releases.some((release) => release.tagName === CHANNEL_TAG)) {
+    fail("beta tag or Release already exists");
+  }
+  const release = ghJson(["api", `repos/${slug}/releases/tags/${CHANNEL_TAG}`],
+    { allow404: true });
+  if (release.found) fail("beta tag or Release already exists");
 }
 
 function stateWithoutBeta(state) {
@@ -920,8 +935,13 @@ function assertBetaReleaseEnvelope(release, candidate, expectedDraft) {
   return release;
 }
 
-function readBetaRelease(slug) {
+function readBetaReleaseByTag(slug) {
   const response = ghJson(["api", `repos/${slug}/releases/tags/${CHANNEL_TAG}`]);
+  return releaseProjection(response.value);
+}
+
+function readBetaReleaseById(slug, releaseId) {
+  const response = ghJson(["api", `repos/${slug}/releases/${releaseId}`]);
   return releaseProjection(response.value);
 }
 
@@ -940,12 +960,23 @@ function downloadAsset(slug, asset, expected, wordlists, candidate, aapt, apksig
   }
 }
 
-function verifyRemoteBeta(slug, state, candidate, expectedDraft, wordlists, aapt,
-  apksigner) {
-  assertBetaTag(slug, candidate.value.source.commit, state);
-  const listed = state.releases.find((release) => release.tagName === CHANNEL_TAG);
-  const direct = readBetaRelease(slug);
+function verifyRemoteBeta(slug, state, candidate, expectedDraft, expectedReleaseId, wordlists,
+  aapt, apksigner) {
+  const listedBetas = state.releases.filter((release) => release.tagName === CHANNEL_TAG);
+  if (listedBetas.length !== 1) fail("beta draft or Release is not unique");
+  remoteBetaKnown = true;
+  const listed = listedBetas[0];
+  if (expectedReleaseId !== null && listed.id !== expectedReleaseId) {
+    fail("beta Release identity mismatch");
+  }
+  if (expectedDraft) assertBetaRefAbsent(slug, state);
+  else assertBetaTag(slug, candidate.value.source.commit, state);
+  const direct = readBetaReleaseById(slug, listed.id);
   if (canonicalJson(listed) !== canonicalJson(direct)) fail("beta Release reads disagree");
+  if (!expectedDraft) {
+    const tagged = readBetaReleaseByTag(slug);
+    if (canonicalJson(direct) !== canonicalJson(tagged)) fail("beta Release reads disagree");
+  }
   const release = assertBetaReleaseEnvelope(direct, candidate, expectedDraft);
   const expected = expectedReleaseAssets(candidate);
   for (const asset of release.assets) {
@@ -955,7 +986,7 @@ function verifyRemoteBeta(slug, state, candidate, expectedDraft, wordlists, aapt
 }
 
 function preflight(candidate, previousApk, wordlists, slug, aapt, apksigner,
-  expectedEvidence = null) {
+  resumeDraftId, expectedEvidence = null) {
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const rereadManifest = stableJson(candidate.manifest.absolute);
   const rereadPrevious = stableReadRegular(previousApk.absolute, { privateMode: true });
@@ -964,7 +995,10 @@ function preflight(candidate, previousApk, wordlists, slug, aapt, apksigner,
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const state = capturePublicState(slug, wordlists);
   assertHistoryAndLatestState(state, candidate.value.source.commit);
-  assertBetaAbsent(slug, state);
+  if (resumeDraftId === undefined) assertBetaAbsent(slug, state);
+  else verifyRemoteBeta(
+    slug, state, candidate, true, resumeDraftId, wordlists, aapt, apksigner,
+  );
   const closure = captureReachableObjectClosure(
     state, candidate.value.source.commit, wordlists,
   );
@@ -999,41 +1033,49 @@ function main() {
   const slug = originSlug();
 
   info("running first complete read-only beta preflight");
-  const before = preflight(candidate, previousApk, wordlists, slug, aapt, apksigner);
+  const before = preflight(
+    candidate, previousApk, wordlists, slug, aapt, apksigner, args.resumeDraftId,
+  );
   info("running second complete read-only beta preflight");
-  preflight(candidate, previousApk, wordlists, slug, aapt, apksigner, before);
+  preflight(
+    candidate, previousApk, wordlists, slug, aapt, apksigner, args.resumeDraftId, before,
+  );
 
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   if (process.env[SINGLE_WRITER_ENV] !== SINGLE_WRITER_CONFIRMATION) {
     fail("the explicit single-writer release window was not confirmed");
   }
-  sideEffectStarted = true;
-  info("creating fixed beta prerelease as a non-latest draft");
-  run("gh", ["release", "create", CHANNEL_TAG,
-    candidate.apk.absolute,
-    candidate.update.absolute,
-    candidate.manifest.absolute,
-    "--repo", slug,
-    "--target", candidate.value.source.commit,
-    "--title", RELEASE_TITLE,
-    "--notes-file", candidate.notes.absolute,
-    "--draft",
-    "--prerelease",
-    "--latest=false",
-  ]);
+  const preservedState = stateWithoutBeta(before.state);
+  if (args.resumeDraftId === undefined) {
+    sideEffectStarted = true;
+    info("creating fixed beta prerelease as a non-latest draft");
+    run("gh", ["release", "create", CHANNEL_TAG,
+      candidate.apk.absolute,
+      candidate.update.absolute,
+      candidate.manifest.absolute,
+      "--repo", slug,
+      "--target", candidate.value.source.commit,
+      "--title", RELEASE_TITLE,
+      "--notes-file", candidate.notes.absolute,
+      "--draft",
+      "--prerelease",
+      "--latest=false",
+    ]);
+  } else {
+    info(`resuming exact existing beta draft Release ${args.resumeDraftId}`);
+  }
 
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const draftState = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(
-    draftState, candidate.value.source.commit, { betaExpected: true },
-  );
-  assertPreserved(before.state, draftState);
+  assertHistoryAndLatestState(draftState, candidate.value.source.commit);
+  assertPreserved(preservedState, draftState);
   const draftClosure = captureReachableObjectClosure(
     draftState, candidate.value.source.commit, wordlists,
   );
   if (canonicalJson(draftClosure) !== canonicalJson(before.closure)) fail();
   const draft = verifyRemoteBeta(
-    slug, draftState, candidate, true, wordlists, aapt, apksigner,
+    slug, draftState, candidate, true, args.resumeDraftId ?? null,
+    wordlists, aapt, apksigner,
   );
   if (canonicalJson(draftState.latest) !== canonicalJson(before.state.latest)) fail();
 
@@ -1050,10 +1092,8 @@ function main() {
   info("revalidating the complete draft at the single-writer publication boundary");
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const boundaryState = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(
-    boundaryState, candidate.value.source.commit, { betaExpected: true },
-  );
-  assertPreserved(before.state, boundaryState);
+  assertHistoryAndLatestState(boundaryState, candidate.value.source.commit);
+  assertPreserved(preservedState, boundaryState);
   if (canonicalJson(boundaryState) !== canonicalJson(draftState)) {
     fail("draft or public state changed before publication");
   }
@@ -1062,12 +1102,13 @@ function main() {
   );
   if (canonicalJson(boundaryClosure) !== canonicalJson(before.closure)) fail();
   const boundaryDraft = verifyRemoteBeta(
-    slug, boundaryState, candidate, true, wordlists, aapt, apksigner,
+    slug, boundaryState, candidate, true, draft.id, wordlists, aapt, apksigner,
   );
   if (canonicalJson(boundaryDraft) !== canonicalJson(draft)
       || canonicalJson(boundaryState.latest) !== canonicalJson(before.state.latest)) fail();
   assertCandidateInputsStable(candidate, previousApk, wordlists);
 
+  sideEffectStarted = true;
   info("making the twice-verified beta draft public without changing latest");
   const patchResult = run("gh", ["api", `repos/${slug}/releases/${draft.id}`,
     "--method", "PATCH", "--input", "-"], { input: patch });
@@ -1082,9 +1123,13 @@ function main() {
 
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const finalState = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(finalState, candidate.value.source.commit, { betaExpected: true });
-  assertPreserved(before.state, finalState);
-  verifyRemoteBeta(slug, finalState, candidate, false, wordlists, aapt, apksigner);
+  assertHistoryAndLatestState(
+    finalState, candidate.value.source.commit, { betaRefExpected: true },
+  );
+  assertPreserved(preservedState, finalState);
+  verifyRemoteBeta(
+    slug, finalState, candidate, false, draft.id, wordlists, aapt, apksigner,
+  );
   const finalClosure = captureReachableObjectClosure(
     finalState, candidate.value.source.commit, wordlists,
   );

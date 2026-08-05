@@ -155,7 +155,9 @@ else if (a[0] === "ls-remote") {
   const lines = ["ref: refs/heads/main\tHEAD", state.source + "\tHEAD", state.source + "\trefs/heads/main"];
   for (let i = 0; i < 7; i += 1) lines.push((state.historyTagDrift && state.releaseReads >= 2 && i === 0
     ? "dddddddddddddddddddddddddddddddddddddddd" : state.source) + "\trefs/tags/v1.0." + i);
-  if (state.beta || state.betaTagOnly) lines.push((state.betaWrongTarget
+  const betaRefExists = state.betaTagOnly || (state.beta && (!state.beta.draft
+    || state.betaWrongTarget || (state.boundaryTagDrift && state.releaseReads >= 4)));
+  if (betaRefExists) lines.push((state.betaWrongTarget
     || (state.boundaryTagDrift && state.releaseReads >= 4)
     ? "dddddddddddddddddddddddddddddddddddddddd" : state.source) + "\trefs/tags/beta");
   if (state.extraBranch) lines.push(state.source + "\trefs/heads/extra");
@@ -243,7 +245,9 @@ if (endpoint === "repos/example/autoform-kit") {
   const tags = Array.from({ length: 7 }, (_, i) => ({ name: "v1.0." + i, commit: { sha:
     state.historyTagDrift && state.releaseReads >= 2 && i === 0 ? "d".repeat(40) : state.source } }));
   if (state.extraTag) tags.push({ name: "extra", commit: { sha: state.source } });
-  if (state.beta || state.betaTagOnly) tags.push({ name: "beta", commit: { sha:
+  const betaRefExists = state.betaTagOnly || (state.beta && (!state.beta.draft
+    || state.betaWrongTarget || (state.boundaryTagDrift && state.releaseReads >= 4)));
+  if (betaRefExists) tags.push({ name: "beta", commit: { sha:
     state.betaWrongTarget || (state.boundaryTagDrift && state.releaseReads >= 4)
       ? "d".repeat(40) : state.source } });
   process.stdout.write(JSON.stringify([tags]));
@@ -270,10 +274,12 @@ if (endpoint === "repos/example/autoform-kit") {
   }
   process.stderr.write("HTTP 404 Not Found\n"); process.exit(1);
 } else if (endpoint.endsWith("/releases/tags/beta")) {
-  if (!state.beta) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
+  if (!state.beta || state.beta.draft) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
   process.stdout.write(JSON.stringify(state.beta));
 } else if (endpoint.endsWith("/git/ref/tags/beta")) {
-  if (!state.beta && !state.betaTagOnly) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
+  const betaRefExists = state.betaTagOnly || (state.beta && (!state.beta.draft
+    || state.betaWrongTarget || (state.boundaryTagDrift && state.releaseReads >= 4)));
+  if (!betaRefExists) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
   process.stdout.write(JSON.stringify({ ref: "refs/tags/beta", object: { type: "commit", sha:
     state.betaWrongTarget || (state.boundaryTagDrift && state.releaseReads >= 4)
       ? "d".repeat(40) : state.source } }));
@@ -284,6 +290,9 @@ if (endpoint === "repos/example/autoform-kit") {
   const drift = id === 901 && (state.assetBytesDrift
     || (state.boundaryAssetBytesDrift && state.assetDownloadReads >= 4));
   process.stdout.write(drift ? Buffer.concat([bytes, Buffer.from("drift")]) : bytes);
+} else if (/\/releases\/900$/.test(endpoint) && !a.includes("PATCH")) {
+  if (!state.beta) { process.stderr.write("HTTP 404 Not Found\n"); process.exit(1); }
+  state.releaseIdReads += 1; save(); process.stdout.write(JSON.stringify(state.beta));
 } else if (/\/releases\/900$/.test(endpoint) && a.includes("PATCH")) {
   state.writes += 1; state.commands.push(a); const body = JSON.parse(fs.readFileSync(0, "utf8"));
   state.patchBody = body; save();
@@ -318,7 +327,8 @@ function verifierReport(root, apk) {
   return JSON.parse(result.stdout);
 }
 
-function fixture({ tagExists = false, historyDrift = false, historyTagDrift = false,
+function fixture({ tagExists = false, existingDraft = false,
+  historyDrift = false, historyTagDrift = false,
   historicalLatest = true, latestDrift = false, latestHistoricalMetadataDrift = false,
   latestHistoricalAssetDrift = false, duplicateHistoricalRelease = false,
   createFails = false, assetDrift = false,
@@ -356,7 +366,8 @@ function fixture({ tagExists = false, historyDrift = false, historyTagDrift = fa
     extraBranch, extraTag, extraPull, extraOtherRef, boundaryReleaseDrift,
     boundaryAssetBytesDrift,
     boundaryTagDrift, boundaryExtraPull,
-    releaseReads: 0, latestReads: 0, assetDownloadReads: 0, writes: 0, commands: [] }), 0o600);
+    releaseReads: 0, releaseIdReads: 0, latestReads: 0, assetDownloadReads: 0,
+    writes: 0, commands: [] }), 0o600);
   const candidateDir = path.join(root, "dist", "release-candidates", "v1.0.8-beta.1");
   const apk = path.join(candidateDir, "autoform-kit-1.0.8-beta.1.apk");
   const previous = path.join(root, "private", "previous.apk");
@@ -412,6 +423,34 @@ function fixture({ tagExists = false, historyDrift = false, historyTagDrift = fa
   };
   const manifestPath = path.join(candidateDir, "candidate-manifest.json");
   write(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 0o644);
+  if (existingDraft) {
+    const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    const releaseAsset = (id, filename) => {
+      const bytes = fs.readFileSync(filename);
+      return {
+        id, node_id: `A_${id}`, name: path.basename(filename), label: null, state: "uploaded",
+        size: bytes.length,
+        content_type: filename.endsWith(".apk")
+          ? "application/vnd.android.package-archive" : "application/json",
+        digest: `sha256:${sha256(bytes)}`,
+        url: `https://api.github.com/repos/example/autoform-kit/releases/assets/${id}`,
+        browser_download_url: `https://github.com/example/autoform-kit/releases/download/beta/${path.basename(filename)}`,
+        bytes: bytes.toString("base64"),
+      };
+    };
+    state.beta = {
+      id: 900, node_id: "R_beta", tag_name: "beta", target_commitish: SOURCE,
+      name: "autoform-kit 1.0.8-beta.1", body: `${BODY}\n`, draft: true,
+      prerelease: !releaseFlagDrift, immutable: false,
+      assets: [releaseAsset(901, apk), releaseAsset(902, update), releaseAsset(903, manifestPath)],
+    };
+    if (assetDrift) state.beta.assets[0].digest = `sha256:${"d".repeat(64)}`;
+    if (extraAsset) state.beta.assets.push({
+      ...releaseAsset(999, update), name: "extra.json", node_id: "A_999",
+    });
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    fs.chmodSync(stateFile, 0o600);
+  }
   if (updateBytesDrift) fs.appendFileSync(update, "drift\n");
   if (sourceDrift) {
     const state = JSON.parse(fs.readFileSync(stateFile, "utf8"));
@@ -421,7 +460,7 @@ function fixture({ tagExists = false, historyDrift = false, historyTagDrift = fa
   return { root, stateFile, manifestPath, previous };
 }
 
-function runScenario(options, { confirmSingleWriter = true } = {}) {
+function runScenario(options, { confirmSingleWriter = true, resumeDraftId } = {}) {
   const f = fixture(options);
   const env = { ...process.env,
     PATH: `${path.join(f.root, "bin")}:${process.env.PATH}`,
@@ -433,9 +472,11 @@ function runScenario(options, { confirmSingleWriter = true } = {}) {
   } else {
     delete env.AUTOFORM_BETA_SINGLE_WRITER_WINDOW;
   }
-  const result = spawnSync(process.execPath, [path.join(f.root, "tools", "publish-beta-release.mjs"),
+  const publisherArgs = [path.join(f.root, "tools", "publish-beta-release.mjs"),
     "--candidate", f.manifestPath, "--previous-apk", f.previous,
-    "--private-wordlist", path.join(f.root, "private", "wordlist.txt")], {
+    "--private-wordlist", path.join(f.root, "private", "wordlist.txt")];
+  if (resumeDraftId !== undefined) publisherArgs.push("--resume-draft", String(resumeDraftId));
+  const result = spawnSync(process.execPath, publisherArgs, {
     cwd: f.root, encoding: "utf8", env,
   });
   const state = JSON.parse(fs.readFileSync(f.stateFile, "utf8"));
@@ -454,7 +495,31 @@ assert.equal(happy.state.commands[0].includes("--draft"), true);
 assert.equal(happy.state.commands[0].includes("--prerelease"), true);
 assert.equal(happy.state.patchBody.make_latest, "false");
 assert.equal(happy.state.assetDownloadReads, 9);
+assert.equal(happy.state.releaseIdReads, 3);
 assert.equal(fs.readFileSync(PUBLISHER, "utf8").includes("publish-release.sh"), false);
+
+const resumed = runScenario({ existingDraft: true }, { resumeDraftId: 900 });
+assert.equal(resumed.result.status, 0, resumed.result.stderr);
+assert.equal(resumed.state.writes, 1);
+assert.equal(resumed.state.commands.some((command) => command[0] === "release"), false);
+assert.equal(resumed.state.beta.draft, false);
+assert.equal(resumed.state.beta.prerelease, true);
+assert.equal(resumed.state.assetDownloadReads, 15);
+assert.equal(resumed.state.releaseIdReads, 5);
+
+const existingDraftWithoutResume = runScenario({ existingDraft: true });
+assert.equal(existingDraftWithoutResume.result.status, 1);
+assert.equal(existingDraftWithoutResume.state.writes, 0);
+
+const wrongResumeIdentity = runScenario({ existingDraft: true }, { resumeDraftId: 901 });
+assert.equal(wrongResumeIdentity.result.status, 1);
+assert.equal(wrongResumeIdentity.state.writes, 0);
+
+const mismatchedResumeDraft = runScenario(
+  { existingDraft: true, releaseFlagDrift: true }, { resumeDraftId: 900 },
+);
+assert.equal(mismatchedResumeDraft.result.status, 1);
+assert.equal(mismatchedResumeDraft.state.writes, 0);
 
 const noExistingLatest = runScenario({ historicalLatest: false });
 assert.equal(noExistingLatest.result.status, 0, noExistingLatest.result.stderr);

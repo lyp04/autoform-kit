@@ -362,19 +362,35 @@ source commit/tree/clean worktree、source commit 原始对象（含 author/comm
 绑定一个 v1.0.0-v1.0.6 excluded tag，不能冒充 Beta 证明；Beta 因而每轮现场重建并扫描完整可达闭包。
 
 唯一写流程先执行 `gh release create beta --draft --prerelease --latest=false`，只上传 candidate APK、
-`update.json` 与 `candidate-manifest.json`。publisher 随即读取固定 tag/target commit、下载三项实际远端
-资产并重新核对 SHA、APK identity、signer、source provenance 和敏感扫描。紧邻 PATCH 之前还会再次
-完整获取 repository/refs/branches/tags/Releases 与 direct tag/Release，重建可达对象闭包，并第二次下载、
+`update.json` 与 `candidate-manifest.json`。GitHub 的未发布 draft 此时只有 Release identity，不会提前创建
+`refs/tags/beta`；publisher 因而要求 `beta` ref 仍不存在，按唯一 Release ID 读取 draft，并下载三项实际
+远端资产重新核对 SHA、APK identity、signer、source provenance 和敏感扫描。紧邻 PATCH 之前还会再次
+完整获取 repository/refs/branches/tags/Releases 与同一 Release ID，重建可达对象闭包，并第二次下载、
 扫描和逐字节核对三项资产；该边界的任何 metadata、ref 或 asset 并发变化都会在 PATCH 前停止。全部通过
 后才用 REST PATCH 提交字符串字段 `make_latest: "false"`，同时明确保持 `prerelease:true` 并改为
-`draft:false`；PATCH 响应和随后完整远端复核也必须精确通过。最终响应不要求出现 `make_latest` 字段；
-是否意外成为 latest 只以发布前后 `/releases/latest` exact identity 复核为准。
+`draft:false`。发布成功后才要求 `refs/tags/beta` 精确指向 candidate source commit，并通过 tag endpoint
+再次读取同一个 Release；PATCH 响应和随后完整远端复核也必须精确通过。最终响应不要求出现
+`make_latest` 字段；是否意外成为 latest 只以发布前后 `/releases/latest` exact identity 复核为准。
 
 `AUTOFORM_BETA_SINGLE_WRITER_WINDOW` 是操作员对“从 draft create 到最终复核期间已暂停其他 repository /
 Release 写入者和自动化”的显式确认，不是 GitHub 锁、ETag CAS 或对外部写权限的技术约束。当前使用的
 GitHub Release PATCH endpoint 没有在本流程中实测出可依赖的条件写语义，因此不得把该环境变量描述成
 防并发保证；若不能维持实际单写入窗口就不能运行。任何 create 后错误都只报告远端可能存在 draft、tag
-或 partial assets，绝不自动删除、移动 tag、覆盖或重试；此时必须冻结并人工审计远端。
+或 partial assets，绝不自动删除、移动 tag、覆盖或盲目重试；此时必须冻结并人工审计远端。只有在确认
+`beta` ref 不存在、唯一 draft 的全部固定字段和资产均精确匹配、历史与 latest 未变后，才可用该 draft 的
+数值 Release ID 运行恢复模式：
+
+```sh
+AUTOFORM_BETA_SINGLE_WRITER_WINDOW=EXCLUSIVE_BETA_RELEASE_WRITER_CONFIRMED \
+  tools/publish-beta-release.mjs \
+  --candidate dist/release-candidates/v1.0.8-beta.1/candidate-manifest.json \
+  --previous-apk /secure/example/autoform-kit-1.0.7-installed.apk \
+  --private-wordlist /secure/example/private-publication-wordlist.json \
+  --resume-draft RELEASE_ID
+```
+
+恢复模式不会创建、删除或替换 Release；它会对指定 ID 重新执行两轮完整只读 preflight 和两轮 draft
+资产验证，只在边界仍精确一致时发布同一个 draft。
 
 离线 fake-tool 自测不联网，也不会执行真实 Git、设备或 GitHub 写入：
 
