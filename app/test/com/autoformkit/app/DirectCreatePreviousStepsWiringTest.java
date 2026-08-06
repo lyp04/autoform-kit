@@ -1,8 +1,11 @@
 package com.autoformkit.app;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
 import org.junit.Test;
 
 import java.nio.charset.StandardCharsets;
@@ -103,7 +106,8 @@ public class DirectCreatePreviousStepsWiringTest {
         assertTrue(continuation >= 0 && continueRun > continuation);
 
         int direct = ensure.indexOf(
-            "if (workflow.shouldDirectCreatePreviousSteps(unit.grade))");
+            "if (directCreate)");
+        assertTrue(direct > continuation);
         int fresh = ensure.indexOf("if (retained == null)", direct);
         int complete = ensure.indexOf("} else {", fresh);
         int directEnd = ensure.indexOf(
@@ -124,5 +128,62 @@ public class DirectCreatePreviousStepsWiringTest {
         assertTrue(dynamicPostPath > completedPrefix);
         assertTrue(staticPostPath > completedPrefix);
         assertTrue(recipes.substring(completedPrefix, dynamicPostPath).contains("continue;"));
+    }
+
+    @Test
+    public void directCreateProfileKeepsTwoRecipesAndTheDeclaredCurrentPhotoBinding()
+            throws Exception {
+        String directResult = "sample-direct";
+        String currentPhoto = "sample-current-photo";
+        JSONObject previous = new JSONObject()
+            .put("enabled", true)
+            .put("scanPrecheck", true)
+            .put("scanPrecheckExcludedResultKeys", new JSONArray().put(directResult))
+            .put("triggerResultKeys", new JSONArray().put(directResult))
+            .put("directCreateResultKeys", new JSONArray().put(directResult))
+            .put("artifacts", new JSONArray().put(new JSONObject()
+                .put("key", currentPhoto)
+                .put("title", "Sample current photo")
+                .put("required", true)
+                .put("uploadNameTemplate", "{identifier}-sample-current.jpg")))
+            .put("templates", new JSONArray()
+                .put(dynamicRecipe(7001, 1, new JSONObject()
+                    .put("sample-photo-alias", currentPhoto)))
+                .put(dynamicRecipe(7002, 2, new JSONObject())));
+        ProfileWorkflow workflow = ProfileWorkflow.from(new JSONObject()
+            .put("workflow", new JSONObject().put("previousSteps", previous)));
+
+        assertTrue(workflow.shouldDirectCreatePreviousSteps(directResult));
+        assertTrue(workflow.shouldAutoCreateDynamicPreviousSteps(directResult));
+        assertFalse(workflow.shouldScanPrecheck(directResult));
+        assertFalse(workflow.shouldDirectCreatePreviousSteps("sample-other"));
+        assertFalse(workflow.shouldAutoCreateDynamicPreviousSteps("sample-other"));
+        assertTrue(workflow.shouldScanPrecheck("sample-other"));
+        assertEquals(1, workflow.workflowArtifacts.size());
+        assertTrue(workflow.workflowArtifacts.get(0).required);
+        assertEquals(currentPhoto, workflow.workflowArtifacts.get(0).key);
+        assertEquals(2, workflow.dynamicPreviousStepRecipes.size());
+        assertTrue(workflow.dynamicPreviousStepRecipes.get(0).sources
+            .containsValue(currentPhoto));
+        assertTrue(workflow.dynamicPreviousStepRecipes.get(1).sources.isEmpty());
+
+        java.util.List<PreviousStepExecutionOrderRules.Step> plan =
+            PreviousStepExecutionOrderRules.plan(workflow);
+        assertEquals(2, plan.size());
+        assertTrue(plan.get(0).isDynamic());
+        assertTrue(plan.get(1).isDynamic());
+        assertEquals(0, plan.get(0).sourceIndex);
+        assertEquals(1, plan.get(1).sourceIndex);
+    }
+
+    private static JSONObject dynamicRecipe(
+            int templateId, int expectedStep, JSONObject sources) throws Exception {
+        return new JSONObject()
+            .put("templateId", templateId)
+            .put("mode", "template_detail")
+            .put("resolverId", "sample-template-detail-v1")
+            .put("expectedStep", expectedStep)
+            .put("sources", sources)
+            .put("delayAfterMs", 0);
     }
 }
