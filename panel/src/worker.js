@@ -65,6 +65,14 @@ import {
   validateDailyStatsAlternateEntries,
   validateDailyStatsV2
 } from "./daily-stats.js";
+import {
+  AppPairingTicketStore,
+  handleAppPairingRequest,
+  isAppPairingPath
+} from "./app-pairing.js";
+
+// Wrangler discovers Durable Object classes from the main Worker module's exports.
+export { AppPairingTicketStore };
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -1072,6 +1080,9 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname;
     try {
+      // Pairing is deliberately isolated from both the browser backend session and the catalog read
+      // gate. The issuer has its own server-to-server secret; redeem consumes a short one-time ticket.
+      if (isAppPairingPath(path)) return await handleAppPairingRequest(request, env, url);
       // Deployment provenance is intentionally separate from /api/config: Worker versions may
       // change while the catalog version does not, and the App treats config/catalog as one exact
       // immutable pair. This endpoint is read-key protected but never enters that pair.

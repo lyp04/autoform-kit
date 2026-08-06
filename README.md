@@ -6,8 +6,9 @@ A Panel-led form platform with a self-hosted control plane and a generic Android
 > ready-to-use deployment. Release policy permits generic framework artifacts only, but visibility
 > on GitHub is not proof that an existing history or Release has completed the required rewrite and
 > post-publication audit. Every real deployment must pass its own private compatibility and release
-> evidence. No release-ready candidate is currently declared. The tracked profiles and adapters are
-> fictional examples.
+> evidence. A GitHub artifact is release-ready only after the repository's documented candidate,
+> provenance, upgrade, and publication gates pass. The tracked profiles and adapters are fictional
+> examples.
 
 [中文概要](#中文概要)
 
@@ -59,7 +60,7 @@ network policy. See [Panel deployment](./docs/worker-setup.md) and
 
 ## Where customization lives
 
-These are the current customization entry points plus the explicitly reserved future pairing entry:
+These are the current customization entry points, including the deployment-gated pairing service:
 
 | Entry point | What belongs there | Storage |
 | --- | --- | --- |
@@ -71,8 +72,8 @@ These are the current customization entry points plus the explicitly reserved fu
 | Optional Panel AI editor | Draft wording and translation assistance; output remains subject to validation and review | Private draft, then private catalog if published |
 | Panel administration policy | Accounts allowed to author or publish, plus optional edge/network restrictions for the Panel and pre-login metadata | Deployment backend authorization and edge/network policy |
 | Cloudflare deployment configuration | Default private GitHub catalog repository/branch, optional R2 catalog-authority binding and reviewed cutover, Worker identity/routes and public origin, `CF_VERSION_METADATA`, source-tagged deploy/runtime provenance, bootstrap adapter, catalog credentials, optional AI configuration, and migration-only legacy inputs | Bindings, variables, secrets, and private deployment evidence |
-| One-time App pairing issuer | Future authorized download-session policy, short-lived ticket audience, atomic consumption store, and rate limits; this server-side issuer is not implemented, so the pairing action must remain disabled | Future deployment-owned service and private state; never the APK or catalog |
-| App Settings | Panel address/read key plus operator-local language and a device-local stable/beta update channel (toggle by tapping the Chinese language button five times within 2.5 seconds); backend/form policy is not editable here | Device-local storage |
+| One-time App pairing issuer | Download-portal issuance policy, short-lived exact-audience tickets, applicationId allow-list, SQLite Durable Object atomic consumption, and rate limits; the button stays disabled until both Workers are configured and device-tested | Deployment Worker bindings/secrets and private ephemeral state; never the APK or catalog |
+| App Settings | Panel address/read key plus operator-local language, the last independent-entry source selected for each Panel/entry pair, and a device-local stable/beta update channel (toggle by tapping the Chinese language button five times within 2.5 seconds); backend/form policy is not editable here | Device-local storage |
 | Android build/release configuration | Package/launcher name/icon/version/signing, SDK and release feature gates, neutral update-protocol defaults, the cleartext-transport compatibility policy, and the empty-by-default cross-App trust allow-list | Source plus ignored/private signing inputs |
 
 Real profiles, adapters, field/option values, notification settings, deployment update-repository
@@ -86,9 +87,12 @@ examples. See the [customization inventory](./docs/customization.md) for the fie
 small set of bootstrap, infrastructure, device-local, and build trust-boundary values that cannot
 come from Panel at runtime.
 
-The App-side one-time pairing protocol is only a reserved interface. Until a deployment-owned issuer
-and atomic redeem endpoint pass review, manual Panel URL/read-key entry remains authoritative and a
-download page must not advertise pairing as available.
+The App and Panel implement the one-time pairing protocol, but source availability alone does not
+enable it. Until the Panel Durable Object/secrets, download Worker, exact APK applicationId and
+real-device flow pass deployment review, manual Panel URL/read-key entry remains available and the
+download page must not advertise pairing as ready. A public issuer deliberately makes the shared
+Panel connection credential obtainable by any visitor; it does not create or bypass the separate
+backend account session required for operational submissions.
 
 Production Panel, backend, notification, and file endpoints are required to use HTTPS. This is
 currently an operational/deployment requirement rather than a complete runtime guarantee: manual

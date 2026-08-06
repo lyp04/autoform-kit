@@ -1259,7 +1259,8 @@ final class CatalogPromotionValidator {
             JSONObject entry = objectAt(entries, index,
                 source.path + ".workflow.alternateEntries.entries");
             String entryPath = source.path + ".workflow.alternateEntries.entries[" + index + "]";
-            String entryId = requiredText(entry.opt("id"), entryPath + ".id");
+            String entryId = boundedText(entry.opt("id"), entryPath + ".id",
+                MAX_PROFILE_ID_LENGTH);
             if (!entryIds.add(entryId)) reject(entryPath + ".id.duplicate");
             String targetId = requiredText(entry.opt("targetProfileId"),
                 entryPath + ".targetProfileId");

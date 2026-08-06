@@ -22,7 +22,7 @@ HTTPS。若以后关闭 cleartext，应作为独立兼容迁移验证，而不�
 
 App 只向设置的 Panel host 和 same-host redirect 发送 read key。Manifest 指向不同 host 时，App 不会转发 key，受保护的 payload 下载将失败。因此 Cloudflare `PUBLIC_URL` 与 device Panel URL 必须使用同一 host。
 
-App 还预留了从授权下载页取得一次性票据、经用户确认后自动填写同一组设备本地连接值的入口。当前 Panel 尚未实现票据发行与兑换端点，因此该入口不能端到端启用，现阶段仍以本节的手动设置为准。下载页不得把 Panel URL 或长期 read key 写入 APK；完整的 URI、兑换、存储和未来 Panel 发行合同见 [App 一次性配对协议](./app-pairing.md)。
+App 还可从部署方下载页取得一次性票据，经用户确认后自动填写同一组设备本地连接值。Panel Worker 已实现独立 server-to-server issuer 与原子单次兑换，但部署方仍须配置 SQLite Durable Object、独立 issuer secret、applicationId allow-list，并完成下载 Worker 与真实设备 E2E；完成前保持下载页动作关闭并使用手动设置。下载页可公开发行，也可增加自己的 session authorization/CSRF；公开发行不会绕过 App 的 backend 账号登录，但意味着任何访客都可取得 shared Panel connection credential。下载页不得把 Panel URL 或长期 read key 写入 APK、下载 URL 或 Intent；完整 URI、发行、兑换与存储合同见 [App 一次性配对协议](./app-pairing.md)。
 
 ## 2. 同步与 fallback
 

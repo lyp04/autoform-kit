@@ -44,7 +44,10 @@ cp wrangler.example.toml wrangler.local.toml
 | `GITHUB_REPO` | Private catalog 的 `owner/name`。 |
 | `GITHUB_BRANCH` | Optional catalog branch；省略时使用 repository default branch。 |
 | `CATALOG_R2` | Optional R2 bucket binding；未完成精确 seed 时只读回退 GitHub 且拒绝发布，不能把“已绑定”当作“已切换”。 |
+| `APP_PAIR_TICKETS` | SQLite-backed Durable Object namespace；保存 hash-only 短期票据状态与不可逆限流计数，保证单次兑换原子消费。 |
 | `PUBLIC_URL` | App 下载 catalog 的 Panel base URL。 |
+| `APP_PAIR_APPLICATION_IDS` | 允许发行的精确 Android applicationId，逗号分隔；默认正式包为 `com.autoformkit.app`。 |
+| `APP_PAIR_TTL_SECONDS` | 票据绝对寿命，60–600 秒，建议/默认 300。 |
 | `AI_BASE_URL` / `AI_MODEL` | Optional AI provider endpoint 与 model。 |
 
 `PUBLIC_URL` 会写入 manifest `profilesUrl`。启用 read key 后，它必须与 device Panel URL 使用同一 host。
@@ -58,6 +61,7 @@ npx wrangler login
 npx wrangler secret put BACKEND_ADAPTER_JSON --config wrangler.local.toml
 npx wrangler secret put GITHUB_TOKEN --config wrangler.local.toml
 npx wrangler secret put CATALOG_READ_KEY --config wrangler.local.toml
+npx wrangler secret put APP_PAIR_ISSUER_KEY --config wrangler.local.toml
 ```
 
 Optional AI：
@@ -71,6 +75,7 @@ npx wrangler secret put AI_API_KEY --config wrangler.local.toml
 | `BACKEND_ADAPTER_JSON` | 首次 Panel login 所需完整 v1 adapter；从 standard input 粘贴 repository 外准备的 JSON。 |
 | `GITHUB_TOKEN` | Worker 读写 private catalog。 |
 | `CATALOG_READ_KEY` | Shared credential，保护 catalog、App config、Panel bootstrap 和 notification proxy。 |
+| `APP_PAIR_ISSUER_KEY` | 只与下载 Worker 共享的独立 server-to-server 高熵 credential；不得复用 read key 或 browser/backend token。 |
 | `AI_API_KEY` | Optional authoring AI；未启用时不要设置。 |
 
 Wrangler 会交互读取 secret；不要把值放在 command arguments 或 shell history。
@@ -107,12 +112,21 @@ Panel 没有第二套 password 或 role database。任何通过 configured user-
 user-info authorization 中只允许专用管理员账号，并按需要在 Cloudflare Access、反向代理或受控网络
 增加第二层访问限制。`CATALOG_READ_KEY` 只保护读取 route，不提供管理员角色隔离。
 
-### One-time App pairing issuer（当前禁用）
+### One-time App pairing issuer
 
-App 已预留版本化的一次性配对入口，但本 Worker 尚未实现授权下载会话的 ticket issuer 与
-`/api/app-pair/v1/redeem`。部署方不能用静态 token、APK 查询参数或长期 read key 模拟该服务；在
-服务端授权、精确 audience、短期 hash-only ticket、原子单次消费、限流及设备端到端测试全部完成前，
-下载页必须隐藏或禁用配对动作，继续使用 App Settings 手动连接。合同见
+Worker 提供独立 server-to-server `POST /api/app-pair/v1/issue` 与 App-facing
+`POST /api/app-pair/v1/redeem`。必须同时配置 SQLite-backed `APP_PAIR_TICKETS` binding/migration、
+高熵 `CATALOG_READ_KEY`、独立 `APP_PAIR_ISSUER_KEY`、HTTPS `PUBLIC_URL`、精确
+`APP_PAIR_APPLICATION_IDS` 和不超过 600 秒的 TTL；缺少任一项，两条 route 都 fail closed。issuer
+只接受 `Authorization: Bearer APP_PAIR_ISSUER_KEY`，不能接受 browser backend token 或 read key。
+
+下载 Worker 必须明确选择公开或受控发行，并只提交不可逆 HMAC client digest。公开发行允许任意页面
+访客取得 shared Panel connection credential，但不会创建或绕过 backend account session；受控发行则
+由下载 Worker 自己完成服务端 session authorization 与 CSRF 防护。Panel 仅保存 ticket/access-key
+摘要、exact audience、过期时间、消费状态与不可逆限流计数。兑换在
+Durable Object transaction 中先完成 `issued -> consumed` 再返回当前 read key；响应丢失也不得重放。
+在下载 Worker 发行策略、secret 配置、网页 Intent 与真实设备端到端测试全部完成前，下载页仍须隐藏或
+禁用配对动作，继续允许 Settings 手动连接。完整合同见
 [App 一次性配对协议](./app-pairing.md)。
 
 ## 5. Local preflight

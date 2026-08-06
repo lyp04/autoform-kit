@@ -2640,6 +2640,9 @@ public class MainActivity extends Activity {
                 AlternateEntryDraftState draft = inMemoryAlternateEntryDraftState();
                 SharedPreferences.Editor editor = prefs.edit().putString(key,
                     draft.toJson().toString());
+                // Keep the page's presentation choice in the same transaction as the record. A
+                // crash/logout cannot retain the SN/photos while retaining another form's choice.
+                stageAlternateEntrySelection(editor, draft.entryId, draft.sourceProfileId);
                 if (UnsafeCandidateContinuationRules.validAlternateEntryToken(
                         alternateEntryContinuationToken)) {
                     AlternateEntryContinuationProof proof =
@@ -2698,6 +2701,10 @@ public class MainActivity extends Activity {
                     proof.toJson().toString())
                 .remove(alternateEntryReservationPreferenceKey(reservation.kind))
                 .remove(alternateEntryReservationGuardPreferenceKey(reservation.kind));
+            // The scanner/photo result, its exact draft binding and the source shown by the
+            // independent-entry selector become durable together. A process death after this
+            // commit can therefore never pair retained SN/photos with an older form choice.
+            stageAlternateEntrySelection(editor, draft.entryId, draft.sourceProfileId);
             if (AlternateEntryAsyncReservation.KIND_PHOTO.equals(reservation.kind)) {
                 editor.remove(PENDING_ALTERNATE_ENTRY_PHOTO_PATH_KEY);
             }
@@ -2925,6 +2932,8 @@ public class MainActivity extends Activity {
                     }
                 }
             }
+            // A draft binding is stronger than any older presentation preference.
+            rememberAlternateEntrySelection(draft.entryId, draft.sourceProfileId);
             return 1;
         } catch (Exception error) {
             Diagnostics.append(this, "Alternate-entry draft restore blocked: "
@@ -3405,6 +3414,45 @@ public class MainActivity extends Activity {
         return -1;
     }
 
+    private AlternateEntrySelectionState storedAlternateEntrySelection(String entryId) {
+        try {
+            String connection = currentConnectionNamespace();
+            String key = AlternateEntrySelectionState.preferenceKey(connection, entryId);
+            Object raw = prefs.getAll().get(key);
+            if (!(raw instanceof String)) return null;
+            AlternateEntrySelectionState state =
+                AlternateEntrySelectionState.parse((String) raw);
+            return state.matches(connection, entryId) ? state : null;
+        } catch (RuntimeException invalid) {
+            Diagnostics.append(this, "Independent-entry selection preference rejected");
+            return null;
+        }
+    }
+
+    private void stageAlternateEntrySelection(SharedPreferences.Editor editor,
+                                              String entryId, String sourceProfileId) {
+        if (editor == null) throw new IllegalArgumentException("preference editor is required");
+        AlternateEntrySelectionState state = AlternateEntrySelectionState.create(
+            currentConnectionNamespace(), entryId, sourceProfileId);
+        String key = AlternateEntrySelectionState.preferenceKey(
+            state.connectionNamespace, state.entryId);
+        editor.putString(key, state.toJson().toString());
+    }
+
+    /** Save only a validated presentation choice; failure never authorizes or blocks a workflow. */
+    private void rememberAlternateEntrySelection(String entryId, String sourceProfileId) {
+        try {
+            SharedPreferences.Editor editor = prefs.edit();
+            stageAlternateEntrySelection(editor, entryId, sourceProfileId);
+            if (!editor.commit()) {
+                Diagnostics.append(this,
+                    "Independent-entry selection preference commit failed");
+            }
+        } catch (RuntimeException invalid) {
+            Diagnostics.append(this, "Independent-entry selection preference not saved");
+        }
+    }
+
     private void showAlternateEntryPage(String entryId) {
         if (alternateEntrySubmitting || submitting
                 || profileOwnedRemoteWorkerActive()) {
@@ -3457,9 +3505,14 @@ public class MainActivity extends Activity {
             sources = alternateEntrySourceProfiles;
             source = alternateEntrySourceProfile;
             entry = alternateEntryConfig;
-            selected = alternateEntrySourceIndex(sources,
-                source.optString("id", ""));
-            if (selected < 0) selected = 0;
+            selected = AlternateEntrySelectionState.pageSourceIndex(
+                sources, source.optString("id", ""),
+                storedAlternateEntrySelection(requestedId),
+                currentConnectionNamespace(), requestedId, currentProfileId());
+            if (selected < 0) {
+                showLockedAlternateEntryDraftDialog(requestedId);
+                return;
+            }
         } else {
             String returnId = alternateEntryPageOpen
                 ? alternateEntryReturnProfileId : currentProfileId();
@@ -3481,7 +3534,9 @@ public class MainActivity extends Activity {
                 restoreCurrentProfileDraftOrEmpty();
                 return;
             }
-            selected = alternateEntrySourceIndex(sources, currentProfileId());
+            selected = AlternateEntrySelectionState.pageSourceIndex(
+                sources, "", storedAlternateEntrySelection(requestedId),
+                currentConnectionNamespace(), requestedId, currentProfileId());
             if (selected < 0) selected = 0;
             source = sources.optJSONObject(selected);
             entry = alternateEntryById(source, requestedId);
@@ -3502,9 +3557,15 @@ public class MainActivity extends Activity {
                 source = alternateEntrySourceProfile;
                 entry = alternateEntryConfig;
                 sources = alternateEntrySourceProfiles;
-                selected = alternateEntrySourceIndex(sources,
+                selected = AlternateEntrySelectionState.pageSourceIndex(
+                    sources, source.optString("id", ""),
+                    storedAlternateEntrySelection(requestedId),
+                    currentConnectionNamespace(), requestedId, currentProfileId());
+                if (selected < 0) {
+                    throw new JSONException("bound independent-entry source is unavailable");
+                }
+                rememberAlternateEntrySelection(requestedId,
                     source.optString("id", ""));
-                if (selected < 0) selected = 0;
             } catch (Exception invalid) {
                 clearAlternateEntrySession(false);
                 selectVisibleProfile(returnId);
@@ -3594,6 +3655,8 @@ public class MainActivity extends Activity {
                         alternateEntryStateProfileId = "";
                         bindAlternateEntryForNewWork(next, nextEntry,
                             alternateEntryCatalogSnapshot);
+                        rememberAlternateEntrySelection(alternateEntryId,
+                            next.optString("id", ""));
                         showAlternateEntryPage(alternateEntryId);
                     } catch (Exception invalid) {
                         alert(t("panel_required_title"), t("alternate_entry_invalid"));

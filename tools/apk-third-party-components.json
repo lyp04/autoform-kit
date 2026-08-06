@@ -22,7 +22,7 @@
     "files": [
       {
         "path": "app/build.gradle",
-        "sha256": "15240babb854185a8f839d1bf5978f1769f29bb6b1fb7f123d163fc579e762f5"
+        "sha256": "a7ebd029ef3b42905512089e70d997275b0051852098afa6d370d245eca410c7"
       },
       {
         "path": "build.gradle",
@@ -2446,7 +2446,7 @@
       ]
     },
     {
-      "id": "official-gradle-release-v1.0.8-beta.2",
+      "id": "official-gradle-release-v1.0.8",
       "buildType": "release",
       "generatedBy": "Android Gradle Plugin 8.7.3",
       "dexStringComponents": [
@@ -2456,13 +2456,13 @@
       "entries": [
         {
           "path": "assets/dexopt/baseline.prof",
-          "sha256": "032de7e4e798eea78d0a55bd5352a7c88f41e967acc79a65a32b3efa219b2af8",
+          "sha256": "e5bf9c1ba803852c5f42784559a14c7474c003d17299b6d8d9814393d1efeb24",
           "component": "androidx-runtime-baseline-profiles",
           "kind": "runtime-profile"
         },
         {
           "path": "assets/dexopt/baseline.profm",
-          "sha256": "d6f712cbee1c81cd8a3f1f864e405a69f46f0bc9017c0b974ed582718764e5bd",
+          "sha256": "6a7bf20b06e230ce84ab24b9c5b0cdecb7639431d62870f3f82f7be3679def62",
           "component": "androidx-runtime-baseline-profiles",
           "kind": "runtime-profile"
         },

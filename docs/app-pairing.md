@@ -1,8 +1,8 @@
 # App 一次性配对协议
 
-本协议让授权下载页用一次性票据把通用 Android App 连接到对应 Panel，同时保持所有下载者获得同一份可公开审计的签名 APK。Panel 地址、长期 access key 和业务配置都不写入 APK，也不写入 APK 下载 URL。
+本协议让部署方下载页用一次性票据把通用 Android App 连接到对应 Panel，同时保持所有下载者获得同一份可公开审计的签名 APK。Panel 地址、长期 access key 和业务配置都不写入 APK，也不写入 APK 下载 URL。
 
-> **实现状态：** App 侧的版本化 deep-link handler、校验、确认、HTTPS 兑换客户端和安全连接切换已预留；App 内没有用户可见的配对按钮或菜单，只有供未来授权下载页调用的外部 handler。Panel 也尚未实现票据发行与 `/api/app-pair/v1/redeem`。因此当前不能端到端启用，正式下载页也不应显示发行或打开配对动作。手动填写 Panel URL 与 access key 的方式继续有效。
+> **实现状态：** App 已实现版本化 deep-link handler、校验、确认、HTTPS 兑换客户端和安全连接切换；Panel Worker 已实现独立 server-to-server issuer、短期 hash-only ticket、Durable Object 原子单次兑换与限流。部署时仍须配置 Durable Object binding、`CATALOG_READ_KEY`、独立 `APP_PAIR_ISSUER_KEY` 和 applicationId allow-list，并让下载 Worker 完成下面的发行合同。未完成部署及真实设备端到端验证时，下载页必须隐藏或禁用配对动作；手动填写 Panel URL 与 access key 的方式继续有效。
 
 ## 为什么 APK 下载不能直接带入配置
 
@@ -18,8 +18,8 @@ Google Play Install Referrer 和受管设备的 MDM/EMM 配置属于其他部署
 
 ## 推荐流程
 
-1. 用户进入已授权的下载会话，并主动请求“连接此 Panel”。
-2. 下载页从未来的 Panel 发行服务取得一个短期、一次性 `ticket` 及其服务端过期时间。
+1. 用户进入部署方下载页，并主动请求“连接此 Panel”；部署方可按自己的保密要求决定该页面公开或需要会话授权。
+2. 下载页由自己的服务端 Worker 向 Panel 发行服务取得一个短期、一次性 `ticket` 及其服务端过期时间；浏览器不能持有 issuer credential。
 3. 下载页始终提供同一份已签名、已审计的 APK；票据不进入 APK 或 APK 下载 URL。
 4. 用户安装完成后回到下载页，点击“打开并连接”。
 5. 网页使用带精确 package 的 Android Intent 打开 App，只携带 Panel HTTPS origin、票据和过期时间。
@@ -53,7 +53,7 @@ function buildPairingIntent({ applicationId, panelOrigin, ticket, expires }) {
     + `#Intent;scheme=${applicationId};package=${applicationId};end`;
 }
 
-// 这两个值必须原样来自未来发行端点的同一次服务端响应。
+// 这两个值必须原样来自发行端点的同一次服务端响应。
 const { ticket, expires } = await issuePairingTicket();
 const intentUrl = buildPairingIntent({
   applicationId: "com.autoformkit.app",
@@ -65,7 +65,7 @@ const intentUrl = buildPairingIntent({
 
 `URLSearchParams` 会把内层 Panel origin 编码为外层查询值，例如 `https%3A%2F%2Fpanel.example.invalid`。下载页必须使用带明确 package 的 Intent，降低其他 App 接收同一 custom scheme 的风险。
 
-显式 package 是**发送方要求**，不是下载页身份认证。App 会校验 URI scheme 等于自身 `applicationId`，但 custom scheme 不能证明链接来自哪个网页，也不能证明发送方原始 Intent 一定写了 package。安全性仍依赖授权下载会话、不可猜票据、精确 audience、HTTPS、一次性消费和用户核对 Panel origin。
+显式 package 是**发送方要求**，不是下载页身份认证。App 会校验 URI scheme 等于自身 `applicationId`，但 custom scheme 不能证明链接来自哪个网页，也不能证明发送方原始 Intent 一定写了 package。协议安全性仍依赖明确的下载页发行策略、不可猜票据、精确 audience、HTTPS、一次性消费和用户核对 Panel origin；只有受控发行模式额外提供用户授权。
 
 ## 查询参数的精确约束
 
@@ -140,14 +140,44 @@ Panel 的失败响应不得包含 access key。过期、已用、未知、audien
 
 当前 access key 存在 App 的 `MODE_PRIVATE` SharedPreferences 中，应用备份已关闭；本项目不声称它经过额外的 Android Keystore 或 EncryptedSharedPreferences 加密。它还会在 App 内存和发往已保存 Panel 的后续 HTTPS 鉴权请求中短暂存在。它不得进入 URL、Intent、日志、analytics、剪贴板、公开错误、公开测试夹具或 APK。
 
-## 未来 Panel 的票据发行合同
+## Panel 的票据发行合同
 
-Panel 端尚未实现。实现时必须满足下面的最低合同，不能用普通随机数、可重放签名 URL 或非原子的 KV `get`/`delete` 近似替代。
+Panel Worker 实现以下固定 issuer。它只供独立下载 Worker 从服务端调用，不能由下载页 JavaScript 直接调用，也不能用普通随机数、可重放签名 URL 或非原子的 KV `get`/`delete` 近似替代：
 
-### 授权下载会话
+```http
+POST /api/app-pair/v1/issue
+Authorization: Bearer <APP_PAIR_ISSUER_KEY>
+Content-Type: application/json
 
-- 只有已完成部署方授权的下载会话，才能请求该部署的配对票据；页面加载本身不能自动发行。
-- 会话 cookie 应使用 `Secure`、`HttpOnly` 和合适的 `SameSite` 策略，并受 CSRF 防护；授权检查必须在服务端完成。
+{
+  "version": 1,
+  "applicationId": "com.autoformkit.app",
+  "clientDigest": "<64 lowercase hex characters>"
+}
+```
+
+`APP_PAIR_ISSUER_KEY` 是只在两个 Worker secret store 中存在的独立高熵值，不能复用 `CATALOG_READ_KEY`、Panel browser backend token 或下载页 cookie。下载 Worker 用该 secret 对最小 source identity 做带域分隔的 HMAC-SHA-256，并只把 64 位小写 `clientDigest` 发给 Panel。若下载页需要访问控制，Worker 必须先完成自己的服务端授权与 CSRF 检查；若部署方明确选择公开发行，则必须接受任何页面访客都能取得 shared Panel connection credential。两种模式都不得发送或记录原始账号、cookie、IP 或 User-Agent。
+
+唯一发行成功响应是 HTTP `200`、JSON、`Cache-Control: no-store`，并只包含：
+
+```json
+{
+  "version": 1,
+  "panelOrigin": "https://panel.example.invalid",
+  "applicationId": "com.autoformkit.app",
+  "ticket": "<OPAQUE_BASE64URL_TICKET>",
+  "expires": 1893456000
+}
+```
+
+下载 Worker 不得缓存该响应；只把这些短期字段传给当前页面。认证、格式、限流、配置或存储失败都返回通用 `pairing unavailable`，不回显 credential 或内部差异。
+
+### 下载页发行策略
+
+- 公开模式允许任意页面访客主动请求配对票据。这等同于把 shared Panel connection credential 作为部署公开能力；一次性 ticket 只避免把长期值写入网页、URL 或 APK，不提供用户授权。
+- 公开模式不会创建 backend account session，也不会绕过 App 后续的业务登录。它仍可能公开 read-key 可访问的 catalog、App config、Panel bootstrap/runtime metadata，并允许调用部署启用的 notification proxy；部署方必须明确接受这条权限边界。
+- 受控模式只允许已获授权的下载会话请求票据。会话 cookie 应使用 `Secure`、`HttpOnly` 和合适的 `SameSite` 策略，并受 CSRF 防护；授权检查必须在服务端完成。
+- 页面加载本身不能自动发行；两种模式都只在用户主动点击后发行。
 - 发行响应只能把一次性 ticket、服务端 `expires`、目标 Panel origin、目标 `applicationId` 和协议版本交给下载页，不能把长期 access key 交给浏览器。
 - 每次发行都绑定精确 APK/applicationId 选择；debug、fork 或重新打包的 applicationId 不能复用正式包链接。
 
@@ -158,7 +188,7 @@ Panel 端尚未实现。实现时必须满足下面的最低合同，不能用�
 - 协议标识和版本：`app-pair/v1`；
 - 精确、规范化的 redeem HTTPS origin 与固定 endpoint；
 - 精确目标 `applicationId`；
-- 授权下载会话的不可逆标识或摘要；
+- 下载 Worker 提交的不可逆 client digest；
 - 将要返回的 access-key 版本或摘要。
 
 兑换端点必须确认请求到达记录绑定的 origin/version，并且记录仍属于当前有效的 access-key 版本。key 已轮换或任一 audience 不符时应使票据失效，不能把旧票据自动升级为新的长期 key。
@@ -170,19 +200,19 @@ Panel 端尚未实现。实现时必须满足下面的最低合同，不能用�
 - ticket 必须由 CSPRNG 生成，熵至少 128 bit；同时必须满足 App 的 32 字符下限。推荐生成至少 24 个随机字节并使用无 padding 的 base64url，或直接使用 32 个随机字节。
 - ticket 不得包含账号、Panel、key、时间或其他可解码业务字段。
 - 服务端只保存 ticket 的 SHA-256 或带服务端 pepper 的 HMAC-SHA-256，不保存 ticket 明文；明文只在一次发行响应、下载页内存、Intent 和 App 进程内短暂出现。
-- 服务端记录使用绝对 `expires`，最大寿命 600 秒，建议 300 秒。过期记录不可兑换，清理延迟不能延长授权。
+- 服务端记录使用绝对 `expires`，配置范围为 60–600 秒，默认 300 秒。到达 `expires` 即不可兑换，清理延迟不能延长授权。
 - 发行页、兑换端点、代理、analytics、APM、错误追踪和审计日志都不得记录 ticket、access key 或完整 Intent URL。
 
 ### 原子单次消费
 
-- 兑换必须通过支持事务或条件写的状态存储，把记录从 `issued` 原子转换为 `consumed`；只有转换成功的一个请求可以继续。
+- 兑换通过 SQLite-backed Durable Object storage transaction 把记录从 `issued` 原子转换为 `consumed`；每个 ticket digest 映射到固定 Object，只有转换成功的一个请求可以继续。
 - 必须在返回 access key 之前完成消费。两个并发请求不能同时成功，读后再异步删除不符合本合同。
-- 响应丢失、客户端超时或进程死亡时，已消费票据保持已消费；不能为了“重试方便”再次返回 key。用户必须从授权下载会话重新发行。
+- 响应丢失、客户端超时或进程死亡时，已消费票据保持已消费；不能为了“重试方便”再次返回 key。用户必须从下载页重新发行。
 - 状态存储若不能证明原子 compare-and-set/transaction，就不能启用配对功能。
 
 ### 限流与响应安全
 
-- 对授权会话、账号、来源地址、票据摘要和 redeem endpoint 分别设置有界限流；限流日志只记录不可逆摘要和通用结果。
+- issuer 对下载 Worker 提供的 HMAC client digest 与全局 endpoint 分别限流；redeem 对由 issuer secret 做 HMAC 的 Cloudflare source address 与全局 endpoint 分别限流。状态只保存不可逆摘要/派生 Object id 与计数，代码不记录原始来源、ticket、key 或完整 Intent。
 - 对未知、过期、已消费和 audience 不符使用不泄露内部差异的失败响应；禁止通过响应时间或详细错误枚举有效票据。
 - 发行响应、下载页和兑换响应使用 `Cache-Control: no-store`；下载页还应设置严格 CSP 与 `Referrer-Policy: no-referrer`，且不加载会看到完整 Intent 的第三方脚本。
 - 只有完成原子消费且 audience/key-version 仍精确匹配时才能返回上述最小成功 JSON；不得增加 redirect、任意 callback URL 或动态 redeem endpoint。

@@ -13,12 +13,12 @@ import java.util.Locale;
 import java.util.Map;
 
 /**
- * Pure, side-effect-free parser for a future browser-to-App Panel pairing handoff.
+ * Pure, side-effect-free parser for a browser-to-App Panel pairing handoff.
  *
  * <p>The v1 link is
  * {@code <applicationId>://pair/v1?panel=<encoded-origin>&ticket=<opaque>&expires=<unix-seconds>}.
  * The ticket is a short-lived, one-time redemption credential. It is deliberately not a Panel
- * read key, and this class has no API that persists it or installs a connection. A future client
+ * read key, and this class has no API that persists it or installs a connection. The pairing client
  * must redeem it at {@link #REDEEM_PATH} on the exact {@link Request#panelBase}, then pass the
  * returned configuration through the existing safe connection-switch path.
  *

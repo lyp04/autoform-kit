@@ -31,8 +31,8 @@
 | 默认 GitHub catalog repository/branch、可选 `CATALOG_R2` bucket binding 与受审 cutover、Worker identity/routes、Panel public URL、`CF_VERSION_METADATA` binding、精确 source-tag deploy/runtime provenance、AI endpoint/model | Cloudflare deployment config | Cloudflare 与受控私有部署证据 |
 | 默认/迁移期 GitHub token、catalog read key、AI key，以及 private catalog 建立前的 bootstrap adapter | Cloudflare variables / Secrets | Cloudflare |
 | 哪些账号可以 author/publish，以及 Panel 与 login 前 metadata 是否还受 edge/network 限制 | Backend authorization + edge/network policy；Panel 没有独立 RBAC | 部署方 backend / edge |
-| 授权下载会话、短期一次性 ticket audience、原子消费与限流 | 未来的 deployment-owned pairing issuer；当前未实现，入口必须禁用 | 未来的私有服务端状态；不得进入 APK、catalog 或公开下载 URL |
-| Panel URL、catalog read key、操作员语言与 stable/beta update channel（在 2.5 秒内连续点击“中文”5 次切换） | App Settings | 单台设备本地 |
+| 下载页公开/受控发行策略、短期一次性 ticket audience、applicationId allow-list、原子消费与限流 | 下载 Worker policy + Panel pairing issuer/redeem；完成 Worker secrets/binding 与设备 E2E 前入口必须禁用 | Cloudflare secret、SQLite Durable Object 临时/摘要状态；不得进入 APK、catalog 或公开下载 URL |
+| Panel URL、catalog read key、操作员语言、每个 Panel/独立入口上次选择的来源表单，以及 stable/beta update channel（在 2.5 秒内连续点击“中文”5 次切换） | App Settings | 单台设备本地 |
 | 可选跨 App session peer allow-list | Android trust-boundary source（默认空；启用前必须增加 signer verification） | APK build |
 | Package identity、launcher name、icon、签名、version、SDK/release feature gates、中性的 update protocol defaults，以及 cleartext transport 兼容策略 | Android build/release config | Source 与 ignored local secrets |
 
@@ -126,8 +126,8 @@ App 下载的 config/catalog candidate 不是可编辑的第二份配置。严�
 - **首次引导 adapter**：私有 catalog 尚未初始化时，Worker 从 `BACKEND_ADAPTER_JSON` 获取 Panel 登录所需 contract；登录后由 Panel 保存正式副本。
 - **旧 Cloudflare adapter 输入**：`BACKEND_API_BASE` 与 `BACKEND_SESSION_PROOF_CODES` 仍只为既有部署迁移读取；新部署不得依赖它们，完整值写入 `BACKEND_ADAPTER_JSON` / private `settings.backendAdapter` 后应删除旧输入。
 - **Panel 管理授权**：Panel 没有独立 RBAC；可 author/publish 的账号由 backend user-info authorization 限制，额外的 Panel/metadata 可见性由 edge 或 network policy 限制。
-- **设备连接**：新装 App 的 Panel URL 与 read key 都为空；当前必须由管理员在 App Settings 明确填写后才能下载 catalog。App 已预留一次性配对入口，但 deployment-owned ticket issuer/redeem 尚未实现，因此不能启用下载页配对按钮。
-- **设备本地选择**：操作员语言与 stable/beta update channel 保存在单台设备，不改变 backend/profile contract；设置页当前没有普通通道选择器，需在 2.5 秒内连续点击“中文”5 次切换并立即检查更新。缺少本地 channel 时仍按旧规则使用 stable，Panel 不提供默认通道。
+- **设备连接**：新装 App 的 Panel URL 与 read key 都为空；管理员可以在 App Settings 手动填写。App 与 Panel 已实现一次性配对协议，但它只有在独立下载 Worker 完成发行、两端配置同一独立 issuer secret、Panel Durable Object migration 生效且真实设备 E2E 通过后才能启用；不能把长期 read key 写入页面或 Intent。下载页可以公开发行，也可以要求自己的授权会话；公开模式不代替 backend 登录，但表示部署方主动把 shared Panel connection credential 提供给任意访客。
+- **设备本地选择**：操作员语言、每个 connection namespace + 独立入口上次选择的来源表单，以及 stable/beta update channel 保存在单台设备，不改变 backend/profile contract。未完成草稿仍以草稿中的精确来源 ID 为最高优先级；来源被删除、重复或失效时不会回退到第一项继续。设置页当前没有普通通道选择器，需在 2.5 秒内连续点击“中文”5 次切换并立即检查更新。缺少本地 channel 时仍按旧规则使用 stable，Panel 不提供默认通道。
 - **Cloudflare / catalog infrastructure**：Worker 必须先知道默认私有 GitHub repository、public URL 与 service credentials；可选 R2 只有在精确 seed 和 current pointer 校验完成后才成为 catalog authority，不能由 Panel 表单运行值临时切换。正式部署还必须保留 `CF_VERSION_METADATA` binding，通过精确 source tag 发布，并把 live runtime provenance 纳入私有发布证据。
 - **Android identity 与签名**：package、launcher name、icon、certificate 和 version 属于安装包本身。
 - **Android capability / protocol defaults**：`AUTO_UPDATE_ENABLED`、`CROSS_APP_SESSION_ENABLED`、SDK，以及 `update-config.json` 的 enabled、manifest asset、stable `/latest` 与 beta tag 路由属于 APK。公开 release source 只能保留中性默认；deployment-specific owner/repo 写入私有 Panel，Panel 不能覆盖 channel/tag/asset。
@@ -158,7 +158,7 @@ upgrade 保留数据与路由、所有真实 profile 的 payload replay 一致�
 - `CATALOG_READ_KEY` 已设置，匿名访问受保护 route 返回 `401`。
 - Backend/edge 已把 Panel author/publish 权限限制到获准管理员；没有把“能通过任意 backend 登录”误当作 Panel RBAC。
 - Worker 通过带 `CF_VERSION_METADATA` 的受控入口部署，live runtime provenance 精确匹配本次审阅的 source commit；source tag 不替代 bundle/build attestation。
-- App 已安装保留的 deep-link handler，但没有原生可发现的配对入口；在 pairing issuer、原子 redeem 与端到端测试完成前，下载页必须隐藏或禁用发行/打开动作，因此该接口不能端到端使用。手动连接继续有效。
+- App 没有原生可发现的配对入口；若启用下载页动作，已确认下载 Worker 的公开/受控发行策略，并验证独立 issuer secret、Panel SQLite Durable Object migration、exact audience、短期/单次/并发失败与真实设备打开/确认/同步证据。缺少任一技术证据时下载页隐藏或禁用发行/打开动作，手动连接继续有效。
 - `notificationAdapter`、v2 私有 `eventTemplates` 与 v3 私有 delivery 细节不出现在 `/api/config` 或 `/catalog/*`；新 App 只收到版本、同源代理 endpoint、启用状态与可用事件列表。唯一例外是 old-App migration 的 legacy `notifyWebhook`：迁移期仍会出现在 App-facing config，所有旧设备升级后必须清空。
 - v2 提交汇总只在 profile 显式开启，diagnostics 只在全局 policy 与 `runtime.failure` template 均显式开启；缺失配置默认关闭。
 - 若显式选择 v3，`summary` 与 `problem` 都已配置，`timeoutMs` 均在 1,000–8,000 内，provider success status 与原始响应 `textContains` 已逐一验证；未完成验证时保持 v3 未启用，已有部署可继续使用经验证的 v2。

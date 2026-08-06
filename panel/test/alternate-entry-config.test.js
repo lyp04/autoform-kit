@@ -170,6 +170,13 @@ test("enabled entries and photo bounds fail closed", () => {
   entry.maxPhotos = 2;
   assert.ok(validateFormProfile(source).includes(
     "workflow.alternateEntries.entries[0].maxPhotos must be at least minPhotos"));
+
+  entry.maxPhotos = 3;
+  entry.id = "e".repeat(256);
+  assert.equal(validateFormProfile(source).some((error) => error.includes(".id")), false);
+  entry.id += "e";
+  assert.ok(validateFormProfile(source).includes(
+    "workflow.alternateEntries.entries[0].id must contain at most 256 characters"));
 });
 
 test("alternate explicit-rejection retry policy is bounded and strict", () => {

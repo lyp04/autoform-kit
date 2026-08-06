@@ -543,6 +543,9 @@ function validateAlternateEntries(profile, value, errors) {
     }
     allowOnly(entry, ALTERNATE_ENTRY_KEYS, path, errors);
     validateTrimmedText(entry.id, `${path}.id`, errors);
+    if (typeof entry.id === "string" && entry.id.length > 256) {
+      errors.push(`${path}.id must contain at most 256 characters`);
+    }
     validateTrimmedText(entry.title, `${path}.title`, errors);
     validateStrictI18n(entry.titleI18n, `${path}.titleI18n`, errors);
     validateTrimmedText(entry.targetProfileId, `${path}.targetProfileId`, errors);

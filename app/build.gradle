@@ -26,8 +26,8 @@ android {
         applicationId "com.autoformkit.app"
         minSdk 23
         targetSdk 35
-        versionCode = (project.findProperty("versionCode") ?: "9").toInteger()
-        versionName = (project.findProperty("versionName") ?: "1.0.8-beta.1").toString()
+        versionCode = (project.findProperty("versionCode") ?: "11").toInteger()
+        versionName = (project.findProperty("versionName") ?: "1.0.8").toString()
 
         buildConfigField "String", "GIT_HEAD", "\"" + gitHead + "\""
         buildConfigField "boolean", "AUTO_UPDATE_ENABLED", "true"

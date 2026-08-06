@@ -27,9 +27,18 @@ Panel 是正式表单、策略和集成配置的主体，App 只是通用执行�
 | --- | --- |
 | `GITHUB_TOKEN` | Fine-grained token，只授权 private catalog 的 Contents read/write。只放 Cloudflare secret。 |
 | `CATALOG_READ_KEY` | 正式环境必须设置高熵值。它是 shared read credential，不是 per-user authorization。 |
+| `APP_PAIR_ISSUER_KEY` | 与下载 Worker 共享的独立高熵 server-to-server credential；不能复用 read key 或 browser/backend token。 |
 | `BACKEND_ADAPTER_JSON` | 首次引导值。通过 read key 后其 authoring subset 会返回浏览器，不能当作 secret。 |
 | `AI_API_KEY` | 仅在审查并启用 AI 时设置；限制额度和权限并定期轮换。 |
 | `GITHUB_REPO` / `PUBLIC_URL` | 使用 deployment vars；不要回填 public example。 |
+
+一次性 App 配对还要求 SQLite-backed `APP_PAIR_TICKETS` Durable Object、精确
+`APP_PAIR_APPLICATION_IDS` allow-list 和 60–600 秒 TTL。issuer 与 redeem 任一 prerequisite 缺失都会
+fail closed。Panel 只在 Durable Object 中保存 ticket/access-key 摘要、exact audience、状态及不可逆
+限流 identity；明文 ticket 只出现在一次发行响应、当前下载页/Intent 与 App 内存，明文 access key 只在
+Worker secret/runtime、成功兑换响应和 App connection store 中出现。issuer route 不能从浏览器直接调用，
+下载 Worker 也不能把 issuer secret 发送到页面。下载 Worker 可以由部署方明确配置为公开或受控发行；
+公开模式不提供用户授权，并意味着任意访客都可取得 shared Panel connection credential。
 
 ### Read gate 是 fail-open
 
@@ -182,6 +191,7 @@ signed v1.0.4 与 signed v1.0.6 的历史 cache 本身没有连接 binding。**P
 - [ ] Private catalog 与 public source 完全分离；两份必选文件位于正确 repository，可选 `panel-settings.json` 的 present/absent 状态符合当前 authority。
 - [ ] Full history、tag、Release 和附件不含 deployment data。
 - [ ] `CATALOG_READ_KEY` 已设置；catalog、config、Panel bootstrap、runtime provenance 与 notification proxy 均拒绝匿名访问。
+- [ ] 若启用一键配对：公开/受控发行策略与 shared read-key 权限边界已明确接受；`APP_PAIR_TICKETS` SQLite migration、独立 `APP_PAIR_ISSUER_KEY`、精确 applicationId allow-list 与 <=600 秒 TTL 已配置；错误 issuer/read key、未知/过期/已用 ticket 和并发兑换均以 no-store 通用失败结束，且真实设备只成功一次。
 - [ ] `notificationAdapter` 与 `eventTemplates` 未出现在 App-facing response；migration-only direct URL 已清空。
 - [ ] 每个 profile 的提交汇总开关与全局 diagnostics policy 均按最小需要显式设置；缺失时已验证为关闭。
 - [ ] `PUBLIC_URL`、Panel URL 与 catalog host 一致，全部正式 endpoint 使用 HTTPS。

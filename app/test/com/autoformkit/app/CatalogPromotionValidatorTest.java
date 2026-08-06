@@ -543,6 +543,14 @@ public class CatalogPromotionValidatorTest {
             .getJSONObject("submit").put("outcomePolicy", outcomePolicy(true, false));
         assertTrue(CatalogPromotionValidator.isExecutableWithConfig(
             retryingAlternate, retryConfig));
+
+        JSONObject maximumEntryId = catalogWithAlternate(false);
+        alternateEntry(maximumEntryId).put("id", "e".repeat(256));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(maximumEntryId));
+
+        JSONObject oversizedEntryId = catalogWithAlternate(false);
+        alternateEntry(oversizedEntryId).put("id", "e".repeat(257));
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(oversizedEntryId));
     }
 
     @Test
