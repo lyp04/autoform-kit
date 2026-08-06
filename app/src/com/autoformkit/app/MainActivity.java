@@ -10306,7 +10306,8 @@ public class MainActivity extends Activity {
             throws Exception {
         requireMainDraftRemoteBinding(expectedDraftBinding, "previous-step lookup");
         requirePreviousStepSideEffectCapability(api, workflow);
-        appendUnitLog(unit, t("checking_steps"));
+        final boolean directCreate = workflow.shouldDirectCreatePreviousSteps(unit.grade);
+        if (!directCreate) appendUnitLog(unit, t("checking_steps"));
         PreviousStepSubmissionAttempt retained =
             validateVerifiedPreviousStepSubmissionAttempt(
                 unit, expectedDraftBinding, workflow);
@@ -10331,6 +10332,44 @@ public class MainActivity extends Activity {
             saveDraft();
             throw new IOException(unit.sn + " " + t("steps_missing_detail") + " "
                 + api.apiErrorMessage(resumed));
+        }
+        if (directCreate) {
+            // A Panel may declare that this result starts with no previous-step chain. Do not issue
+            // the ordinary existence lookup before recipe one: create the exact journaled chain
+            // immediately, then retain the normal verification lookup. A complete exact receipt
+            // needs only that lookup; do not resolve live templates or revisit any recipe POST.
+            final JSONObject direct;
+            if (retained == null) {
+                if (!shouldAutoCreateAnyPreviousSteps(unit.grade, workflow)) {
+                    throw new BackendAdapter.ConfigurationException(
+                        "profile.workflow.previousSteps.directCreateResultKeys");
+                }
+                if (!hasRequiredWorkflowArtifacts(unit, workflow)) {
+                    throw new IOException(t("workflow_artifacts_required"));
+                }
+                appendUnitLog(unit, t("previous_steps_creating"));
+                requireMainDraftRemoteBinding(
+                    expectedDraftBinding, "direct previous-step recipe");
+                direct = runPreviousStepRecipesAndVerify(
+                    api, unit, expectedDraftBinding, workflow);
+            } else {
+                requireMainDraftRemoteBinding(
+                    expectedDraftBinding, "direct previous-step verification");
+                direct = verifyPreviousSteps(
+                    api, unit, expectedDraftBinding, workflow);
+            }
+            if (direct != null && api.isSuccess(direct)) {
+                validateVerifiedPreviousStepSubmissionAttempt(
+                    unit, expectedDraftBinding, workflow);
+                markPreviousStepsOk(unit, workflow, expectedDraftBinding);
+                return;
+            }
+            requireMainDraftRemoteBinding(
+                expectedDraftBinding, "direct previous-step failure");
+            unit.precheckStatus = t("failed");
+            saveDraft();
+            throw new IOException(unit.sn + " " + t("steps_missing_detail") + " "
+                + api.apiErrorMessage(direct));
         }
         JSONObject body = previousStepsResponse(api, unit, expectedDraftBinding);
         if (api.isSuccess(body)) {
@@ -10397,6 +10436,13 @@ public class MainActivity extends Activity {
             ProfileWorkflow workflow) throws Exception {
         runConfiguredPreviousStepRecipes(
             api, unit, expectedDraftBinding, workflow);
+        return verifyPreviousSteps(api, unit, expectedDraftBinding, workflow);
+    }
+
+    private JSONObject verifyPreviousSteps(
+            Api api, UnitRecord unit,
+            MainDraftSnapshotRules.Binding expectedDraftBinding,
+            ProfileWorkflow workflow) throws Exception {
         JSONObject body = null;
         for (int attempt = 1; attempt <= workflow.previousStepVerifyAttempts; attempt++) {
             if (workflow.previousStepVerifyDelayMs > 0L) {

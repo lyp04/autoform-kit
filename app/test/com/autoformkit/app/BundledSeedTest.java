@@ -65,6 +65,8 @@ public class BundledSeedTest {
             assertEquals(1, workflow.roundLedgerRetentionDays);
             assertNotNull(previous.getJSONArray("scanPrecheckExcludedResultKeys"));
             assertNotNull(previous.getJSONArray("triggerResultKeys"));
+            assertNotNull(previous.getJSONArray("directCreateResultKeys"));
+            assertTrue(workflow.directCreateResultKeys.isEmpty());
             assertNotNull(previous.getJSONArray("artifacts"));
             assertNotNull(previous.getJSONArray("templates"));
         }

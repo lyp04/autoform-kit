@@ -909,8 +909,18 @@ final class CatalogPromotionValidator {
         }
         stringArray(previous.opt("scanPrecheckExcludedResultKeys"),
             path + ".workflow.previousSteps.scanPrecheckExcludedResultKeys", resultKeys);
-        stringArray(previous.opt("triggerResultKeys"),
+        Set<String> triggerResultKeys = stringArray(previous.opt("triggerResultKeys"),
             path + ".workflow.previousSteps.triggerResultKeys", resultKeys);
+        Set<String> directCreateResultKeys = previous.has("directCreateResultKeys")
+            ? stringArray(previous.opt("directCreateResultKeys"),
+                path + ".workflow.previousSteps.directCreateResultKeys", resultKeys)
+            : Collections.emptySet();
+        if (!triggerResultKeys.containsAll(directCreateResultKeys)) {
+            reject(path + ".workflow.previousSteps.directCreateResultKeys");
+        }
+        if (!directCreateResultKeys.isEmpty() && !workflow.previousStepsEnabled) {
+            reject(path + ".workflow.previousSteps.directCreateResultKeys");
+        }
 
         JSONObject correction = requiredObject(previous.opt("identifierCorrection"),
             path + ".workflow.previousSteps.identifierCorrection");
@@ -1131,6 +1141,13 @@ final class CatalogPromotionValidator {
         if (configured(previous, "triggerResultKeys")) {
             stringArray(previous.opt("triggerResultKeys"),
                 path + ".workflow.previousSteps.triggerResultKeys", resultKeys);
+        }
+        if (configured(previous, "directCreateResultKeys")) {
+            Set<String> direct = stringArray(previous.opt("directCreateResultKeys"),
+                path + ".workflow.previousSteps.directCreateResultKeys", resultKeys);
+            if (!workflow.previousStepTriggerResultKeys.containsAll(direct)) {
+                reject(path + ".workflow.previousSteps.directCreateResultKeys");
+            }
         }
         if (configured(previous, "scanPrecheckExcludedResultKeys")) {
             stringArray(previous.opt("scanPrecheckExcludedResultKeys"),

@@ -16,6 +16,7 @@ function workflowPolicy(overrides = {}) {
       scanPrecheck: false,
       scanPrecheckExcludedResultKeys: [],
       triggerResultKeys: [],
+      directCreateResultKeys: [],
       artifacts: [],
       legacyDraftArtifactKey: "",
       templates: [],
@@ -157,6 +158,7 @@ test("AI and template conversion preserve runtime-only modules", () => {
         scanPrecheck: true,
         scanPrecheckExcludedResultKeys: ["review"],
         triggerResultKeys: ["accepted"],
+        directCreateResultKeys: ["accepted"],
         artifacts: [],
         templates: []
       },
@@ -240,6 +242,7 @@ test("profile-specific scanner and workflow policy is validated", () => {
         scanPrecheck: false,
         scanPrecheckExcludedResultKeys: [],
         triggerResultKeys: [],
+        directCreateResultKeys: [],
         artifacts: [],
         templates: []
       }
@@ -260,6 +263,63 @@ test("profile-specific scanner and workflow policy is validated", () => {
     "workflow.materials.refreshBeforeSubmit must be a boolean",
     "workflow.notifications.submissionSummary must be a boolean"
   ]);
+});
+
+test("direct-create results must be declared result keys and a trigger subset", () => {
+  const profile = baseProfile({
+    gradeMap: {
+      accepted: { field: "decision", label: "Accepted", value: "accepted" },
+      review: { field: "decision", label: "Review", value: "review" }
+    },
+    workflow: workflowPolicy({
+      previousSteps: {
+        enabled: true,
+        triggerResultKeys: ["accepted"],
+        directCreateResultKeys: ["accepted"],
+        templates: [{
+          templateId: 7001,
+          warehouseId: 71,
+          sku: "SAMPLE-STATIC",
+          fixedData: {},
+          serialField: "sample-serial",
+          photoBindings: [],
+          delayAfterMs: 0
+        }]
+      }
+    })
+  });
+  assert.deepEqual(validateFormProfile(profile), []);
+
+  profile.workflow.previousSteps.directCreateResultKeys = ["review"];
+  assert.ok(validateFormProfile(profile).includes(
+    "workflow.previousSteps.directCreateResultKeys[0] must reference triggerResultKeys"));
+
+  profile.workflow.previousSteps.directCreateResultKeys = ["unknown-result"];
+  const unknownErrors = validateFormProfile(profile);
+  assert.ok(unknownErrors.includes(
+    "workflow.previousSteps.directCreateResultKeys[0] must reference gradeMap"));
+  assert.ok(unknownErrors.includes(
+    "workflow.previousSteps.directCreateResultKeys[0] must reference triggerResultKeys"));
+
+  profile.workflow.previousSteps.directCreateResultKeys = ["accepted", "accepted"];
+  assert.ok(validateFormProfile(profile).includes(
+    "workflow.previousSteps.directCreateResultKeys[1] must not be duplicated"));
+
+  delete profile.gradeMap;
+  profile.workflow.previousSteps.directCreateResultKeys = ["accepted"];
+  assert.ok(validateFormProfile(profile).includes(
+    "workflow.previousSteps.directCreateResultKeys[0] must reference gradeMap"));
+
+  profile.gradeMap = {
+    accepted: { field: "decision", label: "Accepted", value: "accepted" }
+  };
+  profile.workflow.previousSteps.enabled = false;
+  assert.ok(validateFormProfile(profile).includes(
+    "workflow.previousSteps.directCreateResultKeys requires enabled=true"));
+
+  profile.workflow.previousSteps.directCreateResultKeys = "accepted";
+  assert.ok(validateFormProfile(profile).includes(
+    "workflow.previousSteps.directCreateResultKeys must be an array"));
 });
 
 test("notification profileLabel is optional, explicit and bounded", () => {
@@ -364,6 +424,7 @@ test("generic result keys and declarative previous-step artifacts are validated"
         scanPrecheck: true,
         scanPrecheckExcludedResultKeys: [],
         triggerResultKeys: ["accepted"],
+        directCreateResultKeys: ["accepted"],
         artifacts: [{
           key: "overview",
           title: "Overview",
@@ -515,7 +576,7 @@ test("identifier correction and scan-precheck decisions are strictly validated",
 test("legacy previous-step profiles may omit new decision sections", () => {
   const profile = baseProfile({ workflow: workflowPolicy() });
   for (const key of [
-    "identifierCorrection", "identifierCasePolicy", "scanPrecheckPolicy",
+    "directCreateResultKeys", "identifierCorrection", "identifierCasePolicy", "scanPrecheckPolicy",
     "verifyAttempts", "verifyDelayMs", "recipeMaxAttempts", "recipeRetryDelayMs"
   ]) delete profile.workflow.previousSteps[key];
   assert.deepEqual(validateFormProfile(profile), []);

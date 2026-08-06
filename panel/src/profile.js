@@ -223,10 +223,28 @@ function validateRuntimePolicy(profile, resultKeys, errors) {
       "workflow.previousSteps.scanPrecheckExcludedResultKeys", errors);
     validateStringArrayIfPresent(previous.triggerResultKeys,
       "workflow.previousSteps.triggerResultKeys", errors);
+    validateStringArrayIfPresent(previous.directCreateResultKeys,
+      "workflow.previousSteps.directCreateResultKeys", errors);
     validateResultKeyReferences(previous.scanPrecheckExcludedResultKeys,
       "workflow.previousSteps.scanPrecheckExcludedResultKeys", resultKeys, errors);
     validateResultKeyReferences(previous.triggerResultKeys,
       "workflow.previousSteps.triggerResultKeys", resultKeys, errors);
+    if (Array.isArray(previous.directCreateResultKeys)) {
+      const triggerResultKeys = new Set(Array.isArray(previous.triggerResultKeys)
+        ? previous.triggerResultKeys : []);
+      const directCreateResultKeys = new Set();
+      previous.directCreateResultKeys.forEach((key, index) => {
+        if (typeof key !== "string" || !key.trim()) return;
+        const path = `workflow.previousSteps.directCreateResultKeys[${index}]`;
+        if (!resultKeys.has(key)) errors.push(`${path} must reference gradeMap`);
+        if (!triggerResultKeys.has(key)) errors.push(`${path} must reference triggerResultKeys`);
+        if (directCreateResultKeys.has(key)) errors.push(`${path} must not be duplicated`);
+        directCreateResultKeys.add(key);
+      });
+      if (previous.directCreateResultKeys.length > 0 && previous.enabled !== true) {
+        errors.push("workflow.previousSteps.directCreateResultKeys requires enabled=true");
+      }
+    }
     if (previous.scanPrecheck === true && previous.enabled !== true) {
       errors.push("workflow.previousSteps.scanPrecheck requires enabled=true");
     }

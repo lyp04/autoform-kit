@@ -528,6 +528,7 @@ function settingsPanel(p){
         scanPrecheck:false,
         scanPrecheckExcludedResultKeys:[],
         triggerResultKeys:[],
+        directCreateResultKeys:[],
         artifacts:[],
         legacyDraftArtifactKey:"",
         templates:[],
@@ -746,6 +747,12 @@ function settingsPanel(p){
   });
   triggers.placeholder="填写结果 key；留空表示不按结果触发";
   runtime.appendChild(field("自动前置步骤触发结果（逗号分隔）",triggers));
+
+  const directCreates=inputCtl((previousPolicy.directCreateResultKeys||[]).join(", "), value=>{
+    updateWorkflow("previousSteps","directCreateResultKeys",value.split(",").map(x=>x.trim()).filter(Boolean));
+  });
+  directCreates.placeholder="必须同时出现在自动触发结果中；留空=创建前先查询";
+  runtime.appendChild(field("跳过创建前查询并直接创建的结果（逗号分隔）",directCreates));
 
   const artifacts=document.createElement("textarea"); artifacts.spellcheck=false;
   artifacts.style.cssText="min-height:140px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre";

@@ -42,6 +42,7 @@ final class ProfileWorkflow {
     final boolean scanPrecheckEnabled;
     final Set<String> scanPrecheckExcludedResultKeys;
     final Set<String> previousStepTriggerResultKeys;
+    final Set<String> directCreateResultKeys;
     final List<WorkflowArtifact> workflowArtifacts;
     final String legacyDraftArtifactKey;
     final List<PreviousStepRecipe> previousStepRecipes;
@@ -96,6 +97,7 @@ final class ProfileWorkflow {
                             boolean previousStepsEnabled,
                             boolean scanPrecheckEnabled, Set<String> scanPrecheckExcludedResultKeys,
                             Set<String> previousStepTriggerResultKeys,
+                            Set<String> directCreateResultKeys,
                             List<WorkflowArtifact> workflowArtifacts,
                             String legacyDraftArtifactKey,
                             List<PreviousStepRecipe> previousStepRecipes,
@@ -116,6 +118,8 @@ final class ProfileWorkflow {
             new LinkedHashSet<>(scanPrecheckExcludedResultKeys));
         this.previousStepTriggerResultKeys = Collections.unmodifiableSet(
             new LinkedHashSet<>(previousStepTriggerResultKeys));
+        this.directCreateResultKeys = Collections.unmodifiableSet(
+            new LinkedHashSet<>(directCreateResultKeys));
         this.workflowArtifacts = Collections.unmodifiableList(new ArrayList<>(workflowArtifacts));
         this.legacyDraftArtifactKey = legacyDraftArtifactKey == null
             ? "" : legacyDraftArtifactKey;
@@ -180,7 +184,8 @@ final class ProfileWorkflow {
         JSONObject workflow = profile == null ? null : profile.optJSONObject("workflow");
         if (workflow == null) {
             return new ProfileWorkflow(false, false, false, false, Collections.emptySet(),
-                Collections.emptySet(), Collections.emptyList(), "", Collections.emptyList(),
+                Collections.emptySet(), Collections.emptySet(), Collections.emptyList(), "",
+                Collections.emptyList(),
                 Collections.emptyList(), Collections.emptyList(),
                 ParsedPreviousStepPolicies.defaults(),
                 false, false, false, false, "", ParsedPolicies.defaults());
@@ -205,6 +210,8 @@ final class ProfileWorkflow {
 
         Set<String> triggers = strings(previous == null ? null
             : previous.optJSONArray("triggerResultKeys"));
+        Set<String> directCreate = strings(previous == null ? null
+            : previous.optJSONArray("directCreateResultKeys"));
         List<String> dynamicRecipeErrors = new ArrayList<>();
         List<WorkflowArtifact> artifacts = new ArrayList<>();
         JSONArray artifactJson = previous == null ? null : previous.optJSONArray("artifacts");
@@ -250,7 +257,7 @@ final class ProfileWorkflow {
         return new ProfileWorkflow(true, hasExplicitOperationalPolicies(
                 workflow, previous, photos, duplicate, printing, materials, submission, notifications),
             previousEnabled, scanPrecheck, exclusions,
-            triggers, artifacts, legacyArtifactKey, recipes, dynamicRecipes,
+            triggers, directCreate, artifacts, legacyArtifactKey, recipes, dynamicRecipes,
             dynamicRecipeErrors, previousPolicies,
             includeOptionalPhotos, duplicateEnabled, refreshMaterials,
             submissionSummaryNotification, notificationProfileLabel, policies);
@@ -270,7 +277,8 @@ final class ProfileWorkflow {
             ? null : submission.optJSONObject("networkRetry");
         return strictBoolean(workflow, "compatibilityReviewed", false)
             && hasKeys(previous, "enabled", "scanPrecheck", "scanPrecheckExcludedResultKeys",
-                "triggerResultKeys", "artifacts", "legacyDraftArtifactKey", "templates",
+                "triggerResultKeys", "directCreateResultKeys", "artifacts",
+                "legacyDraftArtifactKey", "templates",
                 "identifierCorrection",
                 "identifierCasePolicy", "scanPrecheckPolicy", "verifyAttempts", "verifyDelayMs",
                 "recipeMaxAttempts", "recipeRetryDelayMs")
@@ -307,6 +315,12 @@ final class ProfileWorkflow {
         String value = resultKey == null ? "" : resultKey.trim();
         return previousStepsEnabled && !previousStepRecipes.isEmpty()
             && previousStepTriggerResultKeys.contains(value);
+    }
+
+    /** Panel-owned opt-in for results whose previous-step chain is known not to exist yet. */
+    boolean shouldDirectCreatePreviousSteps(String resultKey) {
+        String value = resultKey == null ? "" : resultKey.trim();
+        return previousStepsEnabled && directCreateResultKeys.contains(value);
     }
 
     /** Dynamic recipes remain typed separately; MainActivity merges them by sourceIndex at runtime. */

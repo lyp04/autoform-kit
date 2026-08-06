@@ -434,6 +434,7 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
       "scanPrecheck": false,
       "scanPrecheckExcludedResultKeys": [],
       "triggerResultKeys": [],
+      "directCreateResultKeys": [],
       "identifierCorrection": {
         "enabled": false,
         "substitutions": [],
@@ -543,6 +544,7 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
 | `scanPrecheck` | 扫描后预检；只在总开关同时开启时生效。 |
 | `scanPrecheckExcludedResultKeys` | 不执行扫描预检的 result key 数组；key 无预设集合，但必须引用当前 `gradeMap`。 |
 | `triggerResultKeys` | 允许自动执行 templates 的 result key 数组；必须引用当前 `gradeMap`，空数组表示不自动触发。 |
+| `directCreateResultKeys` | 不做创建前存在性查询、直接执行 templates 的 result key 数组；必须引用当前 `gradeMap` 且是 `triggerResultKeys` 的子集。空数组保持“先查询，明确缺失后再创建”。 |
 | `identifierCorrection` | 标识字符纠正规则；缺失时关闭，且不应用任何替换。 |
 | `identifierCasePolicy` | `preserve` 保持扫描值；`match_existing` 才允许按已找到的上一工序标识调整大小写。缺失时为 `preserve`。 |
 | `scanPrecheckPolicy` | 扫描预检找不到上一工序时的有限尝试次数及达到上限前/后的动作。 |
@@ -552,6 +554,8 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
 | `legacyDraftArtifactKey` | 旧 v1 草稿中未命名 `aStepPhotoPath` 的显式兼容目标。空字符串表示不映射；非空时必须精确引用一个 `artifacts[].key`。App 不会按附件数量、标题或顺序猜测。 |
 | `artifacts` | 可选附件定义；每项包含唯一 `key`、`title`、可选 `titleI18n`、boolean `required` 与 Panel-owned `uploadNameTemplate`。 |
 | `templates` | 可选 recipe 数组；只有总开关开启、数组非空且当前 result key 命中 `triggerResultKeys` 时才执行。 |
+
+`directCreateResultKeys` 只改变 recipe 创建前的存在性 GET。当前结果命中该数组、且没有可精确匹配当前草稿与 recipe 链的持久 receipt 时，App 跳过创建前 GET，仍按 `triggerResultKeys`、`templates` 及照片 source/binding 执行 recipe；创建完成后仍按 `verifyAttempts` / `verifyDelayMs` 做存在性 GET 复核。精确持久 receipt 的续跑与恢复优先，不会因这个字段被忽略或重建。若还要避免扫码后的快速 GET，同一 result key 也必须列入 `scanPrecheckExcludedResultKeys`。移除 trigger、清空 templates 或关闭总开关都会同时关闭 recipe 与其照片上传，不能用来表达“跳过查询但仍上传照片”。
 
 `identifierCorrection` 的结构为：
 

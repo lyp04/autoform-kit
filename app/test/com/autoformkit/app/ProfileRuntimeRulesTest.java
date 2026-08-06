@@ -23,6 +23,8 @@ public class ProfileRuntimeRulesTest {
         assertFalse(workflow.declared);
         assertFalse(workflow.operationalPoliciesExplicit);
         assertFalse(workflow.previousStepsEnabled);
+        assertTrue(workflow.directCreateResultKeys.isEmpty());
+        assertFalse(workflow.shouldDirectCreatePreviousSteps("sample-review"));
         assertFalse(workflow.identifierCorrectionEnabled);
         assertTrue(workflow.identifierSubstitutions.isEmpty());
         assertTrue(workflow.identifierCorrectionResultKeys.isEmpty());
@@ -180,6 +182,7 @@ public class ProfileRuntimeRulesTest {
                 .put("scanPrecheck", true)
                 .put("scanPrecheckExcludedResultKeys", new JSONArray().put("sample-hold"))
                 .put("triggerResultKeys", new JSONArray().put("sample-review"))
+                .put("directCreateResultKeys", new JSONArray().put("sample-review"))
                 .put("artifacts", new JSONArray().put(new JSONObject()
                     .put("key", "example-evidence")
                     .put("title", "Example evidence")
@@ -207,9 +210,12 @@ public class ProfileRuntimeRulesTest {
         assertTrue(workflow.shouldScanPrecheck("sample-ready"));
         assertFalse(workflow.shouldScanPrecheck("sample-hold"));
         assertTrue(workflow.shouldAutoCreatePreviousSteps("sample-review"));
+        assertTrue(workflow.shouldDirectCreatePreviousSteps("sample-review"));
+        assertFalse(workflow.shouldDirectCreatePreviousSteps("sample-ready"));
         assertTrue(workflow.submissionSummaryNotificationEnabled);
         assertEquals("Example notification line", workflow.notificationProfileLabel);
         assertFalse(workflow.shouldAutoCreatePreviousSteps("SAMPLE-REVIEW"));
+        assertFalse(workflow.shouldDirectCreatePreviousSteps("SAMPLE-REVIEW"));
         assertEquals("example-evidence", workflow.workflowArtifacts.get(0).key);
         assertEquals("UNIT_01-sample-evidence.jpg",
             workflow.workflowArtifactUploadName("example-evidence", "UNIT/01", 1));

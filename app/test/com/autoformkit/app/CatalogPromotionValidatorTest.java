@@ -359,6 +359,41 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void directCreateResultsMustBeExplicitValidRecipeTriggers()
+            throws Exception {
+        JSONObject valid = catalogWithDynamicPreviousStep();
+        JSONObject validPrevious = firstProfile(valid).getJSONObject("workflow")
+            .getJSONObject("previousSteps");
+        validPrevious.put("enabled", true)
+            .put("triggerResultKeys", new JSONArray().put("sample-ready"))
+            .put("directCreateResultKeys", new JSONArray().put("sample-ready"));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+        assertTrue(CatalogPromotionValidator.isExecutableWithConfig(valid, config()));
+
+        JSONObject notTriggered = copy(valid);
+        firstProfile(notTriggered).getJSONObject("workflow")
+            .getJSONObject("previousSteps")
+            .put("triggerResultKeys", new JSONArray());
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(notTriggered));
+
+        JSONObject disabled = copy(valid);
+        firstProfile(disabled).getJSONObject("workflow")
+            .getJSONObject("previousSteps").put("enabled", false);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(disabled));
+
+        JSONObject duplicate = copy(valid);
+        firstProfile(duplicate).getJSONObject("workflow")
+            .getJSONObject("previousSteps").put("directCreateResultKeys",
+                new JSONArray().put("sample-ready").put("sample-ready"));
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(duplicate));
+
+        JSONObject missingRequiredField = copy(valid);
+        firstProfile(missingRequiredField).getJSONObject("workflow")
+            .getJSONObject("previousSteps").remove("directCreateResultKeys");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(missingRequiredField));
+    }
+
+    @Test
     public void executablePreviousStepRecipesRequireOperationScopedOutcomeEvidence()
             throws Exception {
         JSONObject retrying = catalogWithDynamicPreviousStep();

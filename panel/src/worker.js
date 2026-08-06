@@ -519,6 +519,7 @@ const REQUIRED_OPERATIONAL_POLICY_PATHS = Object.freeze([
   "workflow.previousSteps.scanPrecheck",
   "workflow.previousSteps.scanPrecheckExcludedResultKeys",
   "workflow.previousSteps.triggerResultKeys",
+  "workflow.previousSteps.directCreateResultKeys",
   "workflow.previousSteps.artifacts",
   "workflow.previousSteps.legacyDraftArtifactKey",
   "workflow.previousSteps.templates",

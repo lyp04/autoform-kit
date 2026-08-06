@@ -26,6 +26,7 @@ const REQUIRED_PUBLISH_POLICY_PATHS = [
   "workflow.previousSteps.scanPrecheck",
   "workflow.previousSteps.scanPrecheckExcludedResultKeys",
   "workflow.previousSteps.triggerResultKeys",
+  "workflow.previousSteps.directCreateResultKeys",
   "workflow.previousSteps.artifacts",
   "workflow.previousSteps.legacyDraftArtifactKey",
   "workflow.previousSteps.templates",
@@ -105,6 +106,7 @@ test("public sample profiles use explicit fail-safe workflow policies", () => {
     assert.equal(profile.workflow.previousSteps.recipeMaxAttempts, 1);
     assert.equal(profile.workflow.previousSteps.recipeRetryDelayMs, 0);
     assert.equal(profile.workflow.previousSteps.legacyDraftArtifactKey, "");
+    assert.deepEqual(profile.workflow.previousSteps.directCreateResultKeys, []);
     assert.deepEqual(profile.workflow.photos, { includeOptionalSlots: false });
     assert.deepEqual(profile.workflow.alternateEntries, { enabled: false, entries: [] });
     assert.deepEqual(profile.workflow.duplicateCheck, {
@@ -442,6 +444,7 @@ test("Panel exposes structured controls for each workflow decision", async () =>
     "前置步骤复核等待（毫秒）",
     "前置配方提交最多尝试",
     "前置配方重试等待（毫秒）",
+    "跳过创建前查询并直接创建的结果（逗号分隔）",
     "标识字符替换（最多 8 项；每格恰好一个字符）",
     "启用缺失列表项恢复",
     "提交前刷新列表项",
