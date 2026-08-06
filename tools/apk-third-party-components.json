@@ -2900,7 +2900,7 @@
       ]
     },
     {
-      "id": "official-gradle-release-v1.0.8-beta.2-direct-create",
+      "id": "official-gradle-release-v1.0.8-beta.2-final",
       "buildType": "release",
       "generatedBy": "Android Gradle Plugin 8.7.3",
       "dexStringComponents": [
@@ -2910,7 +2910,7 @@
       "entries": [
         {
           "path": "assets/dexopt/baseline.prof",
-          "sha256": "bc29ff1f1a6919d89b1c71241f2e0572fa5fb4ccf7759225638cb333910c3172",
+          "sha256": "499d925749e51ccceff312003529d87c52f67296b34d85c2fbb4c27e78354750",
           "component": "androidx-runtime-baseline-profiles",
           "kind": "runtime-profile"
         },
