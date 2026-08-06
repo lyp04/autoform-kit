@@ -118,6 +118,8 @@ final class CatalogPromotionValidator {
         }
         validateDailyStatsAlternateEntries(
             catalogRoot.optJSONObject("settings"), states);
+        validateDailyStatsAlternateOnlyFlatCoverage(
+            catalogRoot.optJSONObject("settings"));
 
         // A visible profile or either side of an alternate link can open a remote workflow.
         for (ProfileState state : states) {
@@ -467,7 +469,8 @@ final class CatalogPromotionValidator {
             validateRequiredUiColor(item.opt("uiColor"), itemPath + ".uiColor");
 
             JSONArray selectors = requiredArray(item.opt("selectors"), itemPath + ".selectors");
-            if (selectors.length() < 1 || selectors.length() > MAX_DAILY_STATS_V2_SELECTORS) {
+            if ((!flat && selectors.length() < 1)
+                    || selectors.length() > MAX_DAILY_STATS_V2_SELECTORS) {
                 reject(itemPath + ".selectors.length");
             }
             Set<String> localPairs = new LinkedHashSet<>();
@@ -580,6 +583,48 @@ final class CatalogPromotionValidator {
             enabledEntriesByVisibleSource);
         validateDailyStatsAlternateItems(flatSummaries, path + ".flatSummaries", flatIds,
             enabledEntriesByVisibleSource);
+    }
+
+    /**
+     * A v2 flat row without ordinary result selectors is meaningful only when the supplemental
+     * independent-entry contract supplies at least one exact source/entry selector for the same
+     * id. The preceding validators establish the shape, reference closure, and uniqueness of both
+     * objects; this final joint check prevents an unbacked zero row from reaching the App.
+     */
+    private static void validateDailyStatsAlternateOnlyFlatCoverage(JSONObject settings) {
+        JSONObject v2 = settings == null ? null : settings.optJSONObject("dailyStatsV2");
+        if (v2 == null) return;
+        JSONArray flatSummaries = requiredArray(
+            v2.opt("flatSummaries"), "settings.dailyStatsV2.flatSummaries");
+        Set<String> alternateFlatIds = new LinkedHashSet<>();
+        JSONObject alternate = settings.optJSONObject("dailyStatsAlternateEntries");
+        JSONArray alternateFlat = alternate == null ? null
+            : alternate.optJSONArray("flatSummaries");
+        for (int index = 0; alternateFlat != null && index < alternateFlat.length(); index++) {
+            JSONObject item = objectAt(alternateFlat, index,
+                "settings.dailyStatsAlternateEntries.flatSummaries");
+            JSONArray selectors = requiredArray(item.opt("selectors"),
+                "settings.dailyStatsAlternateEntries.flatSummaries[" + index
+                    + "].selectors");
+            if (selectors.length() > 0) {
+                alternateFlatIds.add(requiredText(item.opt("id"),
+                    "settings.dailyStatsAlternateEntries.flatSummaries[" + index + "].id"));
+            }
+        }
+        for (int index = 0; index < flatSummaries.length(); index++) {
+            JSONObject item = objectAt(flatSummaries, index,
+                "settings.dailyStatsV2.flatSummaries");
+            JSONArray selectors = requiredArray(item.opt("selectors"),
+                "settings.dailyStatsV2.flatSummaries[" + index + "].selectors");
+            if (selectors.length() == 0) {
+                String id = requiredText(item.opt("id"),
+                    "settings.dailyStatsV2.flatSummaries[" + index + "].id");
+                if (!alternateFlatIds.contains(id)) {
+                    reject("settings.dailyStatsV2.flatSummaries[" + index
+                        + "].selectors.alternateCoverage");
+                }
+            }
+        }
     }
 
     private static void validateDailyStatsAlternateItems(

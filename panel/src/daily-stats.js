@@ -288,7 +288,12 @@ export function validateDailyStatsV2(value, profiles) {
     if (!Array.isArray(item.selectors)) {
       errors.push(`${path}.selectors must be an array`);
     } else {
-      if (item.selectors.length === 0) errors.push(`${path}.selectors must not be empty`);
+      // A flat summary may be backed entirely by alternate-entry events. The joint
+      // validator below requires an exact, non-empty alternate mapping for that id;
+      // ABC groups continue to require at least one ordinary profile/result pair.
+      if (isGroup && item.selectors.length === 0) {
+        errors.push(`${path}.selectors must not be empty`);
+      }
       if (item.selectors.length > DAILY_STATS_V2_MAX_SELECTORS) {
         errors.push(`${path}.selectors must contain at most ${DAILY_STATS_V2_MAX_SELECTORS} items`);
       }
@@ -371,9 +376,22 @@ export function validateDailyStatsV2(value, profiles) {
  * collections intentionally have separate pair namespaces, so one event may contribute to both.
  */
 export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles) {
-  if (value === undefined) return [];
   const errors = [];
   const root = "dailyStatsAlternateEntries";
+  const dailyStatsV2Errors = isPlainObject(dailyStatsV2)
+    ? validateDailyStatsV2(dailyStatsV2, profiles) : ["dailyStatsV2 is missing"];
+  const alternateOnlyFlatSummaryIds = dailyStatsV2Errors.length === 0
+    ? (dailyStatsV2.flatSummaries || [])
+      .filter((item) => isPlainObject(item)
+        && Array.isArray(item.selectors) && item.selectors.length === 0
+        && typeof item.id === "string" && item.id.trim())
+      .map((item) => item.id.trim())
+    : [];
+  const missingAlternateFlatSummaryError = (id) =>
+    `${root}.flatSummaries must provide non-empty selectors for dailyStatsV2 flat summary ${JSON.stringify(id)} because its selectors are empty`;
+  if (value === undefined) {
+    return alternateOnlyFlatSummaryIds.map(missingAlternateFlatSummaryError);
+  }
   if (!isPlainObject(value)) return [`${root} must be an object`];
   allowOnly(value, DAILY_STATS_ALTERNATE_ENTRIES_KEYS, root, errors);
   if (value.version !== DAILY_STATS_ALTERNATE_ENTRIES_VERSION) {
@@ -394,8 +412,6 @@ export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles
     errors.push(`${root}.flatSummaries must contain at most ${DAILY_STATS_V2_MAX_FLAT_SUMMARIES} items`);
   }
 
-  const dailyStatsV2Errors = isPlainObject(dailyStatsV2)
-    ? validateDailyStatsV2(dailyStatsV2, profiles) : ["dailyStatsV2 is missing"];
   if (dailyStatsV2Errors.length > 0) {
     errors.push(`${root} requires a valid dailyStatsV2`);
   }
@@ -407,6 +423,7 @@ export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles
   const itemIds = new Set();
   const assignedGroupPairs = new Map();
   const assignedFlatPairs = new Map();
+  const coveredAlternateOnlyFlatSummaryIds = new Set();
 
   function validateItem(item, collection, itemIndex) {
     const path = `${root}.${collection}[${itemIndex}]`;
@@ -437,6 +454,11 @@ export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles
     }
     if (item.selectors.length > DAILY_STATS_V2_MAX_SELECTORS) {
       errors.push(`${path}.selectors must contain at most ${DAILY_STATS_V2_MAX_SELECTORS} items`);
+    }
+    if (collection === "flatSummaries" && id
+        && item.selectors.length > 0
+        && alternateOnlyFlatSummaryIds.includes(id)) {
+      coveredAlternateOnlyFlatSummaryIds.add(id);
     }
     const itemPairs = new Set();
     const assignedPairs = collection === "groups"
@@ -473,6 +495,11 @@ export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles
   if (flatSummaries) {
     flatSummaries.forEach((item, index) =>
       validateItem(item, "flatSummaries", index));
+  }
+  for (const id of alternateOnlyFlatSummaryIds) {
+    if (!coveredAlternateOnlyFlatSummaryIds.has(id)) {
+      errors.push(missingAlternateFlatSummaryError(id));
+    }
   }
   return errors;
 }

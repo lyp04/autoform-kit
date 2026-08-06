@@ -61,7 +61,7 @@ GitHub。首次 R2-only publish 后 GitHub 可能过期，移除 binding 或直�
 - `notificationAdapter`：只由 Worker 使用的 provider contract；v2 使用 `eventTemplates`，v3 使用两个私有 `summary` / `problem` delivery，并可为固定 round 字段配置受限 formatter；
 - `diagnosticsPolicy`：最小化结构化故障事件总开关，缺失或 `enabled:false` 时关闭；
 - `dailyStats`：给旧 App 保留的可选 result-key 汇总，迁移期间保持原值；
-- `dailyStatsV2`：新版 App 的可选精确汇总；selector 结构化选择 profile/result pair，groups 组成总数，flat summaries 只附加显示，缺失时新版 App 回退 v1；
+- `dailyStatsV2`：新版 App 的可选精确汇总；selector 结构化选择 profile/result pair，groups 组成总数，flat summaries 只附加显示；仅由独立录入供数的 flat summary 可把普通 selectors 留空，但必须与同 id 的非空 `dailyStatsAlternateEntries` 映射原子保存，缺失 v2 时新版 App 回退 v1；
 - `dailyStatsAlternateEntries`：按显式 source profile / entry identity 把独立录入计数归入已有 v2 group 或 flat summary；与普通结果计数分离，不能从入口标题或 backend result 推断；
 - `brand`：设置页标题前缀；不改变 launcher 或普通表单页标题；
 - `updateSource` v1：公开 GitHub Releases 更新源，只允许 `version:1`、`owner`、`repo`；Panel 同时保留同值的 `updateOwner` / `updateRepo` 供旧 App 读取；

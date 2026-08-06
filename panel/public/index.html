@@ -1738,7 +1738,7 @@ function renderDailyStatsV2Editors(){
   $("addDailyStatsV2FlatBtn").disabled=DAILY_STATS_V2_GROUPS_WORKING.length===0
     || DAILY_STATS_V2_FLAT_WORKING.length>=8;
 }
-function buildDailyStatsV2(){
+function buildDailyStatsV2(alternateOnlyFlatIds=new Set()){
   if(!DAILY_STATS_V2_GROUPS_WORKING.length&&!DAILY_STATS_V2_FLAT_WORKING.length) return null;
   if(!DAILY_STATS_V2_GROUPS_WORKING.length) throw new Error("dailyStatsV2 至少需要一个精确分组");
   if(DAILY_STATS_V2_GROUPS_WORKING.length>16) throw new Error("dailyStatsV2 精确分组最多 16 项");
@@ -1756,7 +1756,12 @@ function buildDailyStatsV2(){
     if(label.length>160) throw new Error(title+" 的显示标签最长 160 个字符");
     const uiColor=String(item.uiColor||"");
     if(!/^#[0-9A-Fa-f]{6}$/.test(uiColor)) throw new Error(title+" 的颜色必须是 #RRGGBB");
-    if(!Array.isArray(item.selectors)||!item.selectors.length) throw new Error(title+" 至少选择一个表单 + result key");
+    if(!Array.isArray(item.selectors)) throw new Error(title+" 的 selectors 必须是数组");
+    if(!item.selectors.length&&(kind==="group"||!alternateOnlyFlatIds.has(id))){
+      throw new Error(title+(kind==="group"
+        ?" 至少选择一个表单 + result key"
+        :" 至少选择一个表单 + result key 或独立录入入口"));
+    }
     if(item.selectors.length>512) throw new Error(title+" 最多选择 512 个 selector");
     const localPairs=new Set(); const selectorResultKeys=new Set();
     const selectors=item.selectors.map((selector,selectorIndex)=>{
@@ -1900,8 +1905,10 @@ $("saveDailyStatsBtn").onclick=async()=>{
 $("saveDailyStatsV2Btn").onclick=async()=>{
   let dailyStatsV2,dailyStatsAlternateEntries;
   try {
-    dailyStatsV2=buildDailyStatsV2();
     dailyStatsAlternateEntries=buildDailyStatsAlternateEntries();
+    const alternateOnlyFlatIds=new Set(
+      (dailyStatsAlternateEntries?.flatSummaries||[]).map(item=>item.id));
+    dailyStatsV2=buildDailyStatsV2(alternateOnlyFlatIds);
   }
   catch(e){ $("dailyStatsV2Msg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return; }
   const btn=$("saveDailyStatsV2Btn"),label=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("dailyStatsV2Msg").textContent="";
@@ -2035,8 +2042,10 @@ $("saveNotifyBtn").onclick = async () => {
     backendAdapter.auth=Object.assign({},backendAdapter.auth||{}, { sessionInvalidCodes, sessionInvalidMessagePatterns });
     updateSource=buildUpdateSource(updateOwner, updateRepo);
     dailyStats=buildDailyStats();
-    dailyStatsV2=buildDailyStatsV2();
     dailyStatsAlternateEntries=buildDailyStatsAlternateEntries();
+    const alternateOnlyFlatIds=new Set(
+      (dailyStatsAlternateEntries?.flatSummaries||[]).map(item=>item.id));
+    dailyStatsV2=buildDailyStatsV2(alternateOnlyFlatIds);
   } catch (e) {
     $("notifyMsg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return;
   }

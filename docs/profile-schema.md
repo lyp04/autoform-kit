@@ -106,7 +106,7 @@ v1 只有 result key，没有 profile identity；同一个 key 在不同 profile
 
 - 根对象只允许 `version`、`scope`、`groups`、`flatSummaries`；`version` 必须是整数 `2`，`scope` 必须是 `all_profiles`。`groups` 必须有 `1..16` 项，`flatSummaries` 必须有 `0..8` 项。
 - 每个 group 只允许 `id`、`label`、可选 `labelI18n`、`uiColor`、`selectors` 与可选 `legacyResultKeys`；flat summary 不允许 `legacyResultKeys`。两类 item 的 `id` 在整个 v2 对象内全局唯一，最长 128 characters。标签只允许 fallback 与可选 `en` / `es`，各最长 160 characters；颜色必须是完整 `#RRGGBB`。
-- `selectors` 必须有 `1..512` 项；每项只允许非空、无首尾空白且最长 256 characters 的 `profileId` / `resultKey`。该 pair 必须由对应的显式 `pickerVisible:true` profile 自己的 `gradeMap` 声明，不能只因另一个 profile 有同名 key 而通过。
+- group 的 `selectors` 必须有 `1..512` 项；flat summary 通常也遵循该范围，但当其计数全部来自独立录入时可以显式写 `[]`，前提是 `dailyStatsAlternateEntries.flatSummaries` 中存在同 `id`、非空且完整有效的入口映射。缺少该联合映射时 Panel 拒绝发布，Worker/App 也不会下发或显示一个误导性的零值行。非空 selector 每项只允许无首尾空白且最长 256 characters 的 `profileId` / `resultKey`；该 pair 必须由对应的显式 `pickerVisible:true` profile 自己的 `gradeMap` 声明，不能只因另一个 profile 有同名 key 而通过。
 - 同一 item 内 pair 不得重复；pair 不得跨 groups 重复，也不得跨 flat summaries 重复。flat summary 可以明确复用 group 中的 pair，因为它是附加展示，不是另一个主分组。
 - `legacyResultKeys` 只用于把旧版本地 `legacyResults` 的未分 profile 计数明确归入某个 group；存在时必须有 `1..128` 个互不重复的 key，每个 key 必须同时出现在该 group selector 的 `resultKey` 中，并且不能分给多个 group。没有可靠归属时必须省略，App 和 Panel 都不会按名称、标签、颜色或 backend value 猜测。
 - `groups` 的计数组成今日总数；`flatSummaries` 在卡片下方单独显示，不再次计入总数。数组顺序就是显示顺序。
@@ -139,7 +139,7 @@ v1 只有 result key，没有 profile identity；同一个 key 在不同 profile
 - selector 只允许 `profileId` / `entryId`，各为无首尾空白的非空文本且最长 256 characters。`profileId` 必须属于显式 `pickerVisible:true` source profile，`entryId` 必须唯一引用该 profile 上启用的 `workflow.alternateEntries.entries`。
 - selector 在同一 item 内不得重复，也不得跨同一 collection 的 item 重复；同一 selector 可以同时出现在一个 group 和一个 flat summary。每项最多 512 个 selector。
 - App 使用 `profileId + entryId + serial` 的独立幂等 identity 记账，并把计数放在按 Panel connection 隔离、旧 App 不读取的 App-private store。它不会把入口的 backend `resultKey` 或新对象字段写进普通 `results` / `daily_stats_*` 回滚镜像，因此选择入口不会污染普通结果计数，也不会破坏旧 App 对既有当日统计的读取。计数失败只影响展示；App 会在仍有 `COMPLETED` tombstone 时幂等补记，但不会因此阻塞已确认提交的本地清理或下一次生产提交。
-- 该对象依赖有效的 `dailyStatsV2`；缺失、引用失效或结构错误时只关闭独立录入汇总，不改变独立录入提交。旧 App 忽略未知的同级 setting，并继续使用原有统计与表单。
+- 该对象依赖有效的 `dailyStatsV2`；当某个 v2 flat summary 的普通 `selectors` 为 `[]` 时，同 `id` 的这里的 flat item 是强制项且必须含非空有效 selectors。其他缺失、引用失效或结构错误会关闭独立录入汇总，不改变独立录入提交；联合配置中的孤立空 flat summary 也会 fail closed，不会显示假 0。旧 App 忽略未知的同级 setting，并继续使用原有统计与表单。
 
 ## 身份、可见性与模板
 

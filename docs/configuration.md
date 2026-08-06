@@ -35,7 +35,7 @@ Profile 结果编辑器不会把现场显示需求写回旧版 `gradeMap[key].la
 
 ## `dailyStatsV2`
 
-`settings.dailyStatsV2` 与 v1 同级，使用 `selectors:[{profileId,resultKey}]` 精确选择每个计数来源，避免相同 result key 在不同 profile 中含义不同时被合并。`groups` 组成今日总数；可选 `flatSummaries` 显示在卡片下方但不再次计入总数。Panel 只列出显式 `pickerVisible:true` profile 自己声明的 result pair，并通过结构化复选框保存，不要求手写业务常量。
+`settings.dailyStatsV2` 与 v1 同级，使用 `selectors:[{profileId,resultKey}]` 精确选择每个计数来源，避免相同 result key 在不同 profile 中含义不同时被合并。`groups` 组成今日总数；可选 `flatSummaries` 显示在卡片下方但不再次计入总数。Panel 只列出显式 `pickerVisible:true` profile 自己声明的 result pair，并通过结构化复选框保存，不要求手写业务常量。Group 必须至少有一个普通 selector；仅由独立录入组成的 flat summary 可以让普通 selectors 为 `[]`，但必须在同一次保存中提供同 id、非空且有效的 `dailyStatsAlternateEntries.flatSummaries` 映射，否则 Panel、Worker 和 App 均 fail closed。
 
 Group 可选的 `legacyResultKeys` 只用于显式归属旧版本地、尚未区分 profile 的计数；key 必须属于本组 selector，且不能跨 group 重复。没有可靠归属时省略，系统不会根据 key、提交值、标签或颜色推断。省略 v2 时新版 App 回退 v1；存在有效 v2 时新版 App 优先使用它，旧 App 则忽略 v2 并继续使用未改动的 v1。完整结构、边界和虚构示例见 [Profile schema](./profile-schema.md#settingsdailystatsv2)。
 
@@ -43,7 +43,7 @@ Group 可选的 `legacyResultKeys` 只用于显式归属旧版本地、尚未区
 
 独立录入提交到隐藏目标，但首页统计的业务归属不能由隐藏目标、提交 result value 或入口标题推断。`settings.dailyStatsAlternateEntries` 因而使用独立的 `selectors:[{profileId,entryId}]`，并通过 `id` 引用现有 `dailyStatsV2.groups` 或 `dailyStatsV2.flatSummaries`。App 把独立录入计数保存在按 Panel connection 隔离的 App-private store 中，不把新对象字段写进旧 App 使用的 `daily_stats_*` 回滚镜像；把一个入口加入问题项扁平汇总不会污染同一 source profile 的普通结果计数，降级读取旧镜像时也不会使原有当日统计失效。计数会在删除已确认成功的本地草稿前同步尝试并可由 `COMPLETED` tombstone 幂等补记，但它只影响首页展示：本地统计写入失败会诊断并保留补记机会，不得阻塞已由后端确认成功的记录清理或下一单生产提交。
 
-Panel 在 v2 分组/扁平汇总卡片内提供独立录入入口复选框，并与 v2 配置在同一次带版本条件的保存中发布。该补充对象只允许 `version:1`、`scope:"all_profiles"`、`groups` 和 `flatSummaries`；两数组都必须存在但可以为空。每项的 `id` 必须引用 v2 同类 item，selector 必须引用显式可见 source profile 上启用且唯一的入口。同一入口可同时归入一个主分组和一个扁平汇总，但不能在同一 collection 的多个 item 间重复。省略该对象时独立录入仍可提交，只是不进入首页汇总；旧 App 和早期新版 App 会忽略这个同级补充配置。完整结构见 [Profile schema](./profile-schema.md#settingsdailystatsalternateentries)。
+Panel 在 v2 分组/扁平汇总卡片内提供独立录入入口复选框，并与 v2 配置在同一次带版本条件的保存中发布。该补充对象只允许 `version:1`、`scope:"all_profiles"`、`groups` 和 `flatSummaries`；两数组都必须存在但可以为空。每项的 `id` 必须引用 v2 同类 item，selector 必须引用显式可见 source profile 上启用且唯一的入口。同一入口可同时归入一个主分组和一个扁平汇总，但不能在同一 collection 的多个 item 间重复。仅当某个 v2 flat summary 自己仍有普通 selector 时才可省略其补充映射；若普通 selectors 为 `[]`，同 id 的非空补充映射必须原子保存。省略其他映射时独立录入仍可提交，只是不进入首页汇总；旧 App 和早期新版 App 会忽略这个同级补充配置。完整结构见 [Profile schema](./profile-schema.md#settingsdailystatsalternateentries)。
 
 ## `backendAdapter`
 

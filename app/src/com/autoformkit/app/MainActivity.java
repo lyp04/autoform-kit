@@ -16663,7 +16663,8 @@ public class MainActivity extends Activity {
         List<Integer> flatStatCounts = new ArrayList<>();
         List<Integer> flatStatColors = new ArrayList<>();
         int total = 0;
-        JSONObject configuredV2 = DailyStatsRules.allProfilesV2(catalogSettings, profiles);
+        JSONObject configuredV2 = DailyStatsRules.allProfilesV2(
+            catalogSettings, profiles, allProfiles);
         JSONObject configuredAlternateEntries = configuredV2 == null ? null
             : DailyStatsRules.allProfilesAlternateEntries(
                 catalogSettings, allProfiles, configuredV2);

@@ -178,6 +178,56 @@ test("dailyStatsAlternateEntries maps exact enabled source entries to v2 items",
   assert.deepEqual(served.settings.dailyStatsAlternateEntries, mapping);
 });
 
+test("flat summaries may be backed only by a required alternate-entry mapping", () => {
+  const profiles = [
+    alternateSourceProfile("sample-one", ["sample-ready"], ["sample-entry-one"]),
+    alternateSourceProfile("sample-two", ["sample-review"], ["sample-entry-two"])
+  ];
+  const dailyStatsV2 = validDailyStatsV2();
+  dailyStatsV2.flatSummaries[0].selectors = [];
+  const mapping = validDailyStatsAlternateEntries();
+  const coverageError =
+    "dailyStatsAlternateEntries.flatSummaries must provide non-empty selectors for dailyStatsV2 flat summary \"sample-total-v2\" because its selectors are empty";
+
+  assert.deepEqual(validateDailyStatsV2(dailyStatsV2, profiles), []);
+  assert.deepEqual(
+    validateDailyStatsAlternateEntries(mapping, dailyStatsV2, profiles), []);
+  assert.ok(validateDailyStatsAlternateEntries(
+    undefined, dailyStatsV2, profiles).includes(coverageError));
+  assert.ok(validateDailyStatsAlternateEntries({
+    ...mapping,
+    flatSummaries: []
+  }, dailyStatsV2, profiles).includes(coverageError));
+
+  const served = clientCatalog({
+    settings: { dailyStatsV2, dailyStatsAlternateEntries: mapping },
+    profiles
+  });
+  assert.deepEqual(served.settings.dailyStatsV2, dailyStatsV2);
+  assert.deepEqual(served.settings.dailyStatsAlternateEntries, mapping);
+
+  const servedWithoutMapping = clientCatalog({
+    settings: { dailyStatsV2 },
+    profiles
+  });
+  assert.equal("dailyStatsV2" in servedWithoutMapping.settings, false);
+  assert.equal("dailyStatsAlternateEntries" in servedWithoutMapping.settings, false);
+
+  const invalidMapping = structuredClone(mapping);
+  invalidMapping.flatSummaries[0].selectors[0].entryId = "missing-entry";
+  const servedWithInvalidMapping = clientCatalog({
+    settings: { dailyStatsV2, dailyStatsAlternateEntries: invalidMapping },
+    profiles
+  });
+  assert.equal("dailyStatsV2" in servedWithInvalidMapping.settings, false);
+  assert.equal("dailyStatsAlternateEntries" in servedWithInvalidMapping.settings, false);
+
+  const emptyGroup = validDailyStatsV2();
+  emptyGroup.groups[0].selectors = [];
+  assert.ok(validateDailyStatsV2(emptyGroup, profiles).includes(
+    "dailyStatsV2.groups[0].selectors must not be empty"));
+});
+
 test("dailyStatsAlternateEntries is strict, v2-bound and collection-qualified", () => {
   const profiles = [
     alternateSourceProfile("sample-one", ["sample-ready"], [
@@ -507,7 +557,7 @@ test("Panel structured global editor wires exact groups and flat summaries into 
   assert.match(html, /id="addDailyStatsV2GroupBtn"/u);
   assert.match(html, /id="addDailyStatsV2FlatBtn"/u);
   assert.match(html, /id="saveDailyStatsV2Btn"/u);
-  assert.match(html, /function buildDailyStatsV2\(\)/u);
+  assert.match(html, /function buildDailyStatsV2\(alternateOnlyFlatIds=new Set\(\)\)/u);
   assert.match(html, /version:2,[\s\S]*scope:"all_profiles",[\s\S]*flatSummaries:/u);
   assert.match(html,
     /body:\{baseVersion:CATALOG_VERSION,dailyStatsV2,dailyStatsAlternateEntries\}/u);
@@ -529,8 +579,12 @@ test("Panel v2 editor saves independent-entry selectors in a separate supplement
   assert.match(html, /return \{profileId,entryId\}/u);
   assert.match(html,
     /applyDailyStatsAlternateEntriesToLocalSettings\(dailyStatsAlternateEntries\)/u);
+  assert.match(html,
+    /kind==="group"\|\|!alternateOnlyFlatIds\.has\(id\)/u);
+  assert.match(html,
+    /dailyStatsAlternateEntries=buildDailyStatsAlternateEntries\(\);[\s\S]*dailyStatsV2=buildDailyStatsV2\(alternateOnlyFlatIds\)/u);
 
-  const v2Start = html.indexOf("function buildDailyStatsV2()");
+  const v2Start = html.indexOf("function buildDailyStatsV2(");
   const v2End = html.indexOf("function mergeDailyStatsAlternateEntrySelectors", v2Start);
   assert.ok(v2Start >= 0 && v2End > v2Start);
   assert.doesNotMatch(html.slice(v2Start, v2End), /alternateEntrySelectors/u);

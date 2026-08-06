@@ -118,6 +118,27 @@ final class DailyStatsRules {
      * different profiles without the App inspecting its label or backend value.
      */
     static JSONObject allProfilesV2(JSONObject catalogSettings, JSONArray visibleProfiles) {
+        return allProfilesV2(catalogSettings, visibleProfiles, null, false);
+    }
+
+    /**
+     * Resolves the v2 presentation together with its independent-entry attribution.
+     *
+     * <p>A flat summary may intentionally have no ordinary profile/result selector when every
+     * value comes from an independent entry. That exception is valid only when the same flat id
+     * has a non-empty, fully valid {@code dailyStatsAlternateEntries} mapping. Keeping the
+     * two-argument overload strict prevents callers that do not have the complete catalog from
+     * accidentally rendering an unbacked zero row.</p>
+     */
+    static JSONObject allProfilesV2(JSONObject catalogSettings, JSONArray visibleProfiles,
+                                    JSONArray allProfiles) {
+        return allProfilesV2(catalogSettings, visibleProfiles, allProfiles, true);
+    }
+
+    private static JSONObject allProfilesV2(JSONObject catalogSettings,
+                                             JSONArray visibleProfiles,
+                                             JSONArray allProfiles,
+                                             boolean allowAlternateOnlyFlatSummaries) {
         JSONObject presentation = catalogSettings == null
             ? null : catalogSettings.optJSONObject("dailyStatsV2");
         if (presentation == null
@@ -152,10 +173,42 @@ final class DailyStatsRules {
             return null;
         }
         if (!validV2Items(flatSummaries, true, visibleResults, itemIds,
-                flatPairs, null)) {
+                flatPairs, null, allowAlternateOnlyFlatSummaries)) {
             return null;
         }
+        if (allowAlternateOnlyFlatSummaries) {
+            JSONObject alternate = allProfilesAlternateEntries(
+                catalogSettings, allProfiles, presentation);
+            if (!alternateOnlyFlatSummariesCovered(presentation, alternate)) return null;
+        }
         return presentation;
+    }
+
+    private static boolean alternateOnlyFlatSummariesCovered(
+            JSONObject dailyStatsV2, JSONObject alternateEntries) {
+        JSONArray flatSummaries = dailyStatsV2 == null
+            ? null : dailyStatsV2.optJSONArray("flatSummaries");
+        if (flatSummaries == null) return false;
+        Set<String> alternateIds = new LinkedHashSet<>();
+        JSONArray alternateFlat = alternateEntries == null
+            ? null : alternateEntries.optJSONArray("flatSummaries");
+        for (int index = 0; alternateFlat != null && index < alternateFlat.length(); index++) {
+            JSONObject item = alternateFlat.optJSONObject(index);
+            JSONArray selectors = item == null ? null : item.optJSONArray("selectors");
+            String id = item == null ? null : strictText(item.opt("id"), MAX_ID_LENGTH);
+            if (id != null && selectors != null && selectors.length() > 0) {
+                alternateIds.add(id);
+            }
+        }
+        for (int index = 0; index < flatSummaries.length(); index++) {
+            JSONObject item = flatSummaries.optJSONObject(index);
+            JSONArray selectors = item == null ? null : item.optJSONArray("selectors");
+            if (selectors != null && selectors.length() == 0
+                    && !alternateIds.contains(item.optString("id", ""))) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
@@ -401,6 +454,15 @@ final class DailyStatsRules {
                                         Map<String, Set<String>> visibleResults,
                                         Set<String> itemIds, Set<String> assignedPairs,
                                         Set<String> assignedLegacyKeys) {
+        return validV2Items(items, flat, visibleResults, itemIds, assignedPairs,
+            assignedLegacyKeys, false);
+    }
+
+    private static boolean validV2Items(JSONArray items, boolean flat,
+                                        Map<String, Set<String>> visibleResults,
+                                        Set<String> itemIds, Set<String> assignedPairs,
+                                        Set<String> assignedLegacyKeys,
+                                        boolean allowEmptyFlatSelectors) {
         for (int index = 0; index < items.length(); index++) {
             JSONObject item = items.optJSONObject(index);
             if (item == null || !hasOnlyKeys(item, flat
@@ -420,7 +482,8 @@ final class DailyStatsRules {
                 return false;
             }
             JSONArray selectors = item.optJSONArray("selectors");
-            if (selectors == null || selectors.length() == 0
+            if (selectors == null
+                    || (selectors.length() == 0 && !(flat && allowEmptyFlatSelectors))
                     || selectors.length() > MAX_V2_SELECTORS) {
                 return false;
             }

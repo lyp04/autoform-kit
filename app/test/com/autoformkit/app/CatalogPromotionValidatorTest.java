@@ -766,6 +766,56 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void alternateOnlyFlatSummaryRequiresSameIdNonEmptyAttribution()
+            throws Exception {
+        JSONObject valid = catalogWithAlternate(false);
+        String sourceId = valid.getJSONArray("profiles").getJSONObject(0)
+            .getString("id");
+        String entryId = alternateEntry(valid).getString("id");
+        JSONObject v2 = dailyStatsV2();
+        v2.getJSONArray("flatSummaries").put(new JSONObject()
+            .put("id", "sample-flat")
+            .put("label", "Sample flat")
+            .put("uiColor", "#123456")
+            .put("selectors", new JSONArray()));
+        JSONObject alternate = dailyStatsAlternateEntries(
+            "sample-card", sourceId, entryId)
+            .put("groups", new JSONArray())
+            .put("flatSummaries", new JSONArray().put(new JSONObject()
+                .put("id", "sample-flat")
+                .put("selectors", new JSONArray().put(new JSONObject()
+                    .put("profileId", sourceId)
+                    .put("entryId", entryId)))));
+        valid.getJSONObject("settings")
+            .put("dailyStatsV2", v2)
+            .put("dailyStatsAlternateEntries", alternate);
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+
+        JSONObject missingMapping = copy(valid);
+        missingMapping.getJSONObject("settings").remove("dailyStatsAlternateEntries");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(missingMapping));
+
+        JSONObject wrongId = copy(valid);
+        wrongId.getJSONObject("settings").getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("flatSummaries").getJSONObject(0)
+            .put("id", "sample-other-flat");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(wrongId));
+
+        JSONObject emptyAttribution = copy(valid);
+        emptyAttribution.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("flatSummaries").getJSONObject(0)
+            .put("selectors", new JSONArray());
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(emptyAttribution));
+
+        JSONObject emptyGroup = copy(valid);
+        emptyGroup.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("groups").getJSONObject(0)
+            .put("selectors", new JSONArray());
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(emptyGroup));
+    }
+
+    @Test
     public void profileAndResultColorsMustUseSixDigitHex() throws Exception {
         JSONObject valid = catalog();
         firstProfile(valid).put("uiColor", "#123ABC");

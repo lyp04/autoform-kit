@@ -57,7 +57,7 @@ public class DailyStatsWiringTest {
             "private View dailyStatsView()",
             "private LinearLayout.LayoutParams statCardParams()");
         int v2At = method.indexOf(
-            "DailyStatsRules.allProfilesV2(catalogSettings, profiles)");
+            "DailyStatsRules.allProfilesV2(\n            catalogSettings, profiles, allProfiles)");
         int v1At = method.indexOf(
             "DailyStatsRules.allProfilesGroups(catalogSettings)");
         assertTrue(v2At >= 0);

@@ -218,6 +218,64 @@ public class DailyStatsRulesTest {
     }
 
     @Test
+    public void alternateOnlyFlatSummaryRequiresMatchingNonEmptyEntryAttribution()
+            throws Exception {
+        JSONObject source = visibleAlternateSource("sample-source", "sample-scrap");
+        JSONArray allProfiles = new JSONArray().put(source);
+        JSONObject flat = v2Item(
+            "sample-scrap-flat", "Sample scrap flat",
+            "sample-source", "sample-ready")
+            .put("selectors", new JSONArray());
+        JSONObject v2 = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_V2_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(v2Item(
+                "sample-card", "Sample card", "sample-source", "sample-ready")))
+            .put("flatSummaries", new JSONArray().put(flat));
+        JSONObject alternate = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray())
+            .put("flatSummaries", new JSONArray().put(alternateItem(
+                "sample-scrap-flat", new JSONObject()
+                    .put("profileId", "sample-source")
+                    .put("entryId", "sample-scrap"))));
+        JSONObject settings = new JSONObject()
+            .put("dailyStatsV2", v2)
+            .put("dailyStatsAlternateEntries", alternate);
+
+        // Callers without the complete catalog keep the historical fail-closed behavior.
+        assertEquals(null, DailyStatsRules.allProfilesV2(settings, allProfiles));
+        assertTrue(DailyStatsRules.allProfilesV2(
+            settings, allProfiles, allProfiles) != null);
+
+        JSONObject missingMapping = new JSONObject(settings.toString());
+        missingMapping.remove("dailyStatsAlternateEntries");
+        assertEquals(null, DailyStatsRules.allProfilesV2(
+            missingMapping, allProfiles, allProfiles));
+
+        JSONObject wrongId = new JSONObject(settings.toString());
+        wrongId.getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("flatSummaries").getJSONObject(0)
+            .put("id", "sample-other-flat");
+        assertEquals(null, DailyStatsRules.allProfilesV2(
+            wrongId, allProfiles, allProfiles));
+
+        JSONObject emptyMapping = new JSONObject(settings.toString());
+        emptyMapping.getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("flatSummaries").getJSONObject(0)
+            .put("selectors", new JSONArray());
+        assertEquals(null, DailyStatsRules.allProfilesV2(
+            emptyMapping, allProfiles, allProfiles));
+
+        JSONObject emptyGroup = new JSONObject(settings.toString());
+        emptyGroup.getJSONObject("dailyStatsV2").getJSONArray("groups")
+            .getJSONObject(0).put("selectors", new JSONArray());
+        assertEquals(null, DailyStatsRules.allProfilesV2(
+            emptyGroup, allProfiles, allProfiles));
+    }
+
+    @Test
     public void independentEntryPresentationRejectsUnreachableAndSameLayerOverlap()
             throws Exception {
         JSONObject source = visibleAlternateSource("sample-source", "sample-scrap");

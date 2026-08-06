@@ -404,6 +404,12 @@ export function clientCatalog(catalog) {
     if (validateDailyStatsAlternateEntries(copy.settings.dailyStatsAlternateEntries,
         copy.settings.dailyStatsV2, copy.profiles).length > 0) {
       delete copy.settings.dailyStatsAlternateEntries;
+      // Never serve a v2 flat summary whose ordinary selectors are empty after its
+      // required alternate-entry mapping has been rejected or omitted.
+      if (validateDailyStatsAlternateEntries(undefined,
+          copy.settings.dailyStatsV2, copy.profiles).length > 0) {
+        delete copy.settings.dailyStatsV2;
+      }
     }
   }
   return copy;

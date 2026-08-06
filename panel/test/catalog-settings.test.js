@@ -733,6 +733,80 @@ test("settings API stores, validates and deletes alternate-entry daily-stat attr
   }
 });
 
+test("settings API keeps alternate-only flat summaries atomic", async () => {
+  const adapter = validBackendAdapter();
+  const settings = {
+    backendAdapter: adapter,
+    backendApiBase: adapter.baseUrl,
+    sessionInvalidHttpStatuses: [...adapter.auth.sessionInvalidHttpStatuses],
+    sessionInvalidCodes: [...adapter.auth.sessionInvalidCodes],
+    sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
+  };
+  const {
+    profiles,
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  } = alternateDailyStatsCatalog();
+  const ordinaryFlatSelectors = clone(dailyStatsV2.flatSummaries[0].selectors);
+  dailyStatsV2.flatSummaries[0].selectors = [];
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({ schemaVersion: 2, version: 30, settings, profiles }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    const createResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 30,
+      dailyStatsV2,
+      dailyStatsAlternateEntries
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(createResponse.status, 200, await createResponse.clone().text());
+    assert.equal((await createResponse.json()).version, 31);
+    let written = JSON.parse(files.get("form-profiles.json").text);
+    assert.deepEqual(written.settings.dailyStatsV2, dailyStatsV2);
+    assert.deepEqual(written.settings.dailyStatsAlternateEntries,
+      dailyStatsAlternateEntries);
+    assert.equal(github.refUpdates, 1);
+
+    const orphanResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 31,
+      dailyStatsAlternateEntries: null
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(orphanResponse.status, 400);
+    const orphanBody = await orphanResponse.json();
+    assert.equal(orphanBody.error,
+      "dailyStatsAlternateEntries validation failed");
+    assert.ok(orphanBody.problems[0].errors.includes(
+      "dailyStatsAlternateEntries.flatSummaries must provide non-empty selectors for dailyStatsV2 flat summary \"sample-alternate-flat\" because its selectors are empty"));
+    assert.equal(github.refUpdates, 1);
+
+    const ordinaryDailyStatsV2 = clone(dailyStatsV2);
+    ordinaryDailyStatsV2.flatSummaries[0].selectors = ordinaryFlatSelectors;
+    const convertResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 31,
+      dailyStatsV2: ordinaryDailyStatsV2,
+      dailyStatsAlternateEntries: null
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(convertResponse.status, 200, await convertResponse.clone().text());
+    assert.equal((await convertResponse.json()).version, 32);
+    written = JSON.parse(files.get("form-profiles.json").text);
+    assert.deepEqual(written.settings.dailyStatsV2, ordinaryDailyStatsV2);
+    assert.equal("dailyStatsAlternateEntries" in written.settings, false);
+    assert.equal(github.refUpdates, 2);
+  } finally {
+    github.restore();
+  }
+});
+
 test("profile publish rejects retained alternate-entry stats mappings made unreachable", async () => {
   const adapter = validBackendAdapter();
   const {
