@@ -147,6 +147,119 @@ public class DailyStatsRulesTest {
         assertTrue(DailyStatsRules.allProfilesV2(settings, visibleProfiles) != null);
     }
 
+    @Test
+    public void independentEntriesRecordBySourceAndEntryAndRenderByV2ItemId()
+            throws Exception {
+        JSONObject source = visibleAlternateSource("sample-source", "sample-scrap");
+        JSONArray allProfiles = new JSONArray().put(source);
+        JSONObject v2 = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_V2_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(v2Item(
+                "sample-scrap-card", "Sample scrap", "sample-source", "sample-ready")))
+            .put("flatSummaries", new JSONArray().put(v2Item(
+                "sample-scrap-flat", "Sample scrap flat", "sample-source", "sample-ready")));
+        JSONObject selector = new JSONObject()
+            .put("profileId", "sample-source")
+            .put("entryId", "sample-scrap");
+        JSONObject alternate = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(alternateItem(
+                "sample-scrap-card", new JSONObject(selector.toString()))))
+            .put("flatSummaries", new JSONArray().put(alternateItem(
+                "sample-scrap-flat", new JSONObject(selector.toString()))));
+        JSONObject settings = new JSONObject()
+            .put("dailyStatsV2", v2)
+            .put("dailyStatsAlternateEntries", alternate);
+        JSONObject stats = new JSONObject();
+
+        assertTrue(DailyStatsRules.recordAlternateEntry(
+            stats, "sample-source", "sample-scrap", "SAMPLE-SN-001"));
+        assertTrue(DailyStatsRules.recordAlternateEntry(
+            stats, "sample-source", "sample-scrap", "SAMPLE-SN-001"));
+        assertEquals(1, stats.getJSONObject(DailyStatsRules.ALTERNATE_ENTRIES)
+            .getJSONObject("sample-source").getInt("sample-scrap"));
+        assertTrue(DailyStatsRules.validAlternateEntryStats(stats));
+        // These bytes belong only in the new connection-scoped alternate store. Persisting the
+        // object under daily_stats_* would make an old App reject the whole day's mirror.
+        assertFalse(LegacyPanelStateMigrationRules.validDailyStats(stats.toString()));
+        assertFalse(stats.has("results"));
+        assertFalse(DailyStatsRules.mainCountedToken("sample-source", "SAMPLE-SN-001")
+            .equals(DailyStatsRules.alternateCountedToken(
+                "sample-source", "sample-scrap", "SAMPLE-SN-001")));
+
+        JSONObject configured = DailyStatsRules.allProfilesAlternateEntries(
+            settings, allProfiles, v2);
+        assertTrue(configured != null);
+        assertEquals(1, DailyStatsRules.displayedAlternateCount(stats,
+            configured.getJSONArray("groups"), "sample-scrap-card"));
+        assertEquals(1, DailyStatsRules.displayedAlternateCount(stats,
+            configured.getJSONArray("flatSummaries"), "sample-scrap-flat"));
+
+        JSONObject malformed = new JSONObject(stats.toString()).put(
+            "results", new JSONObject());
+        assertFalse(DailyStatsRules.validAlternateEntryStats(malformed));
+        assertEquals(0, DailyStatsRules.displayedAlternateCount(malformed,
+            configured.getJSONArray("groups"), "sample-scrap-card"));
+
+        JSONObject duplicateToken = new JSONObject(stats.toString());
+        duplicateToken.getJSONArray("counted").put(
+            duplicateToken.getJSONArray("counted").getString(0));
+        assertFalse(DailyStatsRules.validAlternateEntryStats(duplicateToken));
+        JSONObject fractionalCount = new JSONObject(stats.toString());
+        fractionalCount.getJSONObject(DailyStatsRules.ALTERNATE_ENTRIES)
+            .getJSONObject("sample-source").put("sample-scrap", 1.5d);
+        assertFalse(DailyStatsRules.validAlternateEntryStats(fractionalCount));
+        JSONObject negativeCount = new JSONObject(stats.toString());
+        negativeCount.getJSONObject(DailyStatsRules.ALTERNATE_ENTRIES)
+            .getJSONObject("sample-source").put("sample-scrap", -1);
+        assertFalse(DailyStatsRules.validAlternateEntryStats(negativeCount));
+    }
+
+    @Test
+    public void independentEntryPresentationRejectsUnreachableAndSameLayerOverlap()
+            throws Exception {
+        JSONObject source = visibleAlternateSource("sample-source", "sample-scrap");
+        JSONArray allProfiles = new JSONArray().put(source);
+        JSONObject first = v2Item(
+            "sample-card-one", "One", "sample-source", "sample-ready");
+        JSONObject second = v2Item(
+            "sample-card-two", "Two", "sample-source", "sample-ready-two");
+        JSONObject v2 = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_V2_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(first).put(second))
+            .put("flatSummaries", new JSONArray());
+        JSONObject selector = new JSONObject()
+            .put("profileId", "sample-source")
+            .put("entryId", "sample-scrap");
+        JSONObject alternate = new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray()
+                .put(alternateItem("sample-card-one", new JSONObject(selector.toString())))
+                .put(alternateItem("sample-card-two", new JSONObject(selector.toString()))))
+            .put("flatSummaries", new JSONArray());
+        JSONObject settings = new JSONObject()
+            .put("dailyStatsAlternateEntries", alternate);
+
+        assertEquals(null, DailyStatsRules.allProfilesAlternateEntries(
+            settings, allProfiles, v2));
+        alternate.getJSONArray("groups").remove(1);
+        alternate.getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").getJSONObject(0)
+            .put("entryId", "sample-missing");
+        assertEquals(null, DailyStatsRules.allProfilesAlternateEntries(
+            settings, allProfiles, v2));
+        alternate.getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").getJSONObject(0)
+            .put("entryId", "sample-scrap");
+        source.put("pickerVisible", false);
+        assertEquals(null, DailyStatsRules.allProfilesAlternateEntries(
+            settings, allProfiles, v2));
+    }
+
     private static JSONObject visibleProfile(String id, String resultKey) throws Exception {
         return new JSONObject()
             .put("id", id)
@@ -163,5 +276,27 @@ public class DailyStatsRulesTest {
             .put("selectors", new JSONArray().put(new JSONObject()
                 .put("profileId", profileId)
                 .put("resultKey", resultKey)));
+    }
+
+    private static JSONObject visibleAlternateSource(String id, String entryId)
+            throws Exception {
+        return new JSONObject()
+            .put("id", id)
+            .put("pickerVisible", true)
+            .put("gradeMap", new JSONObject()
+                .put("sample-ready", new JSONObject())
+                .put("sample-ready-two", new JSONObject()))
+            .put("workflow", new JSONObject()
+                .put("alternateEntries", new JSONObject()
+                    .put("enabled", true)
+                    .put("entries", new JSONArray().put(
+                        new JSONObject().put("id", entryId)))));
+    }
+
+    private static JSONObject alternateItem(String id, JSONObject selector)
+            throws Exception {
+        return new JSONObject()
+            .put("id", id)
+            .put("selectors", new JSONArray().put(selector));
     }
 }

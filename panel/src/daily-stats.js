@@ -12,6 +12,11 @@ const DAILY_STATS_V2_FLAT_SUMMARY_KEYS = new Set([
   "id", "label", "labelI18n", "uiColor", "selectors"
 ]);
 const DAILY_STATS_V2_SELECTOR_KEYS = new Set(["profileId", "resultKey"]);
+const DAILY_STATS_ALTERNATE_ENTRIES_KEYS = new Set([
+  "version", "scope", "groups", "flatSummaries"
+]);
+const DAILY_STATS_ALTERNATE_ENTRY_ITEM_KEYS = new Set(["id", "selectors"]);
+const DAILY_STATS_ALTERNATE_ENTRY_SELECTOR_KEYS = new Set(["profileId", "entryId"]);
 
 export const DAILY_STATS_MAX_GROUPS = 16;
 export const DAILY_STATS_MAX_RESULT_KEYS = 128;
@@ -21,6 +26,7 @@ export const DAILY_STATS_MAX_RESULT_KEY_LENGTH = 256;
 export const DAILY_STATS_V2_MAX_GROUPS = 16;
 export const DAILY_STATS_V2_MAX_FLAT_SUMMARIES = 8;
 export const DAILY_STATS_V2_MAX_SELECTORS = 512;
+export const DAILY_STATS_ALTERNATE_ENTRIES_VERSION = 1;
 
 function isPlainObject(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -80,6 +86,51 @@ function visibleResultPairs(profiles) {
     }
   }
   return declared;
+}
+
+function uniqueDailyStatsV2ItemIds(dailyStatsV2, collection) {
+  const counts = new Map();
+  const items = isPlainObject(dailyStatsV2) && Array.isArray(dailyStatsV2[collection])
+    ? dailyStatsV2[collection] : [];
+  for (const item of items) {
+    const id = typeof item?.id === "string" ? item.id : "";
+    if (!id) continue;
+    counts.set(id, (counts.get(id) || 0) + 1);
+  }
+  return new Set([...counts.entries()]
+    .filter(([, count]) => count === 1)
+    .map(([id]) => id));
+}
+
+/** Exact picker-visible source/entry pairs which are unambiguous in the effective catalog. */
+function uniqueEnabledAlternateEntryPairs(profiles) {
+  const profileCounts = new Map();
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const profileId = typeof profile?.id === "string" ? profile.id : "";
+    if (profileId) profileCounts.set(profileId, (profileCounts.get(profileId) || 0) + 1);
+  }
+
+  const pairCounts = new Map();
+  for (const profile of Array.isArray(profiles) ? profiles : []) {
+    const profileId = typeof profile?.id === "string" ? profile.id : "";
+    if (!profileId || profileCounts.get(profileId) !== 1 || profile?.pickerVisible !== true) {
+      continue;
+    }
+    const alternateEntries = profile?.workflow?.alternateEntries;
+    if (!isPlainObject(alternateEntries) || alternateEntries.enabled !== true
+        || !Array.isArray(alternateEntries.entries)) {
+      continue;
+    }
+    for (const entry of alternateEntries.entries) {
+      const entryId = typeof entry?.id === "string" ? entry.id : "";
+      if (!entryId) continue;
+      const pair = JSON.stringify([profileId, entryId]);
+      pairCounts.set(pair, (pairCounts.get(pair) || 0) + 1);
+    }
+  }
+  return new Set([...pairCounts.entries()]
+    .filter(([, count]) => count === 1)
+    .map(([pair]) => pair));
 }
 
 function validateReferenceText(value, path, errors) {
@@ -308,6 +359,120 @@ export function validateDailyStatsV2(value, profiles) {
   if (groups) groups.forEach((item, index) => validateItem(item, "groups", index));
   if (flatSummaries) {
     flatSummaries.forEach((item, index) => validateItem(item, "flatSummaries", index));
+  }
+  return errors;
+}
+
+/**
+ * Validates Panel-owned attribution of successful alternate entries to dailyStatsV2 cards.
+ *
+ * The App records the exact picker-visible source profile and alternate-entry id. This mapping is
+ * the only place which assigns that event to an ABC group or flat summary. Group and flat
+ * collections intentionally have separate pair namespaces, so one event may contribute to both.
+ */
+export function validateDailyStatsAlternateEntries(value, dailyStatsV2, profiles) {
+  if (value === undefined) return [];
+  const errors = [];
+  const root = "dailyStatsAlternateEntries";
+  if (!isPlainObject(value)) return [`${root} must be an object`];
+  allowOnly(value, DAILY_STATS_ALTERNATE_ENTRIES_KEYS, root, errors);
+  if (value.version !== DAILY_STATS_ALTERNATE_ENTRIES_VERSION) {
+    errors.push(`${root}.version must equal ${DAILY_STATS_ALTERNATE_ENTRIES_VERSION}`);
+  }
+  if (value.scope !== "all_profiles") {
+    errors.push(`${root}.scope must equal all_profiles`);
+  }
+
+  const groups = Array.isArray(value.groups) ? value.groups : null;
+  const flatSummaries = Array.isArray(value.flatSummaries) ? value.flatSummaries : null;
+  if (!groups) errors.push(`${root}.groups must be an array`);
+  if (!flatSummaries) errors.push(`${root}.flatSummaries must be an array`);
+  if (groups && groups.length > DAILY_STATS_V2_MAX_GROUPS) {
+    errors.push(`${root}.groups must contain at most ${DAILY_STATS_V2_MAX_GROUPS} items`);
+  }
+  if (flatSummaries && flatSummaries.length > DAILY_STATS_V2_MAX_FLAT_SUMMARIES) {
+    errors.push(`${root}.flatSummaries must contain at most ${DAILY_STATS_V2_MAX_FLAT_SUMMARIES} items`);
+  }
+
+  const dailyStatsV2Errors = isPlainObject(dailyStatsV2)
+    ? validateDailyStatsV2(dailyStatsV2, profiles) : ["dailyStatsV2 is missing"];
+  if (dailyStatsV2Errors.length > 0) {
+    errors.push(`${root} requires a valid dailyStatsV2`);
+  }
+  const referencedIds = {
+    groups: uniqueDailyStatsV2ItemIds(dailyStatsV2, "groups"),
+    flatSummaries: uniqueDailyStatsV2ItemIds(dailyStatsV2, "flatSummaries")
+  };
+  const declaredPairs = uniqueEnabledAlternateEntryPairs(profiles);
+  const itemIds = new Set();
+  const assignedGroupPairs = new Map();
+  const assignedFlatPairs = new Map();
+
+  function validateItem(item, collection, itemIndex) {
+    const path = `${root}.${collection}[${itemIndex}]`;
+    const singular = collection === "groups" ? "group" : "flat summary";
+    if (!isPlainObject(item)) {
+      errors.push(`${path} must be an object`);
+      return;
+    }
+    allowOnly(item, DAILY_STATS_ALTERNATE_ENTRY_ITEM_KEYS, path, errors);
+    const id = validateBoundedText(item.id, `${path}.id`,
+      DAILY_STATS_MAX_ID_LENGTH, errors);
+    if (id) {
+      if (itemIds.has(id)) {
+        errors.push(`${path}.id must be unique across groups and flatSummaries`);
+      }
+      itemIds.add(id);
+      if (!referencedIds[collection].has(id)) {
+        errors.push(`${path}.id must reference a dailyStatsV2 ${singular} id`);
+      }
+    }
+
+    if (!Array.isArray(item.selectors)) {
+      errors.push(`${path}.selectors must be an array`);
+      return;
+    }
+    if (item.selectors.length === 0) {
+      errors.push(`${path}.selectors must not be empty`);
+    }
+    if (item.selectors.length > DAILY_STATS_V2_MAX_SELECTORS) {
+      errors.push(`${path}.selectors must contain at most ${DAILY_STATS_V2_MAX_SELECTORS} items`);
+    }
+    const itemPairs = new Set();
+    const assignedPairs = collection === "groups"
+      ? assignedGroupPairs : assignedFlatPairs;
+    item.selectors.forEach((selector, selectorIndex) => {
+      const selectorPath = `${path}.selectors[${selectorIndex}]`;
+      if (!isPlainObject(selector)) {
+        errors.push(`${selectorPath} must be an object`);
+        return;
+      }
+      allowOnly(selector, DAILY_STATS_ALTERNATE_ENTRY_SELECTOR_KEYS,
+        selectorPath, errors);
+      const profileId = validateReferenceText(selector.profileId,
+        `${selectorPath}.profileId`, errors);
+      const entryId = validateReferenceText(selector.entryId,
+        `${selectorPath}.entryId`, errors);
+      if (!profileId || !entryId) return;
+      const pair = JSON.stringify([profileId, entryId]);
+      if (itemPairs.has(pair)) {
+        errors.push(`${selectorPath} pair must be unique within its item`);
+      }
+      itemPairs.add(pair);
+      if (assignedPairs.has(pair) && assignedPairs.get(pair) !== itemIndex) {
+        errors.push(`${selectorPath} pair must not appear in more than one ${singular}`);
+      }
+      if (!assignedPairs.has(pair)) assignedPairs.set(pair, itemIndex);
+      if (!declaredPairs.has(pair)) {
+        errors.push(`${selectorPath} must reference exactly one enabled alternate entry on the selected pickerVisible profile`);
+      }
+    });
+  }
+
+  if (groups) groups.forEach((item, index) => validateItem(item, "groups", index));
+  if (flatSummaries) {
+    flatSummaries.forEach((item, index) =>
+      validateItem(item, "flatSummaries", index));
   }
   return errors;
 }

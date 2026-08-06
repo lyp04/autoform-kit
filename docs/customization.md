@@ -16,7 +16,7 @@
 | 旧 App 的正反面 `uploadFields` 映射 | Panel advanced JSON（仅迁移兼容，不用于新建 profile） | 私有 `form-profiles.json` |
 | 单选/多选提交值；新导入可见 `singleChoice` 的人工确认 | Panel preview / profile editor | 私有 `form-profiles.json` |
 | 扫描规则与上一工序的附件、静态/动态 recipe、source alias、标识纠正、缺失处理、提交尝试和复核策略 | Panel profile editor / advanced JSON | 私有 `form-profiles.json` |
-| 独立入口、隐藏目标、结果/照片/覆盖字段、toggle 文案/生命周期与 live override provider | Panel profile structured editor / advanced JSON | 私有 `form-profiles.json` |
+| 独立入口、隐藏目标、结果/照片/覆盖字段、扫描长度作用入口、toggle 文案/生命周期与 live override provider | Panel profile structured editor / advanced JSON | 私有 `form-profiles.json` |
 | 重复检查阈值与近期/可重录记录动作 | Panel profile editor / advanced JSON | 私有 `form-profiles.json` |
 | 打印启用、预检动作、轮询、批末缺失任务复查模式、未知状态呈现、自动/手动补打、最终复核与未确认动作 | Panel profile editor / advanced JSON | 私有 `form-profiles.json` |
 | 提交前列表刷新、材料缺失恢复、本机提示、提交次数、等待、连续失败与网络重试 | Panel profile editor / advanced JSON | 私有 `form-profiles.json` |
@@ -25,7 +25,7 @@
 | 通知 provider URL、body、v2 event template，或 v3 `summary` / `problem` message template、formatter、响应标记与超时 | Panel global `notificationAdapter` | 可选的私有 Worker-only `panel-settings.json`；未配置 Worker-only setting 时可不存在 |
 | 最小化 runtime diagnostics 总开关 | Panel global `diagnosticsPolicy` | 私有 `form-profiles.json` |
 | 旧 App 登录页汇总的 result-key 分组、顺序、标签与颜色 | Panel global `dailyStats` structured editor | 私有 `form-profiles.json` |
-| 新版 App 登录页汇总的精确 profile/result pair 分组、扁平汇总、顺序、标签、颜色与显式 legacy 计数归属 | Panel global `dailyStatsV2` structured editor | 私有 `form-profiles.json` |
+| 新版 App 登录页汇总的精确 profile/result pair 分组、独立录入入口归属、扁平汇总、顺序、标签、颜色与显式 legacy 计数归属 | Panel global `dailyStatsV2` / `dailyStatsAlternateEntries` structured editor | 私有 `form-profiles.json` |
 | 可选 AI 辅助编辑的临时 instruction、draft 文案与翻译建议；只有经校验、审核并发布的最终字段才成为运行配置 | Panel optional AI editor | 私有 draft；发布后最终字段进入私有 `form-profiles.json` |
 | 设置页标题的 Brand 前缀、版本化公开更新源 `updateSource` v1（仅 owner/repo，并保留旧 App 所需的同值 flat 字段）、最低 App version、request override，以及迁移期旧 flat backend/`notifyWebhook` | Panel global settings | 私有 `form-profiles.json` + 派生 `manifest.json` |
 | 默认 GitHub catalog repository/branch、可选 `CATALOG_R2` bucket binding 与受审 cutover、Worker identity/routes、Panel public URL、`CF_VERSION_METADATA` binding、精确 source-tag deploy/runtime provenance、AI endpoint/model | Cloudflare deployment config | Cloudflare 与受控私有部署证据 |
@@ -62,6 +62,7 @@ GitHub。首次 R2-only publish 后 GitHub 可能过期，移除 binding 或直�
 - `diagnosticsPolicy`：最小化结构化故障事件总开关，缺失或 `enabled:false` 时关闭；
 - `dailyStats`：给旧 App 保留的可选 result-key 汇总，迁移期间保持原值；
 - `dailyStatsV2`：新版 App 的可选精确汇总；selector 结构化选择 profile/result pair，groups 组成总数，flat summaries 只附加显示，缺失时新版 App 回退 v1；
+- `dailyStatsAlternateEntries`：按显式 source profile / entry identity 把独立录入计数归入已有 v2 group 或 flat summary；与普通结果计数分离，不能从入口标题或 backend result 推断；
 - `brand`：设置页标题前缀；不改变 launcher 或普通表单页标题；
 - `updateSource` v1：公开 GitHub Releases 更新源，只允许 `version:1`、`owner`、`repo`；Panel 同时保留同值的 `updateOwner` / `updateRepo` 供旧 App 读取；
 - `minAppVersionCode`：允许应用新 catalog 的最低 Android versionCode；
@@ -86,12 +87,12 @@ Recipe outcome 发布门只针对实际可执行路径：`workflow.previousSteps
 - Backend template：`template`、`snFields`、`requiresSecondSn`、提交字段与 option value；
 - 输入：`snPlugins`、`photoSlots`、`optionalSlots`、`choiceFields`、`operationFields`、`conditionalFields.perResult`、混合版本迁移期的等值 `perGrade` alias、`materialGroups`；新模板导入的可见 `singleChoice` 使用空 `value` 和 `reviewRequired:true`，管理员在 Panel 明确选择后才清除标记，发布门拒绝仍待确认的值；
 - Result mapping：legacy wire name `gradeMap`，但 key 是任意不透明 result key；`label` / `value` 保留旧版与导入契约，结构化编辑器只用可选 `operatorLabel` / `operatorLabelI18n` 定制新版操作员文案，并可设置结果颜色；
-- 扫描：`expectedSnLength`、profile migration fallback `scanner`、`snPlugins[key=primary|secondary].scanner`；role scanner 可定义长度、prefix、文字识别 timing、纯数字拒绝、候选来源/评分、label 匹配、字符与排除规则、归一化、`prompt` / `promptI18n` 提示，以及这些规则应用于 OCR / barcode / entered 的 source scope；额外输入当前不声明相机扫码；
+- 扫描：`expectedSnLength`、profile migration fallback `scanner`、`snPlugins[key=primary|secondary].scanner`；role scanner 可定义单一 `expectedLength`、离散 `allowedLengths` 及各自应用于 OCR / barcode / entered 的 source scope，prefix、文字识别 timing、纯数字拒绝、候选来源/评分、label 匹配、字符与排除规则、归一化以及 `prompt` / `promptI18n` 提示；额外输入当前不声明相机扫码；
 - Legacy-compatible missing-item ignore policy：`notifySkipMaterials`（不自动移除、重试或通知）；
 - 上一工序：`workflow.previousSteps` 总开关、扫描预检、结果排除/触发、附件及其 Panel-owned `uploadNameTemplate`、静态 recipe，或动态 recipe 的 template identity、resolver ID 与 source alias、标识字符替换、适用 result key 及应用动作、大小写策略、缺失次数/动作、recipe 尝试/等待与复核次数/等待；
 - 迁移核对：`workflow.compatibilityReviewed`；Panel 不会自动勾选，只有逐项对照旧现场行为后才能设为 `true`；
 - 照片运行策略：结构化“默认拍照顺序”控件直接写 `defaultPhotoOrder`，只允许按照片框分组或按条目逐个完成，并同步更新预览和 advanced JSON；`workflow.photos.includeOptionalSlots` 决定 `optionalSlots` 是否进入 App 拍摄和提交，旧部署迁移默认关闭；
-- 独立入口：`workflow.alternateEntries` 的总开关、入口标题/多语言、唯一隐藏目标、目标 result/photo field、照片数量与 URL 分隔符、Panel-owned `uploadNameTemplate`、独立入口自己的 `scanner.applyExpectedLengthTo`，以及只允许“明确未写入”时复用同一 payload/已上传 URL 的 `submissionRetry`；新建入口的文件名模板默认留空，必须由管理员在结构化控件中显式确认，否则不能发布；新建入口的 `submissionRetry` 也默认为 `1/0`，不会因打开编辑器就隐式启用任何业务 POST 重试；固定 override 与 toggle 的 `label` / `labelI18n`、默认值和保留周期也由 Panel 提供；`maxPhotos:0` 明确保留旧入口不限张数的行为；可选 live provider 通过 `dynamicOverrideFields` / `dynamicOverrideProviders` 显式绑定 toggle、目标 template/step、resolver 与唯一输出 field，不使用时两数组都必须为 `[]`；独立路径的重复检查、上一工序和打印 flags 固定关闭；
+- 独立入口：`workflow.alternateEntries` 的总开关、入口标题/多语言、唯一隐藏目标、目标 result/photo field、照片数量与 URL 分隔符、Panel-owned `uploadNameTemplate`，以及独立入口的 `scanner.applyExpectedLengthTo` / `scanner.applyAllowedLengthsTo` source scope；长度数值仍只定义在来源 profile 的 primary role scanner。`applyExpectedLengthTo` 是非空兼容 scope；可选 `applyAllowedLengthsTo` 缺失时继承来源允许长度 scope，显式配置时只覆盖该独立入口。两者都可用结构化入口控件编辑；Advanced JSON 的精确路径为 `workflow.alternateEntries.entries[].scanner`，“恢复继承”会删除可选的 allowed-scope override。任一显式 scope 都必须是非空、无重复的 `ocr` / `barcode` / `entered`；显式 allowed scope 还要求来源 primary scanner 存在非空 `allowedLengths`，否则 Panel 拒绝发布；这些字段存在但类型、范围或交叉约束错误时 App 也 fail closed。入口还配置只允许“明确未写入”时复用同一 payload/已上传 URL 的 `submissionRetry`；新建入口的文件名模板默认留空，必须由管理员在结构化控件中显式确认，否则不能发布；新建入口的 `submissionRetry` 也默认为 `1/0`，不会因打开编辑器就隐式启用任何业务 POST 重试；固定 override 与 toggle 的 `label` / `labelI18n`、默认值和保留周期也由 Panel 提供；`maxPhotos:0` 明确保留旧入口不限张数的行为；可选 live provider 通过 `dynamicOverrideFields` / `dynamicOverrideProviders` 显式绑定 toggle、目标 template/step、resolver 与唯一输出 field，不使用时两数组都必须为 `[]`；独立路径的重复检查、上一工序和打印 flags 固定关闭；
 - 重复记录：`workflow.duplicateCheck` 的年龄单位/数值、未知日期动作、近期动作和达到阈值后的动作；
 - 打印：`workflow.printing` 的 profile 总开关、预检动作、确认轮询、批末缺失任务复查模式、未知状态呈现、自动补打上限、最终复核等待、未确认动作、手动补打开关、允许状态与再次确认开关；
 - 材料与提交：`workflow.materials.refreshBeforeSubmit`、`missingRecovery`、本机提示，以及 `workflow.submission` 的业务尝试次数、重试等待、相邻条目等待、本地核对记录保留天数、连续失败上限和有限网络重试；

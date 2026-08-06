@@ -122,6 +122,11 @@ public class MainActivity extends Activity {
     private static final Object REPRINT_JOURNAL_LOCK = new Object();
     private static final String LAST_PROFILE_ID_KEY = "last_profile_id";
     private static final String DAILY_STATS_PREFIX = "daily_stats_";
+    // Independent-entry counters intentionally live outside the signed-v1 daily_stats_* mirror.
+    // Old Apps reject object-valued unknown keys in that mirror, so mixing the two schemas would
+    // make an intentional rollback lose the whole day's otherwise compatible main-form totals.
+    private static final String ALTERNATE_DAILY_STATS_PREFIX =
+        "alternate_daily_stats_v1_";
     private static final String ROLLBACK_GLOBAL_OWNER_KEY =
         "rollback_global_owner_namespace_v1";
     private static final String PENDING_PHOTO_INDEX_KEY = "pending_photo_index";
@@ -496,6 +501,7 @@ public class MainActivity extends Activity {
                 throw new JSONException("No profile has pickerVisible=true");
             }
             profile = profiles.getJSONObject(0);
+            backfillCompletedAlternateDailyOutputAtStartup();
             restorePendingMainFormTarget();
             restoredAlternateEntry = restoreAlternateEntryState(savedInstanceState);
         } catch (Exception exc) {
@@ -1399,6 +1405,106 @@ public class MainActivity extends Activity {
         }
     }
 
+    private List<AlternateEntryScanRecoveryRules.Binding>
+            activeAlternateEntryScanRecoveryBindings(String entryId) {
+        List<AlternateEntryScanRecoveryRules.Binding> bindings = new ArrayList<>();
+        if (entryId == null || entryId.isEmpty()) return bindings;
+        for (int index = 0; profiles != null && index < profiles.length(); index++) {
+            JSONObject source = profiles.optJSONObject(index);
+            JSONObject entry = alternateEntryById(source, entryId);
+            if (source == null || entry == null) continue;
+            String fingerprint = alternateEntryBindingFingerprint(source, entry, allProfiles);
+            if (fingerprint.isEmpty()) continue;
+            bindings.add(new AlternateEntryScanRecoveryRules.Binding(
+                source.optString("id", ""), entryId, fingerprint));
+        }
+        return bindings;
+    }
+
+    /**
+     * Accepts an exact current-base reservation, or the same exact side-effect-free scan after a
+     * cold start when source/toggle-only state was intentionally not a durable draft. Cancellation
+     * never requires the dead Activity nonce, but still binds account, Panel pair, catalog, backend,
+     * stored guard and a unique active-catalog entry binding.
+     */
+    private AlternateEntryAsyncReservation cancelableStoredAlternateEntryScanLocked() {
+        if (!Thread.holdsLock(UpdateInstallRules.HANDOFF_LOCK)
+                || alternateEntryReservationStorageAmbiguous) return null;
+        try {
+            Map<String, ?> stored = prefs.getAll();
+            if (stored.containsKey(PENDING_ALTERNATE_ENTRY_PHOTO_PATH_KEY)
+                    || stored.containsKey(PENDING_ALTERNATE_ENTRY_PHOTO_GUARD_KEY)
+                    || stored.containsKey(PENDING_ALTERNATE_ENTRY_PHOTO_RESERVATION_KEY)
+                    || !pendingAlternateEntryPhotoPath.isEmpty()
+                    || !pendingAlternateEntryPhotoGuard.isEmpty()
+                    || pendingAlternateEntryPhotoReservation != null) {
+                return null;
+            }
+            Object raw = stored.get(PENDING_ALTERNATE_ENTRY_SCAN_RESERVATION_KEY);
+            Object rawGuard = stored.get(PENDING_ALTERNATE_ENTRY_SCAN_GUARD_KEY);
+            if (!(raw instanceof String) || !(rawGuard instanceof String)) return null;
+            String guard = (String) rawGuard;
+            AlternateEntryAsyncReservation reservation =
+                AlternateEntryAsyncReservation.parse((String) raw);
+            boolean exactCurrentBase = reservation.matches(
+                    AlternateEntryAsyncReservation.KIND_SCAN,
+                    AlternateEntryDraftState.accountFingerprint(savedAccount()),
+                    currentConnectionNamespace(), activeCatalogVersion,
+                    currentPanelPairSha256(), alternateEntryBindingFingerprint,
+                    alternateEntryBackendFingerprint, guard,
+                    alternateEntryReservationBaseStateSha256(), "");
+            boolean sideEffectFreeColdStart = !exactCurrentBase
+                && AlternateEntryScanRecoveryRules.canCancelSideEffectFreeScan(
+                    reservation,
+                    AlternateEntryDraftState.accountFingerprint(savedAccount()),
+                    currentConnectionNamespace(), activeCatalogVersion,
+                    currentPanelPairSha256(), currentBackendAdapterFingerprint(), guard,
+                    alternateEntryId,
+                    activeAlternateEntryScanRecoveryBindings(alternateEntryId),
+                    stored.containsKey(alternateEntryDraftPreferenceKey())
+                        || stored.containsKey(
+                            alternateEntryContinuationProofPreferenceKey()),
+                    hasAlternateEntryPendingData(), false,
+                    UnsafeCandidateContinuationRules.validAlternateEntryToken(
+                        alternateEntryContinuationToken));
+            if (!exactCurrentBase && !sideEffectFreeColdStart) {
+                return null;
+            }
+            pendingAlternateEntryScanGuard = guard;
+            pendingAlternateEntryScanReservation = reservation;
+            return reservation;
+        } catch (RuntimeException invalid) {
+            Diagnostics.append(this,
+                "Cancelable independent-entry scan reservation rejected: "
+                    + conciseError(invalid));
+            return null;
+        }
+    }
+
+    /** Clears only the re-read exact scan token; submission and upload journals are untouched. */
+    private boolean cancelStoredAlternateEntryScan(
+            AlternateEntryAsyncReservation expected) {
+        if (expected == null) return false;
+        synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+            AlternateEntryAsyncReservation exact =
+                cancelableStoredAlternateEntryScanLocked();
+            if (!AlternateEntryScanRecoveryRules.sameReservation(expected, exact)) {
+                return false;
+            }
+            if (!prefs.edit()
+                    .remove(PENDING_ALTERNATE_ENTRY_SCAN_GUARD_KEY)
+                    .remove(PENDING_ALTERNATE_ENTRY_SCAN_RESERVATION_KEY)
+                    .commit()) {
+                alternateEntryReservationStorageAmbiguous = true;
+                return false;
+            }
+            alternateEntryReservationStorageAmbiguous = false;
+            pendingAlternateEntryScanGuard = "";
+            pendingAlternateEntryScanReservation = null;
+            return true;
+        }
+    }
+
     private Set<String> liveAlternateEntryReservationTokensLocked() {
         if (!Thread.holdsLock(UpdateInstallRules.HANDOFF_LOCK)) {
             synchronized (UpdateInstallRules.HANDOFF_LOCK) {
@@ -2188,6 +2294,16 @@ public class MainActivity extends Activity {
         LOCKED
     }
 
+    private static final class AlternateDailyStatsIdentity {
+        final String sourceProfileId;
+        final String entryId;
+
+        AlternateDailyStatsIdentity(String sourceProfileId, String entryId) {
+            this.sourceProfileId = sourceProfileId;
+            this.entryId = entryId;
+        }
+    }
+
     private CompletedLocalCopyKind completedLocalCopyKind(
             AlternateSubmissionAttempt completed) {
         if (completed == null || completed.state != AlternateSubmissionAttempt.State.COMPLETED) {
@@ -2232,6 +2348,91 @@ public class MainActivity extends Activity {
         return CompletedLocalCopyKind.NONE;
     }
 
+    /**
+     * Resolves a completed journal only against the exact active source/entry/target binding. A
+     * durable draft narrows the match; an already-cleaned tombstone can still be backfilled by a
+     * unique scan of the active catalog.
+     */
+    private AlternateDailyStatsIdentity completedAlternateDailyStatsIdentity(
+            AlternateSubmissionAttempt completed, AlternateEntryDraftState exactDraft) {
+        if (completed == null
+                || completed.state != AlternateSubmissionAttempt.State.COMPLETED
+                || !completed.key.connectionNamespace.equals(currentConnectionNamespace())
+                || allProfiles == null) {
+            return null;
+        }
+        if (exactDraft != null
+                && (!exactDraft.connectionNamespace.equals(
+                        completed.key.connectionNamespace)
+                    || !exactDraft.bindingFingerprint.equals(
+                        completed.key.bindingFingerprint)
+                    || !exactDraft.serial.equals(completed.key.serial))) {
+            return null;
+        }
+
+        AlternateDailyStatsIdentity match = null;
+        int matches = 0;
+        for (int profileIndex = 0; profileIndex < allProfiles.length(); profileIndex++) {
+            JSONObject source = allProfiles.optJSONObject(profileIndex);
+            if (source == null || !Boolean.TRUE.equals(source.opt("pickerVisible"))) continue;
+            String sourceProfileId = source.optString("id", "");
+            if (sourceProfileId.isEmpty()
+                    || (exactDraft != null
+                        && !sourceProfileId.equals(exactDraft.sourceProfileId))) {
+                continue;
+            }
+            JSONArray entries = configuredAlternateEntries(source);
+            for (int entryIndex = 0; entryIndex < entries.length(); entryIndex++) {
+                JSONObject entry = entries.optJSONObject(entryIndex);
+                String entryId = entry == null ? "" : entry.optString("id", "");
+                if (entryId.isEmpty()
+                        || (exactDraft != null && !entryId.equals(exactDraft.entryId))
+                        || !completed.key.target.profileId.equals(
+                            entry.optString("targetProfileId", ""))) {
+                    continue;
+                }
+                String binding = alternateEntryBindingFingerprint(source, entry, allProfiles);
+                if (binding.isEmpty()
+                        || !binding.equals(completed.key.bindingFingerprint)) continue;
+                match = new AlternateDailyStatsIdentity(sourceProfileId, entryId);
+                matches++;
+            }
+        }
+        return matches == 1 ? match : null;
+    }
+
+    /**
+     * Returns false only when an exact identity was resolved but could not be durably recorded.
+     * An old/unresolvable catalog binding is diagnosed but never blocks acknowledged-work cleanup.
+     */
+    private boolean recordCompletedAlternateDailyOutput(
+            AlternateSubmissionAttempt completed, AlternateEntryDraftState exactDraft) {
+        AlternateDailyStatsIdentity identity = completedAlternateDailyStatsIdentity(
+            completed, exactDraft);
+        if (identity == null) {
+            Diagnostics.append(this,
+                "Completed independent-entry stats identity was not uniquely resolvable");
+            return true;
+        }
+        return recordDailyAlternateOutput(identity.sourceProfileId, identity.entryId,
+            completed.key.serial);
+    }
+
+    /** Best-effort upgrade backfill while the exact active catalog is already loaded. */
+    private void backfillCompletedAlternateDailyOutputAtStartup() {
+        if (blockingUploadReplayBarrier() != null) return;
+        AlternateSubmissionAttempt.RestoreResult restored =
+            restoreAlternateSubmissionAttempt();
+        if (restored.kind == AlternateSubmissionAttempt.RestoreKind.RESTORED
+                && restored.attempt != null
+                && restored.attempt.state == AlternateSubmissionAttempt.State.COMPLETED) {
+            // The COMPLETED tombstone remains available for another best-effort retry. Statistics
+            // are presentation-only and must never turn an acknowledged backend write into a
+            // production submission lock.
+            recordCompletedAlternateDailyOutput(restored.attempt, null);
+        }
+    }
+
     /** Returns the journal that blocks a new POST, or null when the slot is provably reusable. */
     private AlternateSubmissionAttempt.RestoreResult blockingAlternateSubmissionAttempt() {
         UploadReplayBarrier.RestoreResult uploadBarrier =
@@ -2250,14 +2451,23 @@ public class MainActivity extends Activity {
                         == AlternateSubmissionAttempt.State.CONFIRMED_NOT_WRITTEN) {
                 if (clearAlternateSubmissionAttempt()) return null;
             } else {
+                boolean statsRecorded =
+                    recordCompletedAlternateDailyOutput(result.attempt, null);
                 CompletedLocalCopyKind local = completedLocalCopyKind(result.attempt);
                 if (local == CompletedLocalCopyKind.DIFFERENT) {
                     // Keep the completed receipt until prepare() atomically replaces it. A stale
                     // saved-instance state matching the old record therefore remains detectable.
                     return null;
                 }
-                if (local == CompletedLocalCopyKind.NONE
-                        && clearAlternateSubmissionAttempt()) return null;
+                if (local == CompletedLocalCopyKind.NONE) {
+                    if (!statsRecorded) {
+                        // Preserve the tombstone for a later best-effort backfill, but do not make
+                        // an auxiliary counter failure block a new production submission. A new
+                        // prepare() may safely replace this already-COMPLETED attempt.
+                        return null;
+                    }
+                    if (clearAlternateSubmissionAttempt()) return null;
+                }
             }
         }
         return result;
@@ -2332,6 +2542,7 @@ public class MainActivity extends Activity {
 
         String draftKey = alternateEntryDraftPreferenceKey();
         LinkedHashSet<String> paths = new LinkedHashSet<>();
+        AlternateEntryDraftState completedDraft = null;
         try {
             Map<String, ?> stored = prefs.getAll();
             if (stored.containsKey(draftKey)) {
@@ -2342,6 +2553,7 @@ public class MainActivity extends Activity {
                         expected.key.sourceSnapshotSha256)) {
                     return false;
                 }
+                completedDraft = draft;
                 paths.addAll(draft.photos);
             }
         } catch (RuntimeException error) {
@@ -2357,6 +2569,7 @@ public class MainActivity extends Activity {
                         expected.key.sourceSnapshotSha256)) {
                     return false;
                 }
+                if (completedDraft == null) completedDraft = active;
             } catch (RuntimeException error) {
                 Diagnostics.append(this, "Completed active-copy cleanup blocked: "
                     + conciseError(error));
@@ -2369,6 +2582,11 @@ public class MainActivity extends Activity {
             }
             if (pending != null && !pending.isEmpty()) paths.add(pending);
         }
+
+        // Try while the exact draft identity is still available. Failure is diagnosed and the
+        // retained COMPLETED tombstone can retry later, but statistics must not prevent cleanup of
+        // a backend-acknowledged production record.
+        recordCompletedAlternateDailyOutput(expected, completedDraft);
 
         if (!prefs.edit()
                 .remove(draftKey)
@@ -3656,9 +3874,31 @@ public class MainActivity extends Activity {
     }
 
     private void startAlternateEntryScan() {
+        final AlternateEntryAsyncReservation cancelable;
+        synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+            cancelable = cancelableStoredAlternateEntryScanLocked();
+        }
+        if (cancelable != null) {
+            new AlertDialog.Builder(this)
+                .setTitle(t("alternate_entry_cancel_scan_title"))
+                .setMessage(t("alternate_entry_cancel_scan_detail"))
+                .setNegativeButton(t("cancel"), null)
+                .setPositiveButton(t("alternate_entry_cancel_scan_action"),
+                    (dialog, which) -> {
+                        if (!cancelStoredAlternateEntryScan(cancelable)) {
+                            alert(t("draft_save_failed"),
+                                t("alternate_entry_storage_locked_detail"));
+                            return;
+                        }
+                        toast(t("alternate_entry_scan_cancelled"));
+                        startAlternateEntryScan();
+                    })
+                .show();
+            return;
+        }
         if (alternateEntryEditingBlocked()) return;
         if (hasPendingAlternateEntryAsyncReservationEvidence()) {
-            toast(t("submit_running"));
+            toast(t("alternate_entry_async_pending"));
             return;
         }
         if (!identifierScanEnabled(false)) {
@@ -3962,9 +4202,10 @@ public class MainActivity extends Activity {
         if (filtered.isEmpty()) {
             finishBoundOperation(boundOperation);
             clearAlternateEntryReservation(reservation, false);
-            alert(t("ocr_no_text_title"), policy.appliesExpectedLengthTo(
-                SnScanRules.SOURCE_OCR)
-                ? identifierExpectedOnlyMessage(false, policy.expectedLength)
+            List<Integer> required = policy.requiredLengthsForSource(
+                SnScanRules.SOURCE_OCR);
+            alert(t("ocr_no_text_title"), !required.isEmpty()
+                ? identifierExpectedOnlyMessage(false, required)
                 : identifierPolicyRejectedMessage(false, policy));
             return;
         }
@@ -4006,7 +4247,7 @@ public class MainActivity extends Activity {
         if (!ensurePanelReadyForUse()) return;
         if (alternateEntryEditingBlocked()) return;
         if (hasPendingAlternateEntryAsyncReservationEvidence()) {
-            toast(t("submit_running"));
+            toast(t("alternate_entry_async_pending"));
             return;
         }
         if (alternateEntryConfig == null) {
@@ -4169,7 +4410,7 @@ public class MainActivity extends Activity {
         if (hasPendingAlternateEntryAsyncReservationEvidence()) {
             // Keep the exact base-state hash immutable until the reserved scan/photo either
             // materializes or is cancelled. A later typed/toggle/rebind edit cannot borrow it.
-            toast(t("submit_running"));
+            toast(t("alternate_entry_async_pending"));
             return true;
         }
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
@@ -4202,7 +4443,7 @@ public class MainActivity extends Activity {
         if (hasPendingAlternateEntryAsyncReservationEvidence()) {
             // A prestarted scan/photo has not yet either materialized or been cancelled. Submitting
             // the base draft here would create an ambiguous payload boundary and strand its result.
-            toast(t("submit_running"));
+            toast(t("alternate_entry_async_pending"));
             return;
         }
         if (!ensurePanelReadyForUse()) return;
@@ -5503,16 +5744,9 @@ public class MainActivity extends Activity {
                                                              JSONObject entryConfig) {
         if (sourceProfile == null || entryConfig == null) return invalidScannerConfig();
         try {
-            JSONObject merged = new JSONObject(
-                effectiveScannerConfig(sourceProfile, false).toString());
-            JSONArray sources = new JSONArray();
-            for (String source : AlternateEntryRules.expectedLengthSources(
-                    entryConfig)) {
-                sources.put(source);
-            }
-            merged.put("applyExpectedLengthTo", sources);
-            return merged;
-        } catch (RuntimeException | JSONException invalid) {
+            return AlternateEntryRules.applyScannerScopeOverrides(
+                effectiveScannerConfig(sourceProfile, false), entryConfig);
+        } catch (RuntimeException invalid) {
             return invalidScannerConfig();
         }
     }
@@ -5585,9 +5819,12 @@ public class MainActivity extends Activity {
             alert(t("scan_not_sn_title"), t("scan_not_sn_detail"));
             return false;
         }
-        if (rejection == SnScanRules.Rejection.WRONG_LENGTH && policy.expectedLength > 0) {
-            toastLong(identifierLengthMessage(secondary, policy.expectedLength, value.length()));
-            return false;
+        if (rejection == SnScanRules.Rejection.WRONG_LENGTH) {
+            List<Integer> required = policy.requiredLengthsForSource(source);
+            if (!required.isEmpty()) {
+                toastLong(identifierLengthMessage(secondary, required, value.length()));
+                return false;
+            }
         }
         toastLong(identifierPolicyRejectedMessage(secondary, policy));
         return false;
@@ -5617,10 +5854,20 @@ public class MainActivity extends Activity {
     }
 
     private String identifierLengthMessage(boolean secondary, int expected, int actual) {
+        return identifierLengthMessage(
+            secondary, Collections.singletonList(expected), actual);
+    }
+
+    private String identifierLengthMessage(boolean secondary, List<Integer> expected,
+                                           int actual) {
         String label = inputLabel(secondary);
-        if ("en".equals(lang)) return label + " must be " + expected + " characters. Current: " + actual + ".";
-        if ("es".equals(lang)) return label + " debe tener " + expected + " caracteres. Actual: " + actual + ".";
-        return label + " \u5e94\u4e3a " + expected + " \u4f4d\uff0c\u5f53\u524d " + actual + " \u4f4d\u3002";
+        String lengths = localizedIdentifierLengths(expected);
+        if ("en".equals(lang)) return label + " must be " + lengths
+            + " characters. Current: " + actual + ".";
+        if ("es".equals(lang)) return label + " debe tener " + lengths
+            + " caracteres. Actual: " + actual + ".";
+        return label + " \u5e94\u4e3a " + lengths + " \u4f4d\uff0c\u5f53\u524d "
+            + actual + " \u4f4d\u3002";
     }
 
     private String identifierPolicyRejectedMessage(boolean secondary, SnScanRules.Policy policy) {
@@ -5647,10 +5894,24 @@ public class MainActivity extends Activity {
     }
 
     private String identifierExpectedOnlyMessage(boolean secondary, int expected) {
+        return identifierExpectedOnlyMessage(
+            secondary, Collections.singletonList(expected));
+    }
+
+    private String identifierExpectedOnlyMessage(boolean secondary,
+                                                 List<Integer> expected) {
         String label = inputLabel(secondary);
-        if ("en".equals(lang)) return "No " + expected + "-character " + label + " was found.";
-        if ("es".equals(lang)) return "No se encontr\u00f3 " + label + " de " + expected + " caracteres.";
-        return "\u672a\u8bc6\u522b\u5230 " + expected + " \u4f4d " + label + "\u3002";
+        String lengths = localizedIdentifierLengths(expected);
+        if ("en".equals(lang)) return "No " + lengths + "-character " + label
+            + " was found.";
+        if ("es".equals(lang)) return "No se encontr\u00f3 " + label + " de "
+            + lengths + " caracteres.";
+        return "\u672a\u8bc6\u522b\u5230 " + lengths + " \u4f4d " + label + "\u3002";
+    }
+
+    private String localizedIdentifierLengths(List<Integer> lengths) {
+        return SnScanRules.formatLengths(lengths,
+            "en".equals(lang) ? "or" : ("es".equals(lang) ? "o" : "\u6216"));
     }
 
     private String currentProfileId() {
@@ -6689,10 +6950,10 @@ public class MainActivity extends Activity {
         if (candidates.isEmpty()) {
             finishBoundOperation(operation);
             clearPendingTargetAfterOcr(pendingTarget);
-            int expected = expectedIdentifierLength(baseSn);
-            alert(t("ocr_no_text_title"), policy.appliesExpectedLengthTo(
-                SnScanRules.SOURCE_OCR)
-                ? identifierExpectedOnlyMessage(baseSn, expected)
+            List<Integer> required = policy.requiredLengthsForSource(
+                SnScanRules.SOURCE_OCR);
+            alert(t("ocr_no_text_title"), !required.isEmpty()
+                ? identifierExpectedOnlyMessage(baseSn, required)
                 : identifierPolicyRejectedMessage(baseSn, policy));
             if (baseSn) refocusBaseInput(); else refocusSnInput();
             return;
@@ -11509,7 +11770,8 @@ public class MainActivity extends Activity {
                 unit.sn, unit.snSource);
             if (primaryRejection != SnScanRules.Rejection.NONE) {
                 errors.add("#" + unit.sequence + " "
-                    + identifierPolicyErrorText(false, primaryScannerPolicy, primaryRejection, unit.sn.length()));
+                    + identifierPolicyErrorText(false, primaryScannerPolicy,
+                        primaryRejection, unit.sn.length(), unit.snSource));
             }
             if (requiresSecondSn()) {
                 SnScanRules.Rejection secondaryRejection = secondaryScannerPolicy.rejectionForSource(
@@ -11517,7 +11779,7 @@ public class MainActivity extends Activity {
                 if (secondaryRejection != SnScanRules.Rejection.NONE) {
                     errors.add("#" + unit.sequence + " "
                         + identifierPolicyErrorText(true, secondaryScannerPolicy,
-                            secondaryRejection, unit.baseSn.length()));
+                            secondaryRejection, unit.baseSn.length(), unit.baseSnSource));
                 }
             }
             for (String field : ProfileFieldRules.missingRequiredVisibleExtraFields(
@@ -11566,11 +11828,15 @@ public class MainActivity extends Activity {
     }
 
     private String identifierPolicyErrorText(boolean secondary, SnScanRules.Policy policy,
-                                             SnScanRules.Rejection rejection, int actualLength) {
+                                             SnScanRules.Rejection rejection, int actualLength,
+                                             String source) {
         if (rejection == SnScanRules.Rejection.EMPTY) return requiredInputMessage(secondary);
         if (rejection == SnScanRules.Rejection.INVALID_POLICY) return scannerPolicyInvalidMessage(secondary);
-        if (rejection == SnScanRules.Rejection.WRONG_LENGTH && policy.expectedLength > 0) {
-            return identifierLengthMessage(secondary, policy.expectedLength, actualLength);
+        if (rejection == SnScanRules.Rejection.WRONG_LENGTH) {
+            List<Integer> required = policy.requiredLengthsForSource(source);
+            if (!required.isEmpty()) {
+                return identifierLengthMessage(secondary, required, actualLength);
+            }
         }
         return identifierPolicyRejectedMessage(secondary, policy);
     }
@@ -16280,6 +16546,7 @@ public class MainActivity extends Activity {
     private View dailyStatsView() {
         String date = todayStatsDate();
         JSONObject stats = loadDailyStats(date);
+        JSONObject alternateStats = loadDailyAlternateStats(date);
         List<String> statLabels = new ArrayList<>();
         List<Integer> statCounts = new ArrayList<>();
         List<Integer> statColors = new ArrayList<>();
@@ -16288,6 +16555,13 @@ public class MainActivity extends Activity {
         List<Integer> flatStatColors = new ArrayList<>();
         int total = 0;
         JSONObject configuredV2 = DailyStatsRules.allProfilesV2(catalogSettings, profiles);
+        JSONObject configuredAlternateEntries = configuredV2 == null ? null
+            : DailyStatsRules.allProfilesAlternateEntries(
+                catalogSettings, allProfiles, configuredV2);
+        JSONArray configuredAlternateGroups = configuredAlternateEntries == null ? null
+            : configuredAlternateEntries.optJSONArray("groups");
+        JSONArray configuredAlternateFlatSummaries = configuredAlternateEntries == null ? null
+            : configuredAlternateEntries.optJSONArray("flatSummaries");
         JSONArray configuredGroups = configuredV2 == null
             ? DailyStatsRules.allProfilesGroups(catalogSettings)
             : configuredV2.optJSONArray("groups");
@@ -16298,6 +16572,8 @@ public class MainActivity extends Activity {
                 int count = DailyStatsRules.displayedSelectedCount(
                     stats, group.optJSONArray("selectors"),
                     group.optJSONArray("legacyResultKeys"));
+                count = saturatedAdd(count, DailyStatsRules.displayedAlternateCount(
+                    alternateStats, configuredAlternateGroups, group.optString("id", "")));
                 Integer color = parseColor(group.optString("uiColor", ""));
                 statLabels.add(localized(group, "label", "labelI18n"));
                 statCounts.add(count);
@@ -16311,6 +16587,9 @@ public class MainActivity extends Activity {
                 if (summary == null) continue;
                 int count = DailyStatsRules.displayedSelectedCount(
                     stats, summary.optJSONArray("selectors"), null);
+                count = saturatedAdd(count, DailyStatsRules.displayedAlternateCount(
+                    alternateStats, configuredAlternateFlatSummaries,
+                    summary.optString("id", "")));
                 Integer color = parseColor(summary.optString("uiColor", ""));
                 flatStatLabels.add(localized(summary, "label", "labelI18n"));
                 flatStatCounts.add(count);
@@ -16486,9 +16765,14 @@ public class MainActivity extends Activity {
             JSONArray counted = stats.optJSONArray("counted");
             if (counted == null) counted = new JSONArray();
             String profileId = profile == null ? "" : profile.optString("id", "");
-            String key = profileId + "|" + unit.sn;
-            if (jsonArrayContains(counted, key)) return;
+            String key = DailyStatsRules.mainCountedToken(profileId, unit.sn);
+            String legacyKeyToken = DailyStatsRules.legacyMainCountedToken(
+                profileId, unit.sn);
+            if (jsonArrayContains(counted, key)
+                    || jsonArrayContains(counted, legacyKeyToken)) return;
             counted.put(key);
+            // Keep the signed-v1 token too so an intentional rollback remains idempotent.
+            counted.put(legacyKeyToken);
             stats.put("counted", counted);
             JSONObject allResults = stats.optJSONObject("results");
             if (allResults == null) allResults = new JSONObject();
@@ -16505,6 +16789,49 @@ public class MainActivity extends Activity {
                 prefs.edit(), legacyKey, stats.toString()).apply();
         } catch (Exception exc) {
             appendLog(t("daily_stats_save_failed") + exc.getMessage());
+        }
+    }
+
+    /** Durable, idempotent local acknowledgement for one exact independent-entry completion. */
+    private boolean recordDailyAlternateOutput(String sourceProfileId, String entryId,
+                                               String serial) {
+        try {
+            String date = todayStatsDate();
+            JSONObject stats = loadDailyAlternateStats(date);
+            if (!DailyStatsRules.recordAlternateEntry(
+                    stats, sourceProfileId, entryId, serial)) {
+                Diagnostics.append(this,
+                    "Independent-entry daily stats rejected invalid identity");
+                return false;
+            }
+            boolean committed = prefs.edit().putString(
+                dailyAlternateStatsPreferenceKey(date), stats.toString()).commit();
+            if (!committed) {
+                Diagnostics.append(this,
+                    "Independent-entry daily stats durable commit failed");
+            }
+            return committed;
+        } catch (Exception error) {
+            Diagnostics.append(this, "Independent-entry daily stats failed: "
+                + conciseError(error));
+            return false;
+        }
+    }
+
+    private String dailyAlternateStatsPreferenceKey(String date) {
+        return panelStatePreferenceKey(ALTERNATE_DAILY_STATS_PREFIX + date);
+    }
+
+    private JSONObject loadDailyAlternateStats(String date) {
+        try {
+            String raw = prefs.getString(dailyAlternateStatsPreferenceKey(date), "");
+            if (raw == null || raw.isEmpty()) return new JSONObject();
+            JSONObject stats = new JSONObject(raw);
+            return DailyStatsRules.validAlternateEntryStats(stats)
+                ? stats : new JSONObject();
+        } catch (Exception invalid) {
+            Diagnostics.append(this, "Independent-entry daily stats are unreadable");
+            return new JSONObject();
         }
     }
 
@@ -17018,6 +17345,11 @@ public class MainActivity extends Activity {
             case "alternate_entry_cleanup_failed": return "本地副本清理失败，成功记录仍保持锁定；请勿重提并联系维护人员。";
             case "alternate_entry_discard_failed": return "草稿未能从设备安全删除，照片仍保留，未切换配置。请重试或联系维护人员。";
             case "alternate_entry_queue_save_failed": return "主表单队列无法安全保存，因此没有打开独立入口。";
+            case "alternate_entry_async_pending": return "上次扫码或拍照尚未结束；如需重扫，请再次点击扫码并确认取消上次扫码。";
+            case "alternate_entry_cancel_scan_title": return "取消上次扫码？";
+            case "alternate_entry_cancel_scan_detail": return "只取消未完成的扫码预留；已录入标识、照片以及提交和上传安全记录都不会删除。确认后会立即重新打开扫码。";
+            case "alternate_entry_cancel_scan_action": return "取消并重扫";
+            case "alternate_entry_scan_cancelled": return "已取消上次未完成的扫码。";
             case "submit": return "提交";
             case "preview_payload": return "预览 Payload";
             case "check_steps": return "检查前置记录";
@@ -17413,6 +17745,11 @@ public class MainActivity extends Activity {
             case "alternate_entry_cleanup_failed": return "Local cleanup failed and the confirmed-success record remains locked. Do not resubmit; contact support.";
             case "alternate_entry_discard_failed": return "The draft could not be removed safely. Its photos were kept and the configuration was not changed. Retry or contact support.";
             case "alternate_entry_queue_save_failed": return "The main-form queue could not be saved safely, so the alternate entry was not opened.";
+            case "alternate_entry_async_pending": return "The previous scan or photo has not finished. To rescan, tap Scan again and confirm cancellation of the previous scan.";
+            case "alternate_entry_cancel_scan_title": return "Cancel the previous scan?";
+            case "alternate_entry_cancel_scan_detail": return "Only the unfinished scan reservation will be cancelled. The entered identifier, photos, and all submission or upload safety records are kept. Scanning reopens immediately after confirmation.";
+            case "alternate_entry_cancel_scan_action": return "Cancel and rescan";
+            case "alternate_entry_scan_cancelled": return "The unfinished previous scan was cancelled.";
             case "submit": return "Submit";
             case "preview_payload": return "Preview Payload";
             case "check_steps": return "Check previous records";
@@ -17808,6 +18145,11 @@ public class MainActivity extends Activity {
             case "alternate_entry_cleanup_failed": return "Falló la limpieza local y el registro de éxito confirmado sigue bloqueado. No vuelva a enviarlo; contacte con soporte.";
             case "alternate_entry_discard_failed": return "No se pudo eliminar el borrador de forma segura. Se conservaron las fotos y no se cambió la configuración. Reintente o contacte con soporte.";
             case "alternate_entry_queue_save_failed": return "No se pudo guardar de forma segura la cola principal, por lo que no se abrió la entrada alternativa.";
+            case "alternate_entry_async_pending": return "El escaneo o la foto anterior no ha terminado. Para volver a escanear, pulse Escanear y confirme la cancelación del escaneo anterior.";
+            case "alternate_entry_cancel_scan_title": return "¿Cancelar el escaneo anterior?";
+            case "alternate_entry_cancel_scan_detail": return "Solo se cancelará la reserva del escaneo sin terminar. Se conservarán el identificador, las fotos y todos los registros de seguridad de envío o carga. El escaneo se abrirá de nuevo tras confirmar.";
+            case "alternate_entry_cancel_scan_action": return "Cancelar y escanear";
+            case "alternate_entry_scan_cancelled": return "Se canceló el escaneo anterior sin terminar.";
             case "submit": return "Enviar";
             case "preview_payload": return "Vista previa del payload";
             case "check_steps": return "Revisar registros previos";

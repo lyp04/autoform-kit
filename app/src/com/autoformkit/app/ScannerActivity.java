@@ -54,6 +54,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -92,6 +93,7 @@ public class ScannerActivity extends ComponentActivity {
     private boolean finished = false;
     private boolean ignoredNumericScan = false;
     private boolean ignoredWrongLengthScan = false;
+    private String ignoredWrongLengthSource = "";
     private boolean manualTextRequested = false;
     private boolean ocrOnly = false;
     private boolean zoomed = false;
@@ -421,16 +423,18 @@ public class ScannerActivity extends ComponentActivity {
                     || rejection == SnScanRules.Rejection.TOO_SHORT
                     || rejection == SnScanRules.Rejection.TOO_LONG) {
                 if (rejection == SnScanRules.Rejection.WRONG_LENGTH
-                        && scannerPolicy.appliesExpectedLengthTo(
-                            SnScanRules.SOURCE_BARCODE)) {
+                        && !scannerPolicy.requiredLengthsForSource(
+                            SnScanRules.SOURCE_BARCODE).isEmpty()) {
                     ignoredWrongLengthScan = true;
+                    ignoredWrongLengthSource = SnScanRules.SOURCE_BARCODE;
                     updateStatus();
                 }
                 Diagnostics.append(this, "MLKit scanner ignored barcode length format="
                     + barcode.getFormat() + " length=" + value.length()
                     + " reason=" + rejection.name()
                     + (rejection == SnScanRules.Rejection.WRONG_LENGTH
-                        ? " expected=" + scannerPolicy.expectedLength : ""));
+                        ? " expected=" + scannerPolicy.requiredLengthsForSource(
+                            SnScanRules.SOURCE_BARCODE) : ""));
                 continue;
             }
             if (rejection != SnScanRules.Rejection.NONE) {
@@ -454,8 +458,10 @@ public class ScannerActivity extends ComponentActivity {
 
     private int barcodeScore(String value, Rect box, int imageWidth, int imageHeight) {
         int score = 0;
-        if (scannerPolicy.appliesExpectedLengthTo(SnScanRules.SOURCE_BARCODE)
-                && value.length() == scannerPolicy.expectedLength) score += 1000;
+        if (!scannerPolicy.requiredLengthsForSource(
+                SnScanRules.SOURCE_BARCODE).isEmpty()
+                && scannerPolicy.matchesConfiguredLength(
+                    SnScanRules.SOURCE_BARCODE, value.length())) score += 1000;
         if (isLikelyIdentifier(value, SnScanRules.SOURCE_BARCODE)) score += 300;
         if (SnScanRules.hasPreferredPrefix(value, scannerPolicy.preferredPrefixes)) score += 120;
         if (box != null && imageWidth > 0 && imageHeight > 0) {
@@ -571,26 +577,70 @@ public class ScannerActivity extends ComponentActivity {
         if (ignoredNumericScan) return s("\u5df2\u5ffd\u7565\u7eaf\u6570\u5b57\u7801\uff0c\u7ee7\u7eed\u67e5\u627e ",
             "Ignored numeric-only code; still looking for ",
             "Se ignor\u00f3 el c\u00f3digo solo num\u00e9rico; buscando ") + label;
-        if (ignoredWrongLengthScan && scannerPolicy.expectedLength > 0) {
-            if ("en".equals(lang)) return "Ignored " + label + " that is not "
-                + scannerPolicy.expectedLength + " characters; still scanning";
-            if ("es".equals(lang)) return "Se ignor\u00f3 " + label + " que no tiene "
-                + scannerPolicy.expectedLength + " caracteres; escaneando";
-            return "\u5df2\u5ffd\u7565\u975e " + scannerPolicy.expectedLength + " \u4f4d" + label + "\uff0c\u7ee7\u7eed\u626b\u63cf";
+        if (ignoredWrongLengthScan) {
+            List<Integer> required = scannerPolicy.requiredLengthsForSource(
+                ignoredWrongLengthSource);
+            if (!required.isEmpty()) return wrongLengthStatus(label, required);
         }
         if (ocrOnly) {
-            if ("en".equals(lang)) return "Aim at the " + label + " label; text will be read locally";
-            if ("es".equals(lang)) return "Apunte a la etiqueta de " + label + "; el texto se leer\u00e1 localmente";
-            return "\u5bf9\u51c6" + label + "\u6807\u7b7e\uff0c\u5c06\u76f4\u63a5\u672c\u5730\u8bfb\u53d6\u6587\u5b57";
+            if ("en".equals(lang)) return withAllowedLengthHint(
+                "Aim at the " + label + " label; text will be read locally");
+            if ("es".equals(lang)) return withAllowedLengthHint(
+                "Apunte a la etiqueta de " + label + "; el texto se leer\u00e1 localmente");
+            return withAllowedLengthHint(
+                "\u5bf9\u51c6" + label + "\u6807\u7b7e\uff0c\u5c06\u76f4\u63a5\u672c\u5730\u8bfb\u53d6\u6587\u5b57");
         }
-        if (zoomed) return s("\u5df2\u653e\u5927\uff0c\u4fdd\u6301\u6807\u7b7e\u6e05\u6670", "Zoomed in, keep the label sharp", "Acercado, mantenga la etiqueta n\u00edtida");
-        if (isAutoTextAlways()) return s("\u6b63\u5728\u540c\u65f6\u8bfb\u53d6\u6761\u7801\u548c\u6587\u5b57",
-            "Reading both codes and text", "Leyendo c\u00f3digos y texto");
-        if (isAutoTextFallback()) return s("\u6761\u7801\u672a\u8bfb\u53d6\u65f6\u5c06\u5c1d\u8bd5\u6587\u5b57\u8bc6\u522b",
+        if (zoomed) return withAllowedLengthHint(s(
+            "\u5df2\u653e\u5927\uff0c\u4fdd\u6301\u6807\u7b7e\u6e05\u6670",
+            "Zoomed in, keep the label sharp",
+            "Acercado, mantenga la etiqueta n\u00edtida"));
+        if (isAutoTextAlways()) return withAllowedLengthHint(s(
+            "\u6b63\u5728\u540c\u65f6\u8bfb\u53d6\u6761\u7801\u548c\u6587\u5b57",
+            "Reading both codes and text", "Leyendo c\u00f3digos y texto"));
+        if (isAutoTextFallback()) return withAllowedLengthHint(s(
+            "\u6761\u7801\u672a\u8bfb\u53d6\u65f6\u5c06\u5c1d\u8bd5\u6587\u5b57\u8bc6\u522b",
             "Text recognition will be tried if code scanning fails",
-            "Se intentar\u00e1 reconocer texto si falla el c\u00f3digo");
-        return s("\u5bf9\u51c6\u6761\u7801\u6216\u6587\u5b57\u6807\u8bc6", "Aim at the code or text identifier",
-            "Apunte al c\u00f3digo o identificador de texto");
+            "Se intentar\u00e1 reconocer texto si falla el c\u00f3digo"));
+        return withAllowedLengthHint(s(
+            "\u5bf9\u51c6\u6761\u7801\u6216\u6587\u5b57\u6807\u8bc6",
+            "Aim at the code or text identifier",
+            "Apunte al c\u00f3digo o identificador de texto"));
+    }
+
+    private String wrongLengthStatus(String label, List<Integer> required) {
+        String lengths = localizedLengths(required);
+        if (required.size() == 1) {
+            if ("en".equals(lang)) return "Ignored " + label + " that is not "
+                + lengths + " characters; still scanning";
+            if ("es".equals(lang)) return "Se ignor\u00f3 " + label + " que no tiene "
+                + lengths + " caracteres; escaneando";
+            return "\u5df2\u5ffd\u7565\u975e " + lengths + " \u4f4d" + label
+                + "\uff0c\u7ee7\u7eed\u626b\u63cf";
+        }
+        if ("en".equals(lang)) return "Ignored " + label + " whose length is not "
+            + lengths + "; still scanning";
+        if ("es".equals(lang)) return "Se ignor\u00f3 " + label + " cuya longitud no es "
+            + lengths + "; escaneando";
+        return "\u5df2\u5ffd\u7565\u957f\u5ea6\u4e0d\u662f " + lengths + " \u4f4d\u7684"
+            + label + "\uff0c\u7ee7\u7eed\u626b\u63cf";
+    }
+
+    private String withAllowedLengthHint(String message) {
+        List<Integer> barcode = scannerPolicy.requiredLengthsForSource(
+            SnScanRules.SOURCE_BARCODE);
+        List<Integer> ocr = scannerPolicy.requiredLengthsForSource(SnScanRules.SOURCE_OCR);
+        List<Integer> shown = ocrOnly
+            ? ocr : (barcode.equals(ocr) ? barcode : Collections.emptyList());
+        if (shown.size() < 2) return message;
+        String lengths = localizedLengths(shown);
+        if ("en".equals(lang)) return message + " \u00b7 Length: " + lengths;
+        if ("es".equals(lang)) return message + " \u00b7 Longitud: " + lengths;
+        return message + " \u00b7 \u957f\u5ea6 " + lengths + " \u4f4d";
+    }
+
+    private String localizedLengths(List<Integer> lengths) {
+        return SnScanRules.formatLengths(lengths,
+            "en".equals(lang) ? "or" : ("es".equals(lang) ? "o" : "\u6216"));
     }
 
     private String displayIdentifierLabel() {
@@ -645,8 +695,9 @@ public class ScannerActivity extends ComponentActivity {
         SnScanRules.Rejection rejection = scannerPolicy.rejectionForSource(value, source);
         if (rejection != SnScanRules.Rejection.NONE) {
             if (rejection == SnScanRules.Rejection.WRONG_LENGTH
-                    && scannerPolicy.appliesExpectedLengthTo(source)) {
+                    && !scannerPolicy.requiredLengthsForSource(source).isEmpty()) {
                 ignoredWrongLengthScan = true;
+                ignoredWrongLengthSource = source;
                 updateStatus();
             }
             Diagnostics.append(this, "MLKit scanner ignored result by configured policy format="

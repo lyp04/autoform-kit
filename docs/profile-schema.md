@@ -17,7 +17,7 @@ Catalog 当前使用 `schemaVersion: 2`。Profile 是 Panel 发布给 App 的运
 
 - `schemaVersion`：App 可解释的结构版本；过新的 catalog 不会替换有效缓存。
 - `version`：每次发布单调递增；App 只应用更新版本。
-- `settings`：App-facing 全局配置；包括私有部署的可选 exact `{version:1,owner,repo}` `updateSource`、旧 App 使用的可选 `dailyStats` 和新版 App 使用的可选 `dailyStatsV2`，Worker-only 配置不在此文件。更新源必须与旧 flat owner/repo 完全一致，不能包含 channel/tag/asset；省略时保留旧 flat 兼容，不能把真实值写入公开 seed。
+- `settings`：App-facing 全局配置；包括私有部署的可选 exact `{version:1,owner,repo}` `updateSource`、旧 App 使用的可选 `dailyStats`、新版 App 使用的可选 `dailyStatsV2`，以及独立录入统计归属 `dailyStatsAlternateEntries`；Worker-only 配置不在此文件。更新源必须与旧 flat owner/repo 完全一致，不能包含 channel/tag/asset；省略时保留旧 flat 兼容，不能把真实值写入公开 seed。
 - `profiles`：非空、有序的 profile 数组。
 
 Panel 同步生成 `manifest.json`，包含 payload SHA-256、`profilesUrl` 和可选 `minAppVersionCode`。不要绕过 Panel 分别编辑这两个文件。
@@ -112,6 +112,35 @@ v1 只有 result key，没有 profile identity；同一个 key 在不同 profile
 - `groups` 的计数组成今日总数；`flatSummaries` 在卡片下方单独显示，不再次计入总数。数组顺序就是显示顺序。
 - 省略 v2 时，新 App 回退读取 v1；存在有效 v2 时优先使用 v2。旧 App 忽略同级 v2 并继续读取未改动的 v1，因此升级迁移不要求先删旧配置。
 
+### `settings.dailyStatsAlternateEntries`
+
+普通表单结果和独立录入事件使用不同的本地计数 namespace。该补充契约只负责把一个显式入口 identity 归入已有 v2 item；它不会改变提交目标、payload 或 `gradeMap`。完全虚构的示例：
+
+```json
+{
+  "dailyStatsAlternateEntries": {
+    "version": 1,
+    "scope": "all_profiles",
+    "groups": [],
+    "flatSummaries": [
+      {
+        "id": "sample-attention-flat",
+        "selectors": [
+          {"profileId": "example-intake", "entryId": "sample-independent-review"}
+        ]
+      }
+    ]
+  }
+}
+```
+
+- 根对象只允许 `version`、`scope`、`groups`、`flatSummaries`；`version` 必须是整数 `1`，`scope` 必须是 `all_profiles`。两个 collection 都必须是数组且可以为空；整个对象没有 selector 时应省略。
+- 每项只允许 `id` 与非空 `selectors`。`groups[].id` 必须精确引用 `dailyStatsV2.groups[].id`，`flatSummaries[].id` 必须精确引用 `dailyStatsV2.flatSummaries[].id`；同一 collection 内 item id 唯一。
+- selector 只允许 `profileId` / `entryId`，各为无首尾空白的非空文本且最长 256 characters。`profileId` 必须属于显式 `pickerVisible:true` source profile，`entryId` 必须唯一引用该 profile 上启用的 `workflow.alternateEntries.entries`。
+- selector 在同一 item 内不得重复，也不得跨同一 collection 的 item 重复；同一 selector 可以同时出现在一个 group 和一个 flat summary。每项最多 512 个 selector。
+- App 使用 `profileId + entryId + serial` 的独立幂等 identity 记账，并把计数放在按 Panel connection 隔离、旧 App 不读取的 App-private store。它不会把入口的 backend `resultKey` 或新对象字段写进普通 `results` / `daily_stats_*` 回滚镜像，因此选择入口不会污染普通结果计数，也不会破坏旧 App 对既有当日统计的读取。计数失败只影响展示；App 会在仍有 `COMPLETED` tombstone 时幂等补记，但不会因此阻塞已确认提交的本地清理或下一次生产提交。
+- 该对象依赖有效的 `dailyStatsV2`；缺失、引用失效或结构错误时只关闭独立录入汇总，不改变独立录入提交。旧 App 忽略未知的同级 setting，并继续使用原有统计与表单。
+
 ## 身份、可见性与模板
 
 | 字段 | 必需 | 说明 |
@@ -165,6 +194,8 @@ cross-App profile provider 暴露，`color` / `discovery` 不驱动当前主表�
       "scanner": {
         "expectedLength": 10,
         "applyExpectedLengthTo": ["ocr", "barcode", "entered"],
+        "allowedLengths": [9, 10, 11],
+        "applyAllowedLengthsTo": ["ocr", "barcode", "entered"],
         "preferredPrefixes": ["ZX"],
         "autoTextMode": "fallback",
         "rejectNumericOnly": true,
@@ -198,6 +229,7 @@ cross-App profile provider 暴露，`color` / `discovery` 不驱动当前主表�
 Scanner 对象支持：
 
 - `expectedLength`、`minLength`、`maxLength`：`1..256`；min 不大于 max，expected 必须落在显式边界内。`expectedLength` 的适用入口由 `applyExpectedLengthTo` 决定；min/max 属于下面可选择 source scope 的候选约束；
+- `allowedLengths`：可选的非空、无重复 `1..256` 整数数组，每项必须落在显式 `minLength` / `maxLength` 内。它可与 `expectedLength` 同时存在以兼容尚不识别列表的旧 App，但此时 `expectedLength` 必须是列表成员；新版优先使用 `allowedLengths`。`applyAllowedLengthsTo` 可选，规则同样只能使用非空、无重复的 `ocr`、`barcode`、`entered`；配置它时必须同时配置 `allowedLengths`，省略时列表默认应用于三个入口；
 - `applyExpectedLengthTo`：`expectedLength` 存在时可选的非空、无重复 source 数组，只能使用精确小写值 `ocr`、`barcode`、`entered`。三种来源可独立开关；迁移旧独立入口且旧版只限制相机结果时，应显式写 `["ocr", "barcode"]`，不能为了复用相机长度而收紧手输。为兼容已有主表单，`expectedLength` 存在但本字段缺失时仍按三种来源全部适用；反之，本字段存在而 `expectedLength` 缺失、数组为空、类型错误、重复、带首尾空白或含未知 source 时，App policy 会 fail-closed；
 - `preferredPrefixes`（迁移 fallback 也接受 `preferredSnPrefixes`）：非空字符串数组；
 - `autoTextMode`：空字符串、`always` 或 `fallback`；
@@ -656,19 +688,21 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
 
 发布时 Panel 进行跨 profile 的闭合校验：
 
-- 新建或迁移完成的 entry 除 `titleI18n` 外，示例列出的字段（包括 `submissionRetry`）都应显式存在；仅为读取旧 catalog 兼容缺失的 `submissionRetry`，此时 App 安全地按不自动重试处理。toggle 中除 `labelI18n` 外都必须显式存在。没有固定覆盖时仍写 `dataOverrides:{}`，不用缺失值表达默认；
+- 新建或迁移完成的 entry 除 `titleI18n` 外，示例列出的字段（包括 `submissionRetry`）都应显式存在；`scanner.applyAllowedLengthsTo` 是示例未写出的可选 override，只有来源 primary scanner 已配置非空 `allowedLengths` 时才能显式添加。仅为读取旧 catalog 兼容缺失的 `submissionRetry`，此时 App 安全地按不自动重试处理。toggle 中除 `labelI18n` 外都必须显式存在。没有固定覆盖时仍写 `dataOverrides:{}`，不用缺失值表达默认；
 - `targetProfileId` 必须在最终 catalog 中只命中一个 profile，不能等于来源 profile，并且目标必须显式设置 `pickerVisible:false`；
 - 隐藏目标必须有正整数 `template.id` / `template.warehouseId`、非空 `template.sku` 与 `snFields.primary`；`identifierRole` 当前只能是 `primary`，App 不从入口名称猜标识来源；
 - `resultKey` 必须精确引用目标 `gradeMap`；`photoTargetFields` 必须非空、无重复，并且只引用目标 `uploadFields`、`photoSlots` 或 `optionalSlots` 声明的 field；`minPhotos` 必须为 `1..20`；`maxPhotos:0` 明确表示不限张数（用于保持旧独立入口行为），正数则必须 `>= minPhotos`；`joinWith` 必须非空；
 - `uploadNameTemplate` 由 Panel 显式保存，只能使用 `{identifier}` 与 `{index}` 两个占位符并且必须同时包含两者；禁止 `/`、`\\`、冒号、引号和控制字符。结构化编辑器新建入口时把该字段留空，管理员必须显式填写（例如完全虚构的 `{identifier}-alternate-entry-{index}.jpg`），否则发布校验会拒绝；App 格式化时把 identifier 中不属于 `A-Z` / `a-z` / `0-9` / `.` / `_` / `-` 的字符替换为 `_`，index 从 `1` 开始；
-- `scanner.applyExpectedLengthTo` 必须显式列出 `ocr`、`barcode`、`entered` 中至少一个且不能重复；它只覆盖此独立入口的精确长度适用来源，长度值及其他归一化/标签规则仍来自来源 profile 的 primary scanner。这样同一 profile 可以保持主表单手输校验，同时让迁移后的旧独立入口只校验 OCR/条码；
+- `scanner.applyExpectedLengthTo` 必须显式列出 `ocr`、`barcode`、`entered` 中至少一个且不能重复；它只覆盖此独立入口的精确长度适用来源，精确长度值及其他归一化/标签规则仍来自来源 profile 的 effective primary scanner。来源只配置 `allowedLengths` 而没有精确长度时，该兼容 scope 仍必须保留，但没有可应用的精确长度规则；
+- `scanner.applyAllowedLengthsTo` 是可选的独立入口 override。缺失时继承来源 effective primary scanner 的 allowed-length scope；来源存在 `allowedLengths` 但缺失自身 `applyAllowedLengthsTo` 时，其默认 scope 是 `ocr`、`barcode`、`entered` 三者。显式配置时只覆盖该独立入口，必须是由这三个精确小写值组成的非空、无重复数组，并且来源 primary scanner 必须有非空 `allowedLengths`；否则 Panel 拒绝发布，App 也 fail closed。离散长度数值从不定义在 entry 上；
+- 当同一 source 同时命中 allowed-length 与为旧 App 保留的 exact-length fallback 时，新 App 优先使用 `allowedLengths`；`expectedLength` / `expectedSnLength` 必须是该列表成员，不会把列表压回单一长度。Panel 结构化独立入口控件可显示继承的 allowed scope、写入显式 override 或“恢复继承”；同样的字段可在 Advanced JSON 的 `workflow.alternateEntries.entries[].scanner` 精确编辑；
 - `submissionRetry` 只控制“后端已经返回且 Panel 分类器明确证明未写入”的最终 POST：`maxAttempts` 为包含首次请求在内的 `1..10`，`retryDelayMs` 为 `0..60000`。每次重试复用同一份不可变 payload 和本次已经取得的上传 URL，绝不重新上传照片；超时、断线、网关错误、非 JSON 或未分类响应立即进入结果不明锁，不消耗此重试额度。旧 catalog 缺少该对象或结构化编辑器新建入口时都使用安全值 `1/0`，即不自动重试；
 - `dataOverrides` 与每个 toggle 的 `dataOverrides` 只能引用目标已声明 field，field ownership 互不重复，不能替换目标主标识或 `template` identity；
 - `dynamicOverrideFields` 与 `dynamicOverrideProviders` 都必须显式为数组；不使用实时覆盖时两者都写 `[]`。每个 provider 必须引用同入口的 `triggerToggleKey`、隐藏目标的精确 `templateId`、正整数 `expectedStep`、adapter 中存在的 `resolverId` 和唯一 `outputField`。allow-list 必须与全部 provider 输出字段完全相等；输出不得与固定/toggle override 重叠，也不得替换 serial、result、照片或 template identity；
 - provider 开启时，运行时必须在任何照片 upload 或 submit POST 前拉取每个 active provider 的 live template，验证 template/step/warehouse/SKU identity，并要求 field selector 与 option selector 各恰好命中一项。响应缺失、多余、0/多命中、未知 key、空 builder 结果或 identity 不符都必须停止，不得回退到静态值；
 - 每个 toggle 必须有唯一 `key`、显式 `label`、可选 `labelI18n`、boolean `default` / `retainUntilExit` 及一个 `dataOverrides` 对象。App 显示 `labelI18n` 或 `label`，不按 key 写死现场文案；
 - `flags` 只允许 `duplicateCheck`、`previousSteps`、`printing`，且三项必须全部为 `false`，确保独立入口不意外继承标准提交链的可选副作用；
-- alternate object、entry、`submissionRetry`、toggle 与 flags 都拒绝未知 key；`enabled:false` 时 `entries` 必须为空，`enabled:true` 时至少一个 entry；entries / toggles 分别最多 16 项，照片 field 最多 32 项，覆盖来源必须唯一。
+- alternate object、entry、scanner、`submissionRetry`、toggle 与 flags 都拒绝未知 key；`enabled:false` 时 `entries` 必须为空，`enabled:true` 时至少一个 entry；entries / toggles 分别最多 16 项，照片 field 最多 32 项，覆盖来源必须唯一。
 
 缺少整个 `alternateEntries` 时旧 catalog 仍可在 Panel 打开，但视为关闭且不能按新 schema 发布；结构化编辑器会写入显式安全默认。发布仍要求 `workflow.compatibilityReviewed:true`。Panel 不会自动勾选兼容性核对，也不会把可见 profile 自动改为隐藏目标。上线前应以受控私有、最小化但机器值保真的 replay 逐项核对入口文案、toggle 生命周期、照片数量与拼接、上传文件名、最终 identity/payload，以及三个关闭 flags。Provider schema 与纯规则测试不等于 Android 主流程已经接线；尚未验证“compile → fetch → resolve → payload”全部发生在 upload 前的 build 必须保持 provider 数组为空。
 

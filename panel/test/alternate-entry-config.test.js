@@ -6,7 +6,7 @@ import {
   validateAlternateEntryReferences,
   validateFormProfile
 } from "../src/profile.js";
-import { validateProfilesForPublish } from "../src/worker.js";
+import { clientCatalog, validateProfilesForPublish } from "../src/worker.js";
 
 const seed = JSON.parse(await readFile(
   new URL("../../app/assets/form-profiles.seed.json", import.meta.url), "utf8"));
@@ -76,6 +76,42 @@ test("a fully closed fictional alternate entry passes local and catalog validati
   assert.deepEqual(validateProfilesForPublish([source, target]), []);
   // A one-profile Panel upsert validates against the final merged catalog, not just its request body.
   assert.deepEqual(validateProfilesForPublish([source], [source, target]), []);
+});
+
+test("an alternate entry may inherit a discrete allowed-length policy without a single exact length", () => {
+  const { source, target } = configuredCatalog();
+  const scanner = source.snPlugins.find((plugin) => plugin.key === "primary").scanner;
+  delete scanner.expectedLength;
+  delete scanner.applyExpectedLengthTo;
+  delete source.expectedSnLength;
+  scanner.allowedLengths = [16, 17];
+  scanner.applyAllowedLengthsTo = ["ocr", "barcode", "entered"];
+
+  assert.deepEqual(validateFormProfile(source), []);
+  assert.deepEqual(validateAlternateEntryReferences([source], [source, target]), []);
+  assert.deepEqual(validateProfilesForPublish([source, target]), []);
+});
+
+test("an explicit alternate allowed-length scope survives publish and App catalog delivery", () => {
+  const { source, target } = configuredCatalog();
+  const sourceScanner = source.snPlugins.find((plugin) => plugin.key === "primary").scanner;
+  sourceScanner.allowedLengths = [11, 12];
+  sourceScanner.applyAllowedLengthsTo = ["ocr", "barcode"];
+  const entryScanner = source.workflow.alternateEntries.entries[0].scanner;
+  entryScanner.applyAllowedLengthsTo = ["barcode", "entered"];
+
+  assert.deepEqual(validateFormProfile(source), []);
+  assert.deepEqual(validateProfilesForPublish([source, target]), []);
+  const delivered = clientCatalog({
+    schemaVersion: 2,
+    version: 8,
+    settings: {},
+    profiles: [source, target]
+  });
+  assert.deepEqual(delivered.profiles[0].workflow.alternateEntries.entries[0].scanner, {
+    applyExpectedLengthTo: ["ocr", "barcode"],
+    applyAllowedLengthsTo: ["barcode", "entered"]
+  });
 });
 
 test("alternate entry schema is strict and toggle display labels are explicit", () => {
@@ -195,12 +231,52 @@ test("alternate entry scanner scope preserves a path-specific length policy", ()
   assert.ok(validateFormProfile(source).includes(
     "workflow.alternateEntries.entries[0].scanner must be an object"));
 
-  entry.scanner = { applyExpectedLengthTo: ["ocr", "barcode", "barcode", "camera"] };
+  const sourceScanner = source.snPlugins.find((plugin) => plugin.key === "primary").scanner;
+  sourceScanner.allowedLengths = [11, 12];
+  entry.scanner = {
+    applyExpectedLengthTo: ["ocr", "barcode", "barcode", "camera"],
+    applyAllowedLengthsTo: ["entered", "entered", "camera"]
+  };
   const errors = validateFormProfile(source);
   assert.ok(errors.includes(
     "workflow.alternateEntries.entries[0].scanner.applyExpectedLengthTo[2] must be unique"));
   assert.ok(errors.includes(
     "workflow.alternateEntries.entries[0].scanner.applyExpectedLengthTo[3] must be one of: ocr, barcode, entered"));
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyAllowedLengthsTo[1] must be unique"));
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyAllowedLengthsTo[2] must be one of: ocr, barcode, entered"));
+});
+
+test("alternate scanner scopes fail closed without required entry and source policies", () => {
+  const { source } = configuredCatalog();
+  const entry = source.workflow.alternateEntries.entries[0];
+  const sourceScanner = source.snPlugins.find((plugin) => plugin.key === "primary").scanner;
+
+  entry.scanner = { applyAllowedLengthsTo: ["ocr"] };
+  let errors = validateFormProfile(source);
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyExpectedLengthTo must not be empty"));
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyAllowedLengthsTo requires source primary allowedLengths"));
+
+  entry.scanner = { applyExpectedLengthTo: ["ocr"], applyAllowedLengthsTo: [] };
+  errors = validateFormProfile(source);
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyAllowedLengthsTo must not be empty"));
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.applyAllowedLengthsTo requires source primary allowedLengths"));
+
+  entry.scanner = { applyExpectedLengthTo: ["ocr"], unknownScope: ["ocr"] };
+  errors = validateFormProfile(source);
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner.unknownScope is not supported"));
+
+  delete sourceScanner.expectedLength;
+  entry.scanner = { applyExpectedLengthTo: ["ocr"] };
+  errors = validateFormProfile(source);
+  assert.ok(errors.includes(
+    "workflow.alternateEntries.entries[0].scanner requires source primary expectedLength or allowedLengths"));
 });
 
 test("target resolution requires exactly one different hidden profile", () => {
@@ -315,7 +391,12 @@ test("Panel exposes structured alternate-entry, target, toggle, label and flag c
     "{identifier}-alternate-entry-{index}.jpg",
     "明确拒绝时 POST 总尝试次数",
     "只复用同一 payload 与已上传 URL；超时、断线或未知响应绝不重试。",
-    "独立入口长度校验：手工输入",
+    "精确长度作用入口",
+    "允许长度作用入口",
+    "（继承来源）",
+    "恢复继承",
+    "来源主标识未配置允许长度，当前不可用",
+    "来源当前无精确长度；该兼容范围保留但不生效",
     "固定字段覆盖（值为明确 JSON）",
     "实时模板覆盖 provider（高级配置）",
     "字段 allow-list 与 provider 输出必须完全一致",
@@ -328,5 +409,18 @@ test("Panel exposes structured alternate-entry, target, toggle, label and flag c
   assert.ok(html.includes('uploadTemplate.placeholder="必填，例如 {identifier}-alternate-entry-{index}.jpg"'));
   assert.match(html,
     /next\.push\(\{[\s\S]{0,500}uploadNameTemplate:"",toggles:\[\],[\s\S]{0,250}submissionRetry:\{maxAttempts:1,retryDelayMs:0\}/);
+  assert.match(html,
+    /const scanner=\{applyExpectedLengthTo:\[\.\.\.scannerSources\]\};/u);
+  assert.match(html,
+    /const selectedScope=hasExplicitScope[\s\S]{0,140}sourcePolicies\.inheritedAllowedScope/u);
+  assert.match(html,
+    /if\(!selected\.length\)\{[\s\S]{0,220}render\(\);[\s\S]{0,80}return;/u);
+  assert.match(html, /delete scanner\.applyAllowedLengthsTo;/u);
+  const scannerScopeUi = html.slice(
+    html.indexOf('const scannerScope=document.createElement("div")'),
+    html.indexOf("card.appendChild(scannerScope)")
+  );
+  assert.ok(scannerScopeUi.length > 0);
+  assert.doesNotMatch(scannerScopeUi, /rangeNumCtl|inputCtl|allowedLengths\]/u);
   assert.doesNotMatch(html, /a-step-entry/);
 });

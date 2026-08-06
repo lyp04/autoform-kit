@@ -8,6 +8,7 @@ import {
   DAILY_STATS_V2_MAX_GROUPS,
   DAILY_STATS_V2_MAX_SELECTORS,
   validateDailyStats,
+  validateDailyStatsAlternateEntries,
   validateDailyStatsV2
 } from "../src/daily-stats.js";
 import { validateFormProfile } from "../src/profile.js";
@@ -71,6 +72,50 @@ function validDailyStatsV2() {
   };
 }
 
+function alternateSourceProfile(id, resultKeys, entryIds, {
+  pickerVisible = true,
+  enabled = true
+} = {}) {
+  const profile = visibleProfile(id, resultKeys);
+  profile.pickerVisible = pickerVisible;
+  profile.workflow = {
+    alternateEntries: {
+      enabled,
+      entries: entryIds.map((entryId) => ({ id: entryId }))
+    }
+  };
+  return profile;
+}
+
+function alternateSelector(profileId, entryId) {
+  return { profileId, entryId };
+}
+
+function alternateItem(id, selectors) {
+  return { id, selectors };
+}
+
+function validDailyStatsAlternateEntries() {
+  return {
+    version: 1,
+    scope: "all_profiles",
+    groups: [
+      alternateItem("sample-ready-v2", [
+        alternateSelector("sample-one", "sample-entry-one")
+      ]),
+      alternateItem("sample-review-v2", [
+        alternateSelector("sample-two", "sample-entry-two")
+      ])
+    ],
+    flatSummaries: [
+      alternateItem("sample-total-v2", [
+        alternateSelector("sample-one", "sample-entry-one"),
+        alternateSelector("sample-two", "sample-entry-two")
+      ])
+    ]
+  };
+}
+
 test("dailyStats accepts ordered fictional groups backed by visible profile result keys", () => {
   const profiles = [
     visibleProfile("sample-one", ["sample-ready"]),
@@ -107,6 +152,114 @@ test("dailyStatsV2 accepts profile-qualified groups and flat summaries", () => {
   });
   assert.deepEqual(served.settings.dailyStatsV2, dailyStatsV2);
   assert.equal("workerOnlyFutureSecret" in served.settings, false);
+});
+
+test("dailyStatsAlternateEntries maps exact enabled source entries to v2 items", () => {
+  const profiles = [
+    alternateSourceProfile("sample-one", ["sample-ready"], ["sample-entry-one"]),
+    alternateSourceProfile("sample-two", ["sample-review"], ["sample-entry-two"])
+  ];
+  const dailyStatsV2 = validDailyStatsV2();
+  const mapping = validDailyStatsAlternateEntries();
+  assert.deepEqual(
+    validateDailyStatsAlternateEntries(mapping, dailyStatsV2, profiles), []);
+  assert.deepEqual(validateDailyStatsAlternateEntries({
+    version: 1, scope: "all_profiles", groups: [], flatSummaries: []
+  }, dailyStatsV2, profiles), []);
+  assert.ok(validateDailyStatsAlternateEntries({
+    version: 1, scope: "all_profiles", groups: [], flatSummaries: []
+  }, undefined, profiles).includes(
+    "dailyStatsAlternateEntries requires a valid dailyStatsV2"));
+
+  const served = clientCatalog({
+    settings: { dailyStatsV2, dailyStatsAlternateEntries: mapping },
+    profiles
+  });
+  assert.deepEqual(served.settings.dailyStatsAlternateEntries, mapping);
+});
+
+test("dailyStatsAlternateEntries is strict, v2-bound and collection-qualified", () => {
+  const profiles = [
+    alternateSourceProfile("sample-one", ["sample-ready"], [
+      "sample-entry-one", "sample-entry-one"
+    ]),
+    alternateSourceProfile("sample-two", ["sample-review", "sample-extra"], ["sample-entry-two"]),
+    alternateSourceProfile("sample-hidden", ["sample-ready"], ["sample-hidden-entry"], {
+      pickerVisible: false
+    }),
+    alternateSourceProfile("sample-disabled", ["sample-ready"], ["sample-disabled-entry"], {
+      enabled: false
+    })
+  ];
+  const dailyStatsV2 = validDailyStatsV2();
+  dailyStatsV2.flatSummaries.push(statsV2Item(
+    "sample-other-flat-v2", "Other", "#475569",
+    [selector("sample-two", "sample-extra")]));
+  const errors = validateDailyStatsAlternateEntries({
+    version: 2,
+    scope: "current_profile",
+    groups: [
+      {
+        ...alternateItem("sample-total-v2", [
+          alternateSelector("sample-one", "sample-entry-one"),
+          alternateSelector("sample-one", "sample-entry-one"),
+          alternateSelector("sample-hidden", "sample-hidden-entry"),
+          alternateSelector("sample-disabled", "sample-disabled-entry")
+        ]),
+        unsupported: true
+      },
+      alternateItem("sample-ready-v2", [
+        alternateSelector("sample-two", "sample-entry-two")
+      ]),
+      alternateItem("sample-review-v2", [
+        alternateSelector("sample-two", "sample-entry-two")
+      ])
+    ],
+    flatSummaries: [
+      alternateItem("sample-total-v2", [
+        alternateSelector("sample-two", "sample-entry-two")
+      ]),
+      alternateItem("sample-other-flat-v2", [
+        alternateSelector("sample-two", "sample-entry-two")
+      ])
+    ],
+    unsupported: true
+  }, dailyStatsV2, profiles);
+  for (const expected of [
+    "dailyStatsAlternateEntries.unsupported is unsupported",
+    "dailyStatsAlternateEntries.version must equal 1",
+    "dailyStatsAlternateEntries.scope must equal all_profiles",
+    "dailyStatsAlternateEntries.groups[0].unsupported is unsupported",
+    "dailyStatsAlternateEntries.groups[0].id must reference a dailyStatsV2 group id",
+    "dailyStatsAlternateEntries.groups[0].selectors[1] pair must be unique within its item",
+    "dailyStatsAlternateEntries.groups[0].selectors[0] must reference exactly one enabled alternate entry on the selected pickerVisible profile",
+    "dailyStatsAlternateEntries.groups[0].selectors[2] must reference exactly one enabled alternate entry on the selected pickerVisible profile",
+    "dailyStatsAlternateEntries.groups[0].selectors[3] must reference exactly one enabled alternate entry on the selected pickerVisible profile",
+    "dailyStatsAlternateEntries.groups[2].selectors[0] pair must not appear in more than one group",
+    "dailyStatsAlternateEntries.flatSummaries[0].id must be unique across groups and flatSummaries",
+    "dailyStatsAlternateEntries.flatSummaries[1].selectors[0] pair must not appear in more than one flat summary"
+  ]) assert.ok(errors.includes(expected), expected);
+  assert.equal(errors.some((error) => error.includes(
+    "dailyStatsAlternateEntries.flatSummaries[0].selectors[0] pair must not appear in more than one group")), false);
+});
+
+test("invalid dailyStatsAlternateEntries is omitted without removing valid dailyStatsV2", () => {
+  const profiles = [
+    alternateSourceProfile("sample-one", ["sample-ready"], ["sample-entry-one"]),
+    alternateSourceProfile("sample-two", ["sample-review"], ["sample-entry-two"])
+  ];
+  const dailyStatsV2 = validDailyStatsV2();
+  const invalid = validDailyStatsAlternateEntries();
+  invalid.groups[0].selectors[0].entryId = "missing-entry";
+  const source = {
+    settings: { dailyStatsV2, dailyStatsAlternateEntries: invalid },
+    profiles
+  };
+  const served = clientCatalog(source);
+  assert.deepEqual(served.settings.dailyStatsV2, dailyStatsV2);
+  assert.equal("dailyStatsAlternateEntries" in served.settings, false);
+  assert.equal(source.settings.dailyStatsAlternateEntries.groups[0]
+    .selectors[0].entryId, "missing-entry");
 });
 
 test("dailyStatsV2 enforces root, item and collection bounds", () => {
@@ -357,10 +510,30 @@ test("Panel structured global editor wires exact groups and flat summaries into 
   assert.match(html, /function buildDailyStatsV2\(\)/u);
   assert.match(html, /version:2,[\s\S]*scope:"all_profiles",[\s\S]*flatSummaries:/u);
   assert.match(html,
-    /body:\{baseVersion:CATALOG_VERSION,dailyStatsV2\}/u);
+    /body:\{baseVersion:CATALOG_VERSION,dailyStatsV2,dailyStatsAlternateEntries\}/u);
   assert.match(html,
-    /body:\{ baseVersion:CATALOG_VERSION,[^}]*dailyStats, dailyStatsV2,/u);
+    /body:\{ baseVersion:CATALOG_VERSION,[^}]*dailyStats, dailyStatsV2, dailyStatsAlternateEntries,/u);
   assert.match(html, /applyDailyStatsV2ToLocalSettings\(dailyStatsV2\)/u);
+});
+
+test("Panel v2 editor saves independent-entry selectors in a separate supplemental setting", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  assert.match(html, /独立录入入口（可选）/u);
+  assert.match(html, /function dailyStatsAlternateEntryAvailableSelectors\(\)/u);
+  assert.match(html, /profile\?\.pickerVisible!==true \|\| alternateEntries\?\.enabled!==true/u);
+  assert.match(html, /item\.alternateEntrySelectors/u);
+  assert.match(html, /function mergeDailyStatsAlternateEntrySelectors\(items,storedItems\)/u);
+  assert.match(html, /function buildDailyStatsAlternateEntries\(\)/u);
+  assert.match(html,
+    /return \{version:1,scope:"all_profiles",groups,flatSummaries\}/u);
+  assert.match(html, /return \{profileId,entryId\}/u);
+  assert.match(html,
+    /applyDailyStatsAlternateEntriesToLocalSettings\(dailyStatsAlternateEntries\)/u);
+
+  const v2Start = html.indexOf("function buildDailyStatsV2()");
+  const v2End = html.indexOf("function mergeDailyStatsAlternateEntrySelectors", v2Start);
+  assert.ok(v2Start >= 0 && v2End > v2Start);
+  assert.doesNotMatch(html.slice(v2Start, v2End), /alternateEntrySelectors/u);
 });
 
 test("profile uiColor accepts only exact six-digit #RRGGBB values", () => {

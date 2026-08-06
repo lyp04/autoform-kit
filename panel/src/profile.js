@@ -72,6 +72,7 @@ export function validateFormProfile(profile) {
   validateSnPlugins(profile.snPlugins, errors, "snPlugins");
   validateSnPlugins(profile.snPluginsHidden, errors, "snPluginsHidden");
   validateScannerBindings(profile, errors);
+  validateEffectivePrimaryScannerFallback(profile, errors);
   const materialCodes = validateMaterialGroups(profile.materialGroups, errors);
   validateNotifySkipItems(profile.notifySkipMaterials, materialCodes, errors);
   validateConditionalFields(profile.conditionalFields, resultKeys, errors);
@@ -562,17 +563,23 @@ function validateAlternateEntries(profile, value, errors) {
     }
     validateUploadNameTemplate(entry.uploadNameTemplate,
       `${path}.uploadNameTemplate`, errors);
-    validateAlternateEntryScanner(entry.scanner, `${path}.scanner`, errors);
-    validateAlternateSubmissionRetry(entry.submissionRetry,
-      `${path}.submissionRetry`, errors);
     const primaryPlugin = Array.isArray(profile.snPlugins)
       ? profile.snPlugins.find((plugin) => plugin?.key === "primary") : undefined;
     const primaryScanner = isPlainObject(primaryPlugin?.scanner)
       ? primaryPlugin.scanner : profile.scanner;
     const expectedLength = primaryScanner?.expectedLength ?? profile.expectedSnLength;
-    if (!Number.isInteger(expectedLength) || expectedLength < 1 || expectedLength > 256) {
-      errors.push(`${path}.scanner requires the source primary scanner expectedLength`);
+    const allowedLengths = primaryScanner?.allowedLengths;
+    const hasExpectedLength = Number.isInteger(expectedLength)
+      && expectedLength >= 1 && expectedLength <= 256;
+    const hasAllowedLengths = Array.isArray(allowedLengths) && allowedLengths.length > 0;
+    validateAlternateEntryScanner(entry.scanner, `${path}.scanner`, errors, {
+      hasAllowedLengths
+    });
+    if (!hasExpectedLength && !hasAllowedLengths) {
+      errors.push(`${path}.scanner requires source primary expectedLength or allowedLengths`);
     }
+    validateAlternateSubmissionRetry(entry.submissionRetry,
+      `${path}.submissionRetry`, errors);
     validateAlternateToggles(entry.toggles, `${path}.toggles`, errors);
     validateAlternateFlags(entry.flags, `${path}.flags`, errors);
     validateOverrideObject(entry.dataOverrides, `${path}.dataOverrides`, errors);
@@ -675,17 +682,28 @@ function validateSafeAlternateProviderId(value, path, errors) {
   }
 }
 
-function validateAlternateEntryScanner(value, path, errors) {
+function validateAlternateEntryScanner(value, path, errors, {
+  hasAllowedLengths = false
+} = {}) {
   if (!isPlainObject(value)) {
     errors.push(`${path} must be an object`);
     return;
   }
-  allowOnly(value, ["applyExpectedLengthTo"], path, errors);
+  allowOnly(value, ["applyExpectedLengthTo", "applyAllowedLengthsTo"], path, errors);
   validateScannerSources(value.applyExpectedLengthTo,
     `${path}.applyExpectedLengthTo`, errors);
   if (!Array.isArray(value.applyExpectedLengthTo)
       || value.applyExpectedLengthTo.length === 0) {
     errors.push(`${path}.applyExpectedLengthTo must not be empty`);
+  }
+  validateScannerSources(value.applyAllowedLengthsTo,
+    `${path}.applyAllowedLengthsTo`, errors);
+  if (Array.isArray(value.applyAllowedLengthsTo)
+      && value.applyAllowedLengthsTo.length === 0) {
+    errors.push(`${path}.applyAllowedLengthsTo must not be empty`);
+  }
+  if (value.applyAllowedLengthsTo !== undefined && !hasAllowedLengths) {
+    errors.push(`${path}.applyAllowedLengthsTo requires source primary allowedLengths`);
   }
 }
 
@@ -1407,6 +1425,48 @@ function validateScannerBindings(profile, errors) {
   }
 }
 
+/**
+ * Mirrors the App's primary-scanner fallback merge without mutating the authored profile.
+ * A role scanner's explicit expectedLength wins; otherwise legacy expectedSnLength is injected
+ * into the effective policy and must satisfy the same bounds and allowedLengths contract.
+ */
+function validateEffectivePrimaryScannerFallback(profile, errors) {
+  if (!isPlainObject(profile)) return;
+  const plugins = Array.isArray(profile.snPlugins) ? profile.snPlugins : [];
+  const primaryIndex = plugins.findIndex((plugin) => plugin?.key === "primary");
+  const primary = primaryIndex >= 0 ? plugins[primaryIndex] : null;
+  let scanner; let path;
+  if (primary && primary.scanner !== undefined) {
+    if (!isPlainObject(primary.scanner)) return;
+    scanner = primary.scanner;
+    path = `snPlugins[${primaryIndex}].scanner`;
+  } else if (profile.scanner !== undefined) {
+    if (!isPlainObject(profile.scanner)) return;
+    scanner = profile.scanner;
+    path = "scanner";
+  } else {
+    scanner = {};
+    path = "scanner";
+  }
+  if (Object.prototype.hasOwnProperty.call(scanner, "expectedLength")) return;
+  const fallback = profile.expectedSnLength;
+  if (!Number.isInteger(fallback) || fallback < 1) return;
+  if (fallback > 256) {
+    errors.push("expectedSnLength must be at most 256 when used as primary scanner fallback");
+    return;
+  }
+  if (Number.isInteger(scanner.minLength) && fallback < scanner.minLength) {
+    errors.push(`expectedSnLength must be at least ${path}.minLength when used as primary scanner fallback`);
+  }
+  if (Number.isInteger(scanner.maxLength) && fallback > scanner.maxLength) {
+    errors.push(`expectedSnLength must be at most ${path}.maxLength when used as primary scanner fallback`);
+  }
+  if (Array.isArray(scanner.allowedLengths)
+      && !scanner.allowedLengths.includes(fallback)) {
+    errors.push(`expectedSnLength must be included in ${path}.allowedLengths when used as primary scanner fallback`);
+  }
+}
+
 function validateMaterialGroups(value, errors) {
   const allCodes = new Set();
   if (value === undefined) return allCodes;
@@ -1459,11 +1519,12 @@ function validateScannerPolicy(value, path, errors) {
     return;
   }
   const allowedKeys = new Set([
-    "expectedLength", "preferredPrefixes", "preferredSnPrefixes", "autoTextMode",
+    "expectedLength", "allowedLengths", "preferredPrefixes", "preferredSnPrefixes", "autoTextMode",
     "rejectNumericOnly", "candidateMode", "candidateOrder", "minLength", "maxLength",
     "requireLetterAndDigit", "rejectedSubstrings", "stripLabels", "caseMode",
     "removeWhitespace", "labelMatchMode", "candidateCharacterMode",
-    "applyCandidateRulesTo", "applyExpectedLengthTo", "stripLabelsFrom", "prompt", "promptI18n"
+    "applyCandidateRulesTo", "applyExpectedLengthTo", "applyAllowedLengthsTo",
+    "stripLabelsFrom", "prompt", "promptI18n"
   ]);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) errors.push(`${path}.${key} is not a supported scanner setting`);
@@ -1485,6 +1546,22 @@ function validateScannerPolicy(value, path, errors) {
   if (Number.isInteger(value.expectedLength)
       && Number.isInteger(value.maxLength) && value.expectedLength > value.maxLength) {
     errors.push(`${path}.expectedLength must be at most maxLength`);
+  }
+  validateScannerAllowedLengths(value.allowedLengths, `${path}.allowedLengths`, errors);
+  if (Array.isArray(value.allowedLengths)) {
+    value.allowedLengths.forEach((length, index) => {
+      if (!Number.isInteger(length)) return;
+      if (Number.isInteger(value.minLength) && length < value.minLength) {
+        errors.push(`${path}.allowedLengths[${index}] must be at least minLength`);
+      }
+      if (Number.isInteger(value.maxLength) && length > value.maxLength) {
+        errors.push(`${path}.allowedLengths[${index}] must be at most maxLength`);
+      }
+    });
+  }
+  if (Number.isInteger(value.expectedLength) && Array.isArray(value.allowedLengths)
+      && !value.allowedLengths.includes(value.expectedLength)) {
+    errors.push(`${path}.expectedLength must be included in allowedLengths when both are configured`);
   }
   if (value.autoTextMode !== undefined && !["", "always", "fallback"].includes(value.autoTextMode)) {
     errors.push(`${path}.autoTextMode must be empty, always or fallback`);
@@ -1533,6 +1610,16 @@ function validateScannerPolicy(value, path, errors) {
   if (value.applyExpectedLengthTo !== undefined
       && !Number.isInteger(value.expectedLength)) {
     errors.push(`${path}.expectedLength is required when applyExpectedLengthTo is configured`);
+  }
+  validateScannerSources(value.applyAllowedLengthsTo,
+    `${path}.applyAllowedLengthsTo`, errors);
+  if (Array.isArray(value.applyAllowedLengthsTo)
+      && value.applyAllowedLengthsTo.length === 0) {
+    errors.push(`${path}.applyAllowedLengthsTo must not be empty`);
+  }
+  if (value.applyAllowedLengthsTo !== undefined
+      && (!Array.isArray(value.allowedLengths) || value.allowedLengths.length === 0)) {
+    errors.push(`${path}.allowedLengths is required when applyAllowedLengthsTo is configured`);
   }
   validateScannerSources(value.stripLabelsFrom, `${path}.stripLabelsFrom`, errors);
   if (Array.isArray(value.stripLabelsFrom) && value.stripLabelsFrom.length > 0
@@ -1583,6 +1670,24 @@ function validateScannerStringList(value, path, errors, options = {}) {
     const canonical = token.toUpperCase();
     if (seen.has(canonical)) errors.push(`${itemPath} must be unique (case-insensitive)`);
     seen.add(canonical);
+  });
+}
+
+function validateScannerAllowedLengths(value, path, errors) {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return;
+  }
+  if (value.length === 0) errors.push(`${path} must not be empty`);
+  const seen = new Set();
+  value.forEach((length, index) => {
+    if (!Number.isInteger(length) || length < 1 || length > 256) {
+      errors.push(`${path}[${index}] must be an integer from 1 to 256`);
+      return;
+    }
+    if (seen.has(length)) errors.push(`${path}[${index}] must be unique`);
+    seen.add(length);
   });
 }
 

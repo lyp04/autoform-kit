@@ -59,22 +59,25 @@ Adapter 缺失、不支持或基础字段不完整时，App 会显示 configurat
 
 ## 4. 表单入口与 profile 验证
 
-App picker 只显示 `pickerVisible:true` 的 profiles。没有单独的特殊入口；需要用户进入的每个 form 都必须在 Panel 显式开启该字段。
+App 的标准表单选择器只显示 `pickerVisible:true` 的来源 profiles。来源 profile 在
+`workflow.alternateEntries` 中显式声明的每个有效独立入口，会作为该来源表单页的单独按钮
+显示；它提交到 `targetProfileId` 唯一引用的 `pickerVisible:false` 隐藏目标。隐藏目标不出现在
+选择器中，App 也不会根据入口标题、profile 顺序、模板或其他业务值猜测来源和目标。
 
 首次连接至少检查：
 
 1. Brand 与 private catalog 相符；
 2. 可见 profiles 的名称、顺序和颜色与 Panel 一致；
-3. Hidden profile 不出现在 picker；
+3. Hidden profile 不出现在 picker；每个已启用独立入口只在其明确来源 profile 上显示，并只绑定它唯一引用的 hidden target；
 4. 使用 dedicated non-production account 完成 login；
-5. Scan policy、result choices、conditional value 和 localized labels 正确；
+5. Scan policy、result choices、conditional value 和 localized labels 正确；对配置离散长度的主表单和每个已启用独立入口，分别用 OCR、barcode 和 entered 验证当前 effective `allowedLengths` 中的每个允许值都通过，相邻未允许长度都被拒绝；即使同时保留单一 `expectedLength` / `expectedSnLength` 给旧 App 作 fallback，新 App 也不得用它覆盖允许列表；
 6. Photo slot 标题、顺序与数量边界正确，`defaultPhotoOrder` 的 Panel 结构化选项与 App 实际顺序一致；
 7. 分组拍摄切换提示使用当前框和下一框的实际标题；
 8. 新导入的可见 `singleChoice` 字段在 Panel 中先保持空值与 `reviewRequired:true`，明确选定提交值后才发布；
 9. 用 fictional record 完成 upload 与 submit；
 10. 逐一验证上一工序（含 recipe 响应分类/重试）、重复记录、打印（含手动允许状态/确认）、缺失恢复、提交/网络重试和通知中每个显式开启的策略；
 11. 重复日期严格按 adapter 的 transform order / epoch unit / pattern / time-zone source / 可选兼容策略解释，打印任务按精确标识与 numeric job ID 关联；
-12. 若配置 `dailyStatsV2`，逐项验证 profile/result pair 的归类、flat summary 展示，以及 flat 数值不会再次加入今日总数；同名 result key 在不同 profile 的行为必须分别验证；
+12. 若配置 `dailyStatsV2`，逐项验证 profile/result pair 的归类、flat summary 展示，以及 flat 数值不会再次加入今日总数；同名 result key 在不同 profile 的行为必须分别验证；若还配置 `dailyStatsAlternateEntries`，每个 source profile / entry pair 只进入它明确引用的 group / flat summary，且不污染普通 result 计数；
 13. 迁移验证中确认旧 App 继续使用未改动的 v1 `dailyStats`，新版 App 优先使用有效 v2，删除 v2 后新版 App 回退 v1；
 14. Offline、wrong key 和 expired token 不会向意外 host 发请求。
 

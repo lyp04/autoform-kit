@@ -60,7 +60,11 @@ import {
   validateUpdateSourceCompatibility
 } from "./update-source.js";
 import { panelRuntimeFromVersionMetadata } from "./panel-runtime.js";
-import { validateDailyStats, validateDailyStatsV2 } from "./daily-stats.js";
+import {
+  validateDailyStats,
+  validateDailyStatsAlternateEntries,
+  validateDailyStatsV2
+} from "./daily-stats.js";
 
 const json = (data, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -363,6 +367,7 @@ const APP_CATALOG_SETTING_KEYS = Object.freeze([
   "updateSource",
   "dailyStats",
   "dailyStatsV2",
+  "dailyStatsAlternateEntries",
   "webOrigin",
   "webReferer",
   "endpoints",
@@ -387,6 +392,10 @@ export function clientCatalog(catalog) {
     }
     if (validateDailyStatsV2(copy.settings.dailyStatsV2, copy.profiles).length > 0) {
       delete copy.settings.dailyStatsV2;
+    }
+    if (validateDailyStatsAlternateEntries(copy.settings.dailyStatsAlternateEntries,
+        copy.settings.dailyStatsV2, copy.profiles).length > 0) {
+      delete copy.settings.dailyStatsAlternateEntries;
     }
   }
   return copy;
@@ -812,6 +821,15 @@ async function handleApi(request, env, url) {
         problems: [{ errors: dailyStatsV2Errors }]
       }, 422);
     }
+    const dailyStatsAlternateEntriesErrors = validateDailyStatsAlternateEntries(
+      currentCatalog.settings?.dailyStatsAlternateEntries,
+      currentCatalog.settings?.dailyStatsV2, finalProfiles);
+    if (dailyStatsAlternateEntriesErrors.length) {
+      return json({
+        error: "dailyStatsAlternateEntries validation failed",
+        problems: [{ errors: dailyStatsAlternateEntriesErrors }]
+      }, 422);
+    }
     const capabilityErrors = validateWorkflowCapabilities(finalProfiles, backendAdapter);
     capabilityErrors.push(...validateNotificationWorkflowCapabilities(
       finalProfiles, currentCatalog.settings?.notificationAdapter));
@@ -885,6 +903,11 @@ async function handleApi(request, env, url) {
     if (Object.prototype.hasOwnProperty.call(b, "dailyStatsV2")) {
       // null is the deletion command; undefined is omitted from the published catalog JSON.
       settings.dailyStatsV2 = b.dailyStatsV2 === null ? undefined : b.dailyStatsV2;
+    }
+    if (Object.prototype.hasOwnProperty.call(b, "dailyStatsAlternateEntries")) {
+      // null is the deletion command; undefined is omitted from the published catalog JSON.
+      settings.dailyStatsAlternateEntries = b.dailyStatsAlternateEntries === null
+        ? undefined : b.dailyStatsAlternateEntries;
     }
     if (typeof b.backendApiBase === "string") settings.backendApiBase = b.backendApiBase;
     if (typeof b.brand === "string") settings.brand = b.brand;
@@ -971,6 +994,15 @@ async function handleApi(request, env, url) {
       return json({
         error: "dailyStatsV2 validation failed",
         problems: [{ errors: dailyStatsV2Errors }]
+      }, 400);
+    }
+    const dailyStatsAlternateEntriesErrors = validateDailyStatsAlternateEntries(
+      effectiveSettings.dailyStatsAlternateEntries,
+      effectiveSettings.dailyStatsV2, finalProfiles);
+    if (dailyStatsAlternateEntriesErrors.length) {
+      return json({
+        error: "dailyStatsAlternateEntries validation failed",
+        problems: [{ errors: dailyStatsAlternateEntriesErrors }]
       }, 400);
     }
     const updateCompatibilityErrors =

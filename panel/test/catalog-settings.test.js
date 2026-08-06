@@ -12,6 +12,73 @@ const seed = JSON.parse(await readFile(
 const clone = (value) => JSON.parse(JSON.stringify(value));
 const sampleProfile = (index = 0) => clone(seed.profiles[index]);
 
+function alternateDailyStatsCatalog() {
+  const source = sampleProfile(0);
+  source.id = "sample-alternate-source";
+  source.pickerVisible = true;
+  source.snPlugins.find((plugin) => plugin.key === "primary")
+    .scanner.expectedLength = 12;
+  const target = sampleProfile(1);
+  target.id = "sample-alternate-target";
+  target.pickerVisible = false;
+  const targetPhotoField = target.photoSlots[0].field;
+  source.workflow.alternateEntries = {
+    enabled: true,
+    entries: [{
+      id: "sample-alternate-entry",
+      title: "Sample alternate entry",
+      targetProfileId: target.id,
+      identifierRole: "primary",
+      resultKey: "sample-ready",
+      photoTargetFields: [targetPhotoField],
+      joinWith: ",",
+      minPhotos: 1,
+      maxPhotos: 1,
+      uploadNameTemplate: "{identifier}-alternate-{index}.jpg",
+      scanner: { applyExpectedLengthTo: ["ocr", "barcode"] },
+      submissionRetry: { maxAttempts: 1, retryDelayMs: 0 },
+      toggles: [],
+      flags: { duplicateCheck: false, previousSteps: false, printing: false },
+      dataOverrides: {},
+      dynamicOverrideFields: [],
+      dynamicOverrideProviders: []
+    }]
+  };
+  const dailyStatsV2 = {
+    version: 2,
+    scope: "all_profiles",
+    groups: [{
+      id: "sample-alternate-group",
+      label: "Sample group",
+      uiColor: "#2563EB",
+      selectors: [{ profileId: source.id, resultKey: "sample-ready" }]
+    }],
+    flatSummaries: [{
+      id: "sample-alternate-flat",
+      label: "Sample flat",
+      uiColor: "#64748B",
+      selectors: [{ profileId: source.id, resultKey: "sample-ready" }]
+    }]
+  };
+  const dailyStatsAlternateEntries = {
+    version: 1,
+    scope: "all_profiles",
+    groups: [{
+      id: "sample-alternate-group",
+      selectors: [{ profileId: source.id, entryId: "sample-alternate-entry" }]
+    }],
+    flatSummaries: [{
+      id: "sample-alternate-flat",
+      selectors: [{ profileId: source.id, entryId: "sample-alternate-entry" }]
+    }]
+  };
+  return {
+    profiles: [source, target],
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  };
+}
+
 function authenticatedPanelRequest(path, body) {
   return new Request(`https://panel.test.invalid${path}`, {
     method: "POST",
@@ -180,6 +247,38 @@ test("catalog publish validates effective dailyStatsV2 even when called below th
       },
       expectedVersion: 8
     }), /dailyStatsV2 validation failed/u);
+    assert.equal(github.refUpdates, 0);
+  } finally {
+    github.restore();
+  }
+});
+
+test("catalog publish validates effective alternate-entry attribution below the Worker route", async () => {
+  const {
+    profiles,
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  } = alternateDailyStatsCatalog();
+  dailyStatsAlternateEntries.groups[0].selectors[0].entryId = "missing-entry";
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({
+      schemaVersion: 2,
+      version: 9,
+      settings: { backendAdapter: validBackendAdapter() },
+      profiles
+    }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    await assert.rejects(() => publishCatalog({
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    }, profiles, {
+      publicUrl: "https://catalog.test.invalid",
+      settings: { dailyStatsV2, dailyStatsAlternateEntries },
+      expectedVersion: 9
+    }), /dailyStatsAlternateEntries validation failed/u);
     assert.equal(github.refUpdates, 0);
   } finally {
     github.restore();
@@ -560,6 +659,117 @@ test("settings API validates, stores and deletes App-facing dailyStatsV2", async
     const deleted = JSON.parse(files.get("form-profiles.json").text);
     assert.equal("dailyStatsV2" in deleted.settings, false);
     assert.equal(github.refUpdates, 2);
+  } finally {
+    github.restore();
+  }
+});
+
+test("settings API stores, validates and deletes alternate-entry daily-stat attribution", async () => {
+  const adapter = validBackendAdapter();
+  const settings = {
+    backendAdapter: adapter,
+    backendApiBase: adapter.baseUrl,
+    sessionInvalidHttpStatuses: [...adapter.auth.sessionInvalidHttpStatuses],
+    sessionInvalidCodes: [...adapter.auth.sessionInvalidCodes],
+    sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
+  };
+  const {
+    profiles,
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  } = alternateDailyStatsCatalog();
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({ schemaVersion: 2, version: 18, settings, profiles }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    const response = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 18,
+      dailyStatsV2,
+      dailyStatsAlternateEntries
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal((await response.json()).version, 19);
+    const written = JSON.parse(files.get("form-profiles.json").text);
+    assert.deepEqual(written.settings.dailyStatsV2, dailyStatsV2);
+    assert.deepEqual(written.settings.dailyStatsAlternateEntries,
+      dailyStatsAlternateEntries);
+    assert.equal(github.refUpdates, 1);
+
+    const orphanResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 19,
+      dailyStatsV2: null
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(orphanResponse.status, 400);
+    const orphanBody = await orphanResponse.json();
+    assert.equal(orphanBody.error,
+      "dailyStatsAlternateEntries validation failed");
+    assert.ok(orphanBody.problems[0].errors.includes(
+      "dailyStatsAlternateEntries.groups[0].id must reference a dailyStatsV2 group id"));
+    assert.equal(github.refUpdates, 1);
+
+    const deleteResponse = await worker.fetch(authenticatedPanelRequest("/api/settings", {
+      baseVersion: 19,
+      dailyStatsAlternateEntries: null
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(deleteResponse.status, 200, await deleteResponse.clone().text());
+    assert.equal((await deleteResponse.json()).version, 20);
+    const deleted = JSON.parse(files.get("form-profiles.json").text);
+    assert.equal("dailyStatsAlternateEntries" in deleted.settings, false);
+    assert.deepEqual(deleted.settings.dailyStatsV2, dailyStatsV2);
+    assert.equal(github.refUpdates, 2);
+  } finally {
+    github.restore();
+  }
+});
+
+test("profile publish rejects retained alternate-entry stats mappings made unreachable", async () => {
+  const adapter = validBackendAdapter();
+  const {
+    profiles,
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  } = alternateDailyStatsCatalog();
+  const settings = {
+    backendAdapter: adapter,
+    backendApiBase: adapter.baseUrl,
+    sessionInvalidHttpStatuses: [...adapter.auth.sessionInvalidHttpStatuses],
+    sessionInvalidCodes: [...adapter.auth.sessionInvalidCodes],
+    sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns],
+    dailyStatsV2,
+    dailyStatsAlternateEntries
+  };
+  const files = new Map([["form-profiles.json", {
+    text: JSON.stringify({ schemaVersion: 2, version: 20, settings, profiles }),
+    sha: "profiles-sha"
+  }]]);
+  const github = installCatalogGitMock(files);
+  try {
+    const sourceWithoutEntry = clone(profiles[0]);
+    sourceWithoutEntry.workflow.alternateEntries = { enabled: false, entries: [] };
+    const response = await worker.fetch(authenticatedPanelRequest("/api/publish", {
+      baseVersion: 20,
+      profiles: [sourceWithoutEntry]
+    }), {
+      GITHUB_REPO: "sample/catalog",
+      GITHUB_TOKEN: "sample-token"
+    });
+    assert.equal(response.status, 422, await response.clone().text());
+    const body = await response.json();
+    assert.equal(body.error, "dailyStatsAlternateEntries validation failed");
+    assert.ok(body.problems[0].errors.includes(
+      "dailyStatsAlternateEntries.groups[0].selectors[0] must reference exactly one enabled alternate entry on the selected pickerVisible profile"));
+    assert.equal(github.refUpdates, 0);
   } finally {
     github.restore();
   }

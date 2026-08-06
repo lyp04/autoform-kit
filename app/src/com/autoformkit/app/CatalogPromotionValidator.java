@@ -116,6 +116,8 @@ final class CatalogPromotionValidator {
         for (ProfileState source : states) {
             validateAlternateEntries(source, profiles, profilesById);
         }
+        validateDailyStatsAlternateEntries(
+            catalogRoot.optJSONObject("settings"), states);
 
         // A visible profile or either side of an alternate link can open a remote workflow.
         for (ProfileState state : states) {
@@ -188,7 +190,8 @@ final class CatalogPromotionValidator {
         if (profile.has("expectedSnLength")) {
             positiveInt(profile.opt("expectedSnLength"), path + ".expectedSnLength");
         }
-        validateScanner(profile.opt("scanner"), profile.has("scanner"), path + ".scanner");
+        validateScanner(profile.opt("scanner"), profile.has("scanner"),
+            path + ".scanner", profile, true);
 
         Set<String> pluginKeys = new LinkedHashSet<>();
         validateIdentifierPlugins(profile, "snPlugins", fields, pluginKeys, path);
@@ -223,14 +226,18 @@ final class CatalogPromotionValidator {
                 if (!field.equals(roleField)) reject(itemPath + ".field.binding");
             }
             validateScanner(plugin.opt("scanner"), plugin.has("scanner"),
-                itemPath + ".scanner");
+                itemPath + ".scanner", profile, "primary".equals(pluginKey));
         }
     }
 
-    private static void validateScanner(Object raw, boolean configured, String path) {
+    private static void validateScanner(Object raw, boolean configured, String path,
+                                        JSONObject profile,
+                                        boolean useLegacyPrimaryFallback) {
         if (!configured) return;
         JSONObject scanner = requiredObject(raw, path);
-        if (!SnScanRules.Policy.from(scanner).valid) reject(path);
+        JSONObject effective = scannerWithLegacyExpectedFallback(
+            scanner, profile, useLegacyPrimaryFallback, path);
+        if (!SnScanRules.Policy.from(effective).valid) reject(path);
     }
 
     private static PhotoContract validatePhotos(JSONObject profile, String path) {
@@ -503,6 +510,127 @@ final class CatalogPromotionValidator {
                 }
             }
         }
+    }
+
+    /**
+     * Validates the optional independent-entry contribution map. Its selectors intentionally use
+     * source profile + entry id rather than a result key, so recording an independent workflow can
+     * never increment or reinterpret a main-form grade counter.
+     */
+    private static void validateDailyStatsAlternateEntries(
+            JSONObject settings, List<ProfileState> states) {
+        if (settings == null || !settings.has("dailyStatsAlternateEntries")) return;
+        String path = "settings.dailyStatsAlternateEntries";
+        JSONObject configured = requiredObject(
+            settings.opt("dailyStatsAlternateEntries"), path);
+        requireOnlyKeys(configured,
+            setOf("version", "scope", "groups", "flatSummaries"), path);
+        rangedInt(configured.opt("version"),
+            DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION,
+            DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION,
+            path + ".version");
+        oneOf(configured.opt("scope"), path + ".scope",
+            DailyStatsRules.ALL_PROFILES_SCOPE);
+        JSONArray groups = requiredArray(configured.opt("groups"), path + ".groups");
+        JSONArray flatSummaries = requiredArray(
+            configured.opt("flatSummaries"), path + ".flatSummaries");
+        if (groups.length() > MAX_DAILY_STATS_GROUPS) {
+            reject(path + ".groups.length");
+        }
+        if (flatSummaries.length() > MAX_DAILY_STATS_V2_FLAT_SUMMARIES) {
+            reject(path + ".flatSummaries.length");
+        }
+
+        JSONObject v2 = settings.optJSONObject("dailyStatsV2");
+        if (v2 == null) reject(path + ".dailyStatsV2");
+        Set<String> groupIds = dailyStatsItemIds(
+            requiredArray(v2.opt("groups"), "settings.dailyStatsV2.groups"));
+        Set<String> flatIds = dailyStatsItemIds(requiredArray(
+            v2.opt("flatSummaries"), "settings.dailyStatsV2.flatSummaries"));
+
+        Map<String, Set<String>> enabledEntriesByVisibleSource = new LinkedHashMap<>();
+        for (ProfileState state : states) {
+            if (!state.visible || !Boolean.TRUE.equals(state.profile.opt("pickerVisible"))) {
+                continue;
+            }
+            JSONArray entries;
+            try {
+                entries = AlternateEntryRules.configuredEntries(
+                    state.profile.optJSONObject("workflow"));
+            } catch (RuntimeException invalid) {
+                reject(state.path + ".workflow.alternateEntries");
+                return;
+            }
+            Set<String> entryIds = new LinkedHashSet<>();
+            for (int index = 0; index < entries.length(); index++) {
+                JSONObject entry = objectAt(entries, index,
+                    state.path + ".workflow.alternateEntries.entries");
+                String entryId = boundedText(entry.opt("id"),
+                    state.path + ".workflow.alternateEntries.entries[" + index + "].id",
+                    MAX_PROFILE_ID_LENGTH);
+                if (!entryIds.add(entryId)) {
+                    reject(state.path + ".workflow.alternateEntries.entries["
+                        + index + "].id.duplicate");
+                }
+            }
+            enabledEntriesByVisibleSource.put(state.id, entryIds);
+        }
+
+        validateDailyStatsAlternateItems(groups, path + ".groups", groupIds,
+            enabledEntriesByVisibleSource);
+        validateDailyStatsAlternateItems(flatSummaries, path + ".flatSummaries", flatIds,
+            enabledEntriesByVisibleSource);
+    }
+
+    private static void validateDailyStatsAlternateItems(
+            JSONArray items, String path, Set<String> availableItemIds,
+            Map<String, Set<String>> enabledEntriesByVisibleSource) {
+        Set<String> itemIds = new LinkedHashSet<>();
+        Set<String> assignedPairs = new LinkedHashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            String itemPath = path + "[" + index + "]";
+            JSONObject item = objectAt(items, index, path);
+            requireOnlyKeys(item, setOf("id", "selectors"), itemPath);
+            String id = boundedText(item.opt("id"), itemPath + ".id",
+                MAX_DAILY_STATS_ID_LENGTH);
+            if (!availableItemIds.contains(id)) reject(itemPath + ".id.unreachable");
+            if (!itemIds.add(id)) reject(itemPath + ".id.duplicate");
+
+            JSONArray selectors = requiredArray(
+                item.opt("selectors"), itemPath + ".selectors");
+            if (selectors.length() < 1
+                    || selectors.length() > MAX_DAILY_STATS_V2_SELECTORS) {
+                reject(itemPath + ".selectors.length");
+            }
+            for (int selectorIndex = 0; selectorIndex < selectors.length(); selectorIndex++) {
+                String selectorPath = itemPath + ".selectors[" + selectorIndex + "]";
+                JSONObject selector = objectAt(
+                    selectors, selectorIndex, itemPath + ".selectors");
+                requireOnlyKeys(selector, setOf("profileId", "entryId"), selectorPath);
+                String profileId = boundedText(selector.opt("profileId"),
+                    selectorPath + ".profileId", MAX_PROFILE_ID_LENGTH);
+                String entryId = boundedText(selector.opt("entryId"),
+                    selectorPath + ".entryId", MAX_PROFILE_ID_LENGTH);
+                Set<String> enabledEntries = enabledEntriesByVisibleSource.get(profileId);
+                if (enabledEntries == null || !enabledEntries.contains(entryId)) {
+                    reject(selectorPath + ".unreachable");
+                }
+                String pair = profileResultPair(profileId, entryId);
+                if (!assignedPairs.add(pair)) reject(selectorPath + ".overlap");
+            }
+        }
+    }
+
+    private static Set<String> dailyStatsItemIds(JSONArray items) {
+        Set<String> out = new LinkedHashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = objectAt(items, index, "settings.dailyStatsV2.items");
+            String id = boundedText(item.opt("id"),
+                "settings.dailyStatsV2.items[" + index + "].id",
+                MAX_DAILY_STATS_ID_LENGTH);
+            if (!out.add(id)) reject("settings.dailyStatsV2.items.id.duplicate");
+        }
+        return out;
     }
 
     private static String profileResultPair(String profileId, String resultKey) {
@@ -1157,6 +1285,11 @@ final class CatalogPromotionValidator {
                 AlternateEntryRules.resolve(source.profile, profiles, entry,
                     "CATALOG-VALIDATION", placeholderUrls,
                     Collections.emptyMap(), dynamicValues);
+                JSONObject alternateScanner = AlternateEntryRules.applyScannerScopeOverrides(
+                    effectiveScannerForProfile(source.profile, false, source.path), entry);
+                if (!SnScanRules.Policy.from(alternateScanner).valid) {
+                    reject(entryPath + ".scanner");
+                }
             } catch (Exception invalid) {
                 reject(entryPath);
             }
@@ -1178,6 +1311,15 @@ final class CatalogPromotionValidator {
 
     private static void validateEffectiveScanner(JSONObject profile, boolean secondary,
                                                  String path) {
+        JSONObject effective = effectiveScannerForProfile(profile, secondary, path);
+        if (!SnScanRules.Policy.from(effective).valid) {
+            reject(path + (secondary ? ".secondaryScanner" : ".primaryScanner"));
+        }
+    }
+
+    private static JSONObject effectiveScannerForProfile(JSONObject profile,
+                                                          boolean secondary,
+                                                          String path) {
         JSONObject plugin = identifierPlugin(profile, secondary ? "secondary" : "primary");
         if (plugin != null && SnScanRules.cameraScanEnabled(plugin)
                 && !plugin.has("scanner")
@@ -1191,19 +1333,24 @@ final class CatalogPromotionValidator {
             raw = profile.optJSONObject("scanner");
         }
         if (raw == null) raw = new JSONObject();
-        JSONObject effective;
+        return scannerWithLegacyExpectedFallback(
+            raw, profile, !secondary, path + ".scanner");
+    }
+
+    /** Mirrors MainActivity's primary expectedSnLength fallback before policy validation. */
+    private static JSONObject scannerWithLegacyExpectedFallback(
+            JSONObject scanner, JSONObject profile, boolean useLegacyPrimaryFallback,
+            String path) {
         try {
-            effective = new JSONObject(raw.toString());
-            if (!secondary && !effective.has("expectedLength")
-                    && profile.has("expectedSnLength")) {
+            JSONObject effective = new JSONObject(scanner.toString());
+            if (useLegacyPrimaryFallback && !effective.has("expectedLength")
+                    && profile != null && profile.has("expectedSnLength")) {
                 effective.put("expectedLength", profile.opt("expectedSnLength"));
             }
+            return effective;
         } catch (Exception invalid) {
-            reject(path + ".scanner");
-            return;
-        }
-        if (!SnScanRules.Policy.from(effective).valid) {
-            reject(path + (secondary ? ".secondaryScanner" : ".primaryScanner"));
+            reject(path);
+            return new JSONObject();
         }
     }
 

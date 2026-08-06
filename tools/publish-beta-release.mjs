@@ -1,12 +1,15 @@
 #!/usr/bin/env node
 
 /**
- * Publish the one reviewed code-9 beta candidate through the fixed `beta` channel.
+ * Publish the reviewed code-10 beta successor through the fixed `beta` channel.
  *
  * This is intentionally independent from the stable publisher. It performs every local and
  * remote preflight before its first write, creates a non-latest prerelease draft, verifies the
  * exact uploaded bytes, and only then makes that draft public with make_latest="false".
- * It never overwrites, moves, or deletes an existing tag or Release and never attempts cleanup.
+ * The exact published code-9 beta is first preserved under its immutable candidate tag. The fixed
+ * channel tag is released only after that archive is complete, then a separately verified draft is
+ * published at the new source. Every partial rotation state is fail-closed and resumable; unrelated
+ * tags, Releases, assets, refs, history, and latest are never mutated.
  */
 
 import { spawnSync } from "node:child_process";
@@ -26,15 +29,22 @@ const RUNTIME_LOCK = path.join(HERE, "android-runtime-dependencies.lock.json");
 const SOURCE_VERIFIER = path.join(HERE, "verify-apk-third-party-sources.mjs");
 
 const CHANNEL_TAG = "beta";
-const CANDIDATE_TAG = "v1.0.8-beta.1";
-const VERSION_NAME = "1.0.8-beta.1";
-const VERSION_CODE = 9;
+const PREVIOUS_CANDIDATE_TAG = "v1.0.8-beta.1";
+const PREVIOUS_VERSION_NAME = "1.0.8-beta.1";
+const PREVIOUS_VERSION_CODE = 9;
+const PREVIOUS_PREDECESSOR_NAME = "1.0.7";
+const PREVIOUS_PREDECESSOR_CODE = 8;
+const CANDIDATE_TAG = "v1.0.8-beta.2";
+const VERSION_NAME = "1.0.8-beta.2";
+const VERSION_CODE = 10;
 const PACKAGE_NAME = "com.autoformkit.app";
-const RELEASE_TITLE = "autoform-kit 1.0.8-beta.1";
+const PREVIOUS_RELEASE_TITLE = `autoform-kit ${PREVIOUS_VERSION_NAME}`;
+const RELEASE_TITLE = `autoform-kit ${VERSION_NAME}`;
 const RELEASE_BODY = "Public beta build of the autoform-kit framework. "
   + "No site-specific configuration is included.";
 const RELEASE_BODY_BYTES = Buffer.from(`${RELEASE_BODY}\n`, "utf8");
 const APK_NAME = `autoform-kit-${VERSION_NAME}.apk`;
+const PREVIOUS_APK_NAME = `autoform-kit-${PREVIOUS_VERSION_NAME}.apk`;
 const UPDATE_NAME = "update.json";
 const MANIFEST_NAME = "candidate-manifest.json";
 const NOTES_NAME = "release-notes.txt";
@@ -55,7 +65,8 @@ let captureSequence = 0;
 
 function fail(message = "beta publication validation failed") {
   const partial = sideEffectStarted || remoteBetaKnown
-    ? " remote may now contain a beta draft, tag, or partial change; do not delete or retry;"
+    ? " remote may now contain a beta draft, tag, or partial change; do not delete it; "
+      + "re-run only so the publisher can classify the exact checkpoint;"
     : "";
   throw new Error(`publish-beta-release:${partial} ${message}`);
 }
@@ -164,7 +175,8 @@ function usage() {
   process.stdout.write(`Usage: tools/publish-beta-release.mjs \\\n  --candidate PATH --previous-apk PATH \\\n  --private-wordlist PATH [--private-wordlist PATH ...] \\\n  [--resume-draft RELEASE_ID]\n\n`
   + `Publishes only ${CANDIDATE_TAG} through the fixed ${CHANNEL_TAG} tag as a non-latest `
   + "public prerelease. An explicit Release ID may resume one exact unpublished draft; "
-  + "the publisher never deletes or replaces remote state.\n");
+  + `the exact ${PREVIOUS_CANDIDATE_TAG} predecessor is archived before the fixed channel `
+  + "ref is rotated. Exact completed and partial checkpoints are safe to re-run.\n");
 }
 
 function requiredString(value, maximum = 4096) {
@@ -284,8 +296,10 @@ function validateCandidate(manifestInput, previousApk, aapt, apksigner) {
       || value.app.versionName !== VERSION_NAME || !sha256Value(value.app.signerSha256)
       || !exactKeys(value.previousApk,
         ["packageName", "sha256", "signerSha256", "versionCode", "versionName"])
-      || value.previousApk.packageName !== PACKAGE_NAME || value.previousApk.versionCode !== 8
-      || value.previousApk.versionName !== "1.0.7" || !sha256Value(value.previousApk.sha256)
+      || value.previousApk.packageName !== PACKAGE_NAME
+      || value.previousApk.versionCode !== PREVIOUS_VERSION_CODE
+      || value.previousApk.versionName !== PREVIOUS_VERSION_NAME
+      || !sha256Value(value.previousApk.sha256)
       || value.previousApk.signerSha256 !== value.app.signerSha256
       || !exactKeys(value.artifacts, ["apk", "notes", "update"])) fail("invalid beta candidate");
 
@@ -695,7 +709,10 @@ function remoteTagCommit(state, tag) {
   return peeled?.oid || direct?.oid || "";
 }
 
-function assertExactPublicRefEnvelope(state, sourceCommit, { betaRefExpected = false } = {}) {
+function assertExactPublicRefEnvelope(state, sourceCommit, {
+  betaRefExpected = false,
+  previousArchiveRefExpected = false,
+} = {}) {
   const defaultBranch = state.branches.find(
     (branch) => branch.name === state.repository.defaultBranch,
   );
@@ -707,6 +724,9 @@ function assertExactPublicRefEnvelope(state, sourceCommit, { betaRefExpected = f
   const expectedTags = new Set(state.tags.map((tag) => tag.name));
   if (betaRefExpected !== expectedTags.has(CHANNEL_TAG)) {
     fail("beta ref presence is not exact");
+  }
+  if (previousArchiveRefExpected !== expectedTags.has(PREVIOUS_CANDIDATE_TAG)) {
+    fail("previous beta archive ref presence is not exact");
   }
   const expectedRefs = new Set([
     "HEAD",
@@ -754,7 +774,9 @@ function assertHistoryAndLatestState(state, sourceCommit, options = {}) {
   }
 
   const nonHistory = state.releases.filter(
-    (release) => !HISTORICAL_TAGS.includes(release.tagName) && release.tagName !== CHANNEL_TAG,
+    (release) => !HISTORICAL_TAGS.includes(release.tagName)
+      && release.tagName !== CHANNEL_TAG
+      && release.tagName !== PREVIOUS_CANDIDATE_TAG,
   );
   if (state.latest.kind === "absent") {
     if (nonHistory.length !== 0) fail("unexpected non-historical Release exists without latest");
@@ -783,6 +805,7 @@ function assertHistoryAndLatestState(state, sourceCommit, options = {}) {
     ...HISTORICAL_TAGS,
     ...nonHistory.map((release) => release.tagName),
     ...(options.betaRefExpected ? [CHANNEL_TAG] : []),
+    ...(options.previousArchiveRefExpected ? [PREVIOUS_CANDIDATE_TAG] : []),
   ]);
   if (state.tags.some((tag) => !allowedTags.has(tag.name))
       || state.tags.length !== allowedTags.size) fail("unexpected public tag exists");
@@ -878,25 +901,201 @@ function assertBetaAbsent(slug, state) {
   if (release.found) fail("beta tag or Release already exists");
 }
 
-function stateWithoutBeta(state) {
+function stateWithoutBetaLine(state) {
   return canonical({
     branches: state.branches,
     latest: state.latest,
-    releases: state.releases.filter((release) => release.tagName !== CHANNEL_TAG),
+    releases: state.releases.filter((release) => release.tagName !== CHANNEL_TAG
+      && release.tagName !== PREVIOUS_CANDIDATE_TAG),
     remoteRefs: {
       refs: state.remoteRefs.refs.filter((entry) => entry.ref !== `refs/tags/${CHANNEL_TAG}`
-        && entry.ref !== `refs/tags/${CHANNEL_TAG}^{}`),
+        && entry.ref !== `refs/tags/${CHANNEL_TAG}^{}`
+        && entry.ref !== `refs/tags/${PREVIOUS_CANDIDATE_TAG}`
+        && entry.ref !== `refs/tags/${PREVIOUS_CANDIDATE_TAG}^{}`),
       symbolicHead: state.remoteRefs.symbolicHead,
     },
     repository: state.repository,
-    tags: state.tags.filter((tag) => tag.name !== CHANNEL_TAG),
+    tags: state.tags.filter((tag) => tag.name !== CHANNEL_TAG
+      && tag.name !== PREVIOUS_CANDIDATE_TAG),
   });
 }
 
 function assertPreserved(before, after) {
-  if (canonicalJson(stateWithoutBeta(after)) !== canonicalJson(before)) {
+  if (canonicalJson(stateWithoutBetaLine(after)) !== canonicalJson(before)) {
     fail("latest, history, repository, branches, or unrelated refs changed");
   }
+}
+
+function previousBetaExpectedAssets() {
+  return new Set([PREVIOUS_APK_NAME, UPDATE_NAME, MANIFEST_NAME]);
+}
+
+function assertPreviousPublicAudit(value, apkSha256, updateSha256, notesSha256) {
+  if (!exactKeys(value, ["apk", "policySha256", "releaseMetadata", "scannerSha256",
+    "sourceTree", "thirdPartyProvenance", "worktree"])
+      || !sha256Value(value.scannerSha256) || !sha256Value(value.policySha256)
+      || !exactKeys(value.sourceTree, ["gitTreeOid", "inputSha256", "reportSha256"])
+      || !oidValue(value.sourceTree.gitTreeOid)
+      || !sha256Value(value.sourceTree.inputSha256)
+      || !sha256Value(value.sourceTree.reportSha256)
+      || !exactKeys(value.worktree, ["inputSha256", "reportSha256"])
+      || !sha256Value(value.worktree.inputSha256)
+      || !sha256Value(value.worktree.reportSha256)
+      || !exactKeys(value.apk, ["inputSha256", "reportSha256", "zipEntryManifestSha256"])
+      || value.apk.inputSha256 !== apkSha256
+      || !sha256Value(value.apk.reportSha256)
+      || !sha256Value(value.apk.zipEntryManifestSha256)
+      || !exactKeys(value.releaseMetadata, ["notes", "update"])) {
+    fail("previous beta public audit shape mismatch");
+  }
+  const expectedMetadata = { notes: notesSha256, update: updateSha256 };
+  for (const [name, inputSha256] of Object.entries(expectedMetadata)) {
+    const binding = value.releaseMetadata[name];
+    if (!exactKeys(binding, ["inputSha256", "reportSha256"])
+        || binding.inputSha256 !== inputSha256 || !sha256Value(binding.reportSha256)) {
+      fail("previous beta public audit binding mismatch");
+    }
+  }
+  const provenance = value.thirdPartyProvenance;
+  const provenanceKeys = ["apkMatchedDexStringCount", "applicationDexStrict",
+    "compiledOutputCount", "declaredDexStringCount", "dexSourceArtifactCount",
+    "dexSourceEntryCount", "manifestFile", "manifestSha256", "matchedEntryCount",
+    "mergedSourceCount", "profileId", "runtimeLockFile", "runtimeLockSha256",
+    "sourceArtifactCount", "sourceEntryCount", "sourceMatchedDexStringCount",
+    "sourceReportSha256", "sourceVerifierFile", "sourceVerifierSha256"];
+  if (!exactKeys(provenance, provenanceKeys)
+      || provenance.manifestFile !== "tools/apk-third-party-components.json"
+      || provenance.runtimeLockFile !== "tools/android-runtime-dependencies.lock.json"
+      || provenance.sourceVerifierFile !== "tools/verify-apk-third-party-sources.mjs"
+      || provenance.applicationDexStrict !== true || !requiredString(provenance.profileId, 255)
+      || !sha256Value(provenance.manifestSha256)
+      || !sha256Value(provenance.runtimeLockSha256)
+      || !sha256Value(provenance.sourceVerifierSha256)
+      || !sha256Value(provenance.sourceReportSha256)) {
+    fail("previous beta provenance shape mismatch");
+  }
+  for (const key of ["apkMatchedDexStringCount", "compiledOutputCount",
+    "declaredDexStringCount", "dexSourceArtifactCount", "dexSourceEntryCount",
+    "matchedEntryCount", "mergedSourceCount", "sourceArtifactCount", "sourceEntryCount",
+    "sourceMatchedDexStringCount"]) {
+    positiveInteger(provenance[key]);
+  }
+  if (provenance.sourceArtifactCount !== provenance.sourceEntryCount
+      || provenance.declaredDexStringCount !== provenance.sourceMatchedDexStringCount
+      || provenance.declaredDexStringCount !== provenance.apkMatchedDexStringCount
+      || provenance.mergedSourceCount !== 1) {
+    fail("previous beta provenance binding mismatch");
+  }
+}
+
+function assertPreviousBetaEnvelope(release, releaseTag) {
+  const expectedAssets = previousBetaExpectedAssets();
+  if (!release || release.tagName !== releaseTag
+      || !oidValue(release.targetCommitish)
+      || release.name !== PREVIOUS_RELEASE_TITLE
+      || release.body !== RELEASE_BODY_BYTES.toString("utf8")
+      || release.draft !== false || release.prerelease !== true
+      || release.immutable !== false || release.assets.length !== expectedAssets.size
+      || release.assets.some((asset) => !expectedAssets.has(asset.name))) {
+    fail("previous beta Release envelope mismatch");
+  }
+  return release;
+}
+
+function downloadPreviousBetaAssets(slug, release, wordlists, aapt, apksigner,
+  expectedPrevious) {
+  const downloaded = new Map();
+  for (const asset of release.assets) {
+    const result = run("gh", ["api", `repos/${slug}/releases/assets/${asset.id}`,
+      "-H", "Accept: application/octet-stream"], { binary: true });
+    if (!Buffer.isBuffer(result.stdout) || result.stdout.length !== asset.size
+        || digest(result.stdout) !== asset.digest.slice("sha256:".length)) {
+      fail("downloaded previous beta asset mismatch");
+    }
+    const input = stableWriteAudit(`previous-${asset.name}`, result.stdout);
+    runScanner(asset.name === PREVIOUS_APK_NAME ? "apk" : "file", input.absolute, wordlists);
+    downloaded.set(asset.name, input);
+  }
+  const apk = downloaded.get(PREVIOUS_APK_NAME);
+  const update = stableJson(downloaded.get(UPDATE_NAME).absolute);
+  const manifest = stableJson(downloaded.get(MANIFEST_NAME).absolute);
+  const expectedIdentity = {
+    packageName: expectedPrevious.packageName,
+    signerSha256: expectedPrevious.signerSha256,
+    versionCode: expectedPrevious.versionCode,
+    versionName: expectedPrevious.versionName,
+  };
+  if (!apk || apk.sha256 !== expectedPrevious.sha256
+      || canonicalJson(apkIdentity(apk, aapt, apksigner)) !== canonicalJson(expectedIdentity)) {
+    fail("previous beta APK identity mismatch");
+  }
+  if (!exactKeys(update.value,
+    ["apkAsset", "notes", "packageName", "sha256", "versionCode", "versionName"])
+      || update.value.apkAsset !== PREVIOUS_APK_NAME
+      || update.value.notes !== RELEASE_BODY
+      || update.value.packageName !== PACKAGE_NAME
+      || update.value.sha256 !== apk.sha256
+      || update.value.versionCode !== PREVIOUS_VERSION_CODE
+      || update.value.versionName !== PREVIOUS_VERSION_NAME) {
+    fail("previous beta update manifest mismatch");
+  }
+  const value = manifest.value;
+  if (!exactKeys(value, ["app", "artifacts", "previousApk", "publicAudit", "schemaVersion",
+    "source", "tag"]) || value.schemaVersion !== 2 || value.tag !== PREVIOUS_CANDIDATE_TAG
+      || !exactKeys(value.source, ["branch", "commit", "workingTreeClean"])
+      || value.source.branch !== "main" || value.source.workingTreeClean !== true
+      || value.source.commit !== release.targetCommitish
+      || !exactKeys(value.app, ["packageName", "signerSha256", "versionCode", "versionName"])
+      || canonicalJson(value.app) !== canonicalJson(expectedIdentity)
+      || !exactKeys(value.previousApk,
+        ["packageName", "sha256", "signerSha256", "versionCode", "versionName"])
+      || value.previousApk.packageName !== PACKAGE_NAME
+      || value.previousApk.versionCode !== PREVIOUS_PREDECESSOR_CODE
+      || value.previousApk.versionName !== PREVIOUS_PREDECESSOR_NAME
+      || value.previousApk.signerSha256 !== expectedIdentity.signerSha256
+      || !sha256Value(value.previousApk.sha256)
+      || !exactKeys(value.artifacts, ["apk", "notes", "update"])) {
+    fail("previous beta candidate manifest mismatch");
+  }
+  const expectedArtifacts = {
+    apk: [PREVIOUS_APK_NAME, apk.sha256],
+    notes: [NOTES_NAME, digest(RELEASE_BODY_BYTES)],
+    update: [UPDATE_NAME, update.sha256],
+  };
+  for (const [key, [filename, sha256]] of Object.entries(expectedArtifacts)) {
+    if (!exactKeys(value.artifacts[key], ["file", "sha256"])
+        || value.artifacts[key].file !== filename || value.artifacts[key].sha256 !== sha256) {
+      fail("previous beta candidate artifact mismatch");
+    }
+  }
+  assertPreviousPublicAudit(
+    value.publicAudit, apk.sha256, update.sha256, digest(RELEASE_BODY_BYTES),
+  );
+  return { apk, manifest, update, sourceCommit: value.source.commit };
+}
+
+function verifyPreviousBeta(slug, state, candidate, previousApk, releaseTag, wordlists,
+  aapt, apksigner) {
+  const releases = state.releases.filter((release) => release.tagName === releaseTag);
+  if (releases.length !== 1) fail("previous beta Release is not unique");
+  const listed = assertPreviousBetaEnvelope(releases[0], releaseTag);
+  assertExactTag(slug, releaseTag, listed.targetCommitish, state);
+  const direct = readBetaReleaseById(slug, listed.id);
+  const tagged = readReleaseByTag(slug, releaseTag);
+  if (canonicalJson(listed) !== canonicalJson(direct)
+      || canonicalJson(direct) !== canonicalJson(tagged)) {
+    fail("previous beta Release reads disagree");
+  }
+  const downloaded = downloadPreviousBetaAssets(
+    slug, listed, wordlists, aapt, apksigner, candidate.value.previousApk,
+  );
+  if (downloaded.apk.sha256 !== previousApk.sha256
+      || downloaded.sourceCommit !== listed.targetCommitish
+      || run("git", ["merge-base", "--is-ancestor", downloaded.sourceCommit,
+        candidate.value.source.commit], { allowFailure: true }).status !== 0) {
+    fail("previous beta is not the exact candidate predecessor");
+  }
+  return { release: listed, ...downloaded };
 }
 
 function expectedReleaseAssets(candidate) {
@@ -907,14 +1106,18 @@ function expectedReleaseAssets(candidate) {
   ]);
 }
 
-function assertBetaTag(slug, sourceCommit, state) {
-  const apiTag = state.tags.find((tag) => tag.name === CHANNEL_TAG);
+function assertExactTag(slug, tagName, sourceCommit, state) {
+  const apiTag = state.tags.find((tag) => tag.name === tagName);
   if (!apiTag || apiTag.commitSha !== sourceCommit
-      || remoteTagCommit(state, CHANNEL_TAG) !== sourceCommit) fail("beta tag target mismatch");
-  const response = ghJson(["api", `repos/${slug}/git/ref/tags/${CHANNEL_TAG}`]);
-  if (response.value?.ref !== `refs/tags/${CHANNEL_TAG}`
+      || remoteTagCommit(state, tagName) !== sourceCommit) fail("release tag target mismatch");
+  const response = ghJson(["api", `repos/${slug}/git/ref/tags/${tagName}`]);
+  if (response.value?.ref !== `refs/tags/${tagName}`
       || response.value?.object?.type !== "commit"
-      || response.value?.object?.sha !== sourceCommit) fail("beta tag is not an exact commit ref");
+      || response.value?.object?.sha !== sourceCommit) fail("release tag is not an exact commit ref");
+}
+
+function assertBetaTag(slug, sourceCommit, state) {
+  assertExactTag(slug, CHANNEL_TAG, sourceCommit, state);
 }
 
 function assertBetaReleaseEnvelope(release, candidate, expectedDraft) {
@@ -935,9 +1138,13 @@ function assertBetaReleaseEnvelope(release, candidate, expectedDraft) {
   return release;
 }
 
-function readBetaReleaseByTag(slug) {
-  const response = ghJson(["api", `repos/${slug}/releases/tags/${CHANNEL_TAG}`]);
+function readReleaseByTag(slug, tagName) {
+  const response = ghJson(["api", `repos/${slug}/releases/tags/${tagName}`]);
   return releaseProjection(response.value);
+}
+
+function readBetaReleaseByTag(slug) {
+  return readReleaseByTag(slug, CHANNEL_TAG);
 }
 
 function readBetaReleaseById(slug, releaseId) {
@@ -985,6 +1192,75 @@ function verifyRemoteBeta(slug, state, candidate, expectedDraft, expectedRelease
   return release;
 }
 
+function classifyBetaRotationState(state, candidate, resumeDraftId) {
+  const channelReleases = state.releases.filter((release) => release.tagName === CHANNEL_TAG);
+  const archiveReleases = state.releases.filter(
+    (release) => release.tagName === PREVIOUS_CANDIDATE_TAG,
+  );
+  if (channelReleases.length > 1 || archiveReleases.length > 1) {
+    fail("beta rotation Release identity is ambiguous");
+  }
+  const channelRelease = channelReleases[0] || null;
+  const archiveRelease = archiveReleases[0] || null;
+  const betaCommit = remoteTagCommit(state, CHANNEL_TAG);
+  const archiveCommit = remoteTagCommit(state, PREVIOUS_CANDIDATE_TAG);
+  const betaTagPresent = betaCommit !== "";
+  const archiveTagPresent = archiveCommit !== "";
+  let phase = "";
+  let previousReleaseTag = "";
+
+  if (channelRelease?.name === PREVIOUS_RELEASE_TITLE && !archiveRelease
+      && channelRelease.draft === false && channelRelease.prerelease === true
+      && betaTagPresent && betaCommit === channelRelease.targetCommitish) {
+    if (archiveTagPresent && archiveCommit !== channelRelease.targetCommitish) {
+      fail("previous beta archive ref targets the wrong commit");
+    }
+    phase = archiveTagPresent ? "archive_ref_staged" : "initial";
+    previousReleaseTag = CHANNEL_TAG;
+  } else if (!channelRelease && archiveRelease
+      && archiveRelease.name === PREVIOUS_RELEASE_TITLE
+      && archiveRelease.draft === false && archiveRelease.prerelease === true
+      && archiveTagPresent && archiveCommit === archiveRelease.targetCommitish) {
+    previousReleaseTag = PREVIOUS_CANDIDATE_TAG;
+    if (betaTagPresent) {
+      if (betaCommit !== archiveRelease.targetCommitish) {
+        fail("fixed beta ref changed while archiving its predecessor");
+      }
+      phase = "archive_release_staged";
+    } else {
+      phase = "archived";
+    }
+  } else if (channelRelease && archiveRelease
+      && archiveRelease.name === PREVIOUS_RELEASE_TITLE
+      && archiveRelease.draft === false && archiveRelease.prerelease === true
+      && archiveTagPresent && archiveCommit === archiveRelease.targetCommitish
+      && channelRelease.name === RELEASE_TITLE
+      && channelRelease.targetCommitish === candidate.value.source.commit
+      && channelRelease.prerelease === true) {
+    previousReleaseTag = PREVIOUS_CANDIDATE_TAG;
+    if (channelRelease.draft === true && !betaTagPresent) phase = "draft";
+    else if (channelRelease.draft === false && betaTagPresent
+        && betaCommit === candidate.value.source.commit) phase = "complete";
+  }
+
+  if (!phase) fail("public beta state is not a recognized rotation checkpoint");
+  if (resumeDraftId !== undefined) {
+    if (!["draft", "complete"].includes(phase) || channelRelease.id !== resumeDraftId) {
+      fail("resume draft does not match the exact beta rotation checkpoint");
+    }
+  } else if (phase === "draft") {
+    fail(`an exact beta successor draft exists; resume with --resume-draft ${channelRelease.id}`);
+  }
+  return {
+    archiveRefExpected: archiveTagPresent,
+    betaRefExpected: betaTagPresent,
+    candidateRelease: channelRelease?.name === RELEASE_TITLE ? channelRelease : null,
+    phase,
+    previousRelease: previousReleaseTag === CHANNEL_TAG ? channelRelease : archiveRelease,
+    previousReleaseTag,
+  };
+}
+
 function preflight(candidate, previousApk, wordlists, slug, aapt, apksigner,
   resumeDraftId, expectedEvidence = null) {
   assertCandidateInputsStable(candidate, previousApk, wordlists);
@@ -994,19 +1270,62 @@ function preflight(candidate, previousApk, wordlists, slug, aapt, apksigner,
   runCandidateAudits(freshCandidate, wordlists);
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const state = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(state, candidate.value.source.commit);
-  if (resumeDraftId === undefined) assertBetaAbsent(slug, state);
-  else verifyRemoteBeta(
-    slug, state, candidate, true, resumeDraftId, wordlists, aapt, apksigner,
-  );
+  const rotation = classifyBetaRotationState(state, candidate, resumeDraftId);
+  assertHistoryAndLatestState(state, candidate.value.source.commit, {
+    betaRefExpected: rotation.betaRefExpected,
+    previousArchiveRefExpected: rotation.archiveRefExpected,
+  });
+  verifyPreviousBeta(slug, state, candidate, previousApk,
+    rotation.previousReleaseTag, wordlists, aapt, apksigner);
+  if (rotation.phase === "archive_ref_staged") {
+    assertExactTag(slug, PREVIOUS_CANDIDATE_TAG,
+      rotation.previousRelease.targetCommitish, state);
+  }
+  if (rotation.phase === "archive_release_staged") {
+    assertExactTag(slug, CHANNEL_TAG, rotation.previousRelease.targetCommitish, state);
+  }
+  if (["draft", "complete"].includes(rotation.phase)) {
+    verifyRemoteBeta(
+      slug, state, candidate, rotation.phase === "draft",
+      rotation.candidateRelease.id, wordlists, aapt, apksigner,
+    );
+  }
   const closure = captureReachableObjectClosure(
     state, candidate.value.source.commit, wordlists,
   );
-  const evidence = canonical({ closure, state });
+  const evidence = canonical({ closure, rotation: { phase: rotation.phase }, state });
   if (expectedEvidence && canonicalJson(evidence) !== canonicalJson(expectedEvidence)) {
     fail("public state changed between preflights");
   }
   return evidence;
+}
+
+function githubJsonWrite(args, value) {
+  const input = Buffer.from(`${JSON.stringify(value)}\n`, "utf8");
+  const result = run("gh", ["api", ...args, "--input", "-"], { input });
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    fail("GitHub write response is invalid");
+  }
+}
+
+function assertRotationCheckpoint(evidence, expectedPhase, preservedState, closure, latest) {
+  if (evidence.rotation?.phase !== expectedPhase) {
+    fail(`beta rotation did not reach ${expectedPhase}`);
+  }
+  assertPreserved(preservedState, evidence.state);
+  if (canonicalJson(evidence.closure) !== canonicalJson(closure)
+      || canonicalJson(evidence.state.latest) !== canonicalJson(latest)) {
+    fail("beta rotation changed source closure or latest");
+  }
+}
+
+function exactDraftId(state) {
+  const drafts = state.releases.filter((release) => release.tagName === CHANNEL_TAG
+    && release.name === RELEASE_TITLE && release.draft === true && release.prerelease === true);
+  if (drafts.length !== 1) fail("created beta successor draft is not unique");
+  return drafts[0].id;
 }
 
 function main() {
@@ -1045,10 +1364,80 @@ function main() {
   if (process.env[SINGLE_WRITER_ENV] !== SINGLE_WRITER_CONFIRMATION) {
     fail("the explicit single-writer release window was not confirmed");
   }
-  const preservedState = stateWithoutBeta(before.state);
-  if (args.resumeDraftId === undefined) {
+  const preservedState = stateWithoutBetaLine(before.state);
+  const baselineClosure = before.closure;
+  const baselineLatest = before.state.latest;
+  let checkpoint = before;
+  let phase = checkpoint.rotation.phase;
+
+  if (phase === "complete") {
+    info("the exact beta.2 successor is already published; verified without remote writes");
+    fs.rmSync(auditDirectory, { recursive: true, force: false });
+    auditDirectory = "";
+    return;
+  }
+
+  if (phase === "initial") {
+    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
     sideEffectStarted = true;
-    info("creating fixed beta prerelease as a non-latest draft");
+    info(`creating immutable predecessor archive ref ${PREVIOUS_CANDIDATE_TAG}`);
+    githubJsonWrite([`repos/${slug}/git/refs`, "--method", "POST"], {
+      ref: `refs/tags/${PREVIOUS_CANDIDATE_TAG}`,
+      sha: previous.targetCommitish,
+    });
+    checkpoint = preflight(
+      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
+    );
+    assertRotationCheckpoint(checkpoint, "archive_ref_staged",
+      preservedState, baselineClosure, baselineLatest);
+    phase = checkpoint.rotation.phase;
+  }
+
+  if (phase === "archive_ref_staged") {
+    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
+    sideEffectStarted = true;
+    info(`binding the predecessor Release to ${PREVIOUS_CANDIDATE_TAG}`);
+    const patched = releaseProjection(githubJsonWrite([
+      `repos/${slug}/releases/${previous.id}`, "--method", "PATCH",
+    ], {
+      body: RELEASE_BODY_BYTES.toString("utf8"),
+      draft: false,
+      make_latest: "false",
+      name: PREVIOUS_RELEASE_TITLE,
+      prerelease: true,
+      tag_name: PREVIOUS_CANDIDATE_TAG,
+      target_commitish: previous.targetCommitish,
+    }));
+    if (patched.id !== previous.id || patched.tagName !== PREVIOUS_CANDIDATE_TAG) {
+      fail("previous beta archive response changed Release identity");
+    }
+    checkpoint = preflight(
+      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
+    );
+    assertRotationCheckpoint(checkpoint, "archive_release_staged",
+      preservedState, baselineClosure, baselineLatest);
+    phase = checkpoint.rotation.phase;
+  }
+
+  if (phase === "archive_release_staged") {
+    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
+    assertExactTag(slug, CHANNEL_TAG, previous.targetCommitish, checkpoint.state);
+    sideEffectStarted = true;
+    info("releasing the exact archived predecessor from the fixed beta ref");
+    run("gh", ["api", `repos/${slug}/git/refs/tags/${CHANNEL_TAG}`,
+      "--method", "DELETE"]);
+    checkpoint = preflight(
+      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
+    );
+    assertRotationCheckpoint(checkpoint, "archived",
+      preservedState, baselineClosure, baselineLatest);
+    phase = checkpoint.rotation.phase;
+  }
+
+  let draftId = args.resumeDraftId;
+  if (phase === "archived") {
+    sideEffectStarted = true;
+    info("creating fixed beta successor as a non-latest draft");
     run("gh", ["release", "create", CHANNEL_TAG,
       candidate.apk.absolute,
       candidate.update.absolute,
@@ -1061,23 +1450,24 @@ function main() {
       "--prerelease",
       "--latest=false",
     ]);
-  } else {
-    info(`resuming exact existing beta draft Release ${args.resumeDraftId}`);
+    draftId = exactDraftId(capturePublicState(slug, wordlists));
+    checkpoint = preflight(
+      candidate, previousApk, wordlists, slug, aapt, apksigner, draftId,
+    );
+    assertRotationCheckpoint(checkpoint, "draft",
+      preservedState, baselineClosure, baselineLatest);
+    phase = checkpoint.rotation.phase;
+  } else if (phase === "draft") {
+    info(`resuming exact existing beta successor draft Release ${draftId}`);
+  }
+  if (phase !== "draft" || !Number.isSafeInteger(draftId)) {
+    fail("beta rotation did not reach an exact successor draft");
   }
 
-  assertCandidateInputsStable(candidate, previousApk, wordlists);
-  const draftState = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(draftState, candidate.value.source.commit);
-  assertPreserved(preservedState, draftState);
-  const draftClosure = captureReachableObjectClosure(
-    draftState, candidate.value.source.commit, wordlists,
-  );
-  if (canonicalJson(draftClosure) !== canonicalJson(before.closure)) fail();
+  const draftState = checkpoint.state;
   const draft = verifyRemoteBeta(
-    slug, draftState, candidate, true, args.resumeDraftId ?? null,
-    wordlists, aapt, apksigner,
+    slug, draftState, candidate, true, draftId, wordlists, aapt, apksigner,
   );
-  if (canonicalJson(draftState.latest) !== canonicalJson(before.state.latest)) fail();
 
   const patch = Buffer.from(`${JSON.stringify({
     body: RELEASE_BODY_BYTES.toString("utf8"),
@@ -1092,7 +1482,10 @@ function main() {
   info("revalidating the complete draft at the single-writer publication boundary");
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const boundaryState = capturePublicState(slug, wordlists);
-  assertHistoryAndLatestState(boundaryState, candidate.value.source.commit);
+  assertHistoryAndLatestState(boundaryState, candidate.value.source.commit, {
+    betaRefExpected: false,
+    previousArchiveRefExpected: true,
+  });
   assertPreserved(preservedState, boundaryState);
   if (canonicalJson(boundaryState) !== canonicalJson(draftState)) {
     fail("draft or public state changed before publication");
@@ -1104,38 +1497,40 @@ function main() {
   const boundaryDraft = verifyRemoteBeta(
     slug, boundaryState, candidate, true, draft.id, wordlists, aapt, apksigner,
   );
+  verifyPreviousBeta(slug, boundaryState, candidate, previousApk,
+    PREVIOUS_CANDIDATE_TAG, wordlists, aapt, apksigner);
   if (canonicalJson(boundaryDraft) !== canonicalJson(draft)
       || canonicalJson(boundaryState.latest) !== canonicalJson(before.state.latest)) fail();
   assertCandidateInputsStable(candidate, previousApk, wordlists);
 
   sideEffectStarted = true;
   info("making the twice-verified beta draft public without changing latest");
-  const patchResult = run("gh", ["api", `repos/${slug}/releases/${draft.id}`,
-    "--method", "PATCH", "--input", "-"], { input: patch });
-  let patchedRelease;
-  try {
-    patchedRelease = releaseProjection(JSON.parse(patchResult.stdout));
-  } catch {
-    fail("beta publication response is invalid");
-  }
+  const patchedRelease = releaseProjection(githubJsonWrite([
+    `repos/${slug}/releases/${draft.id}`, "--method", "PATCH",
+  ], JSON.parse(patch.toString("utf8"))));
   assertBetaReleaseEnvelope(patchedRelease, candidate, false);
   if (patchedRelease.id !== draft.id) fail("beta publication response changed Release identity");
 
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const finalState = capturePublicState(slug, wordlists);
   assertHistoryAndLatestState(
-    finalState, candidate.value.source.commit, { betaRefExpected: true },
+    finalState, candidate.value.source.commit, {
+      betaRefExpected: true,
+      previousArchiveRefExpected: true,
+    },
   );
   assertPreserved(preservedState, finalState);
+  verifyPreviousBeta(slug, finalState, candidate, previousApk,
+    PREVIOUS_CANDIDATE_TAG, wordlists, aapt, apksigner);
   verifyRemoteBeta(
     slug, finalState, candidate, false, draft.id, wordlists, aapt, apksigner,
   );
   const finalClosure = captureReachableObjectClosure(
     finalState, candidate.value.source.commit, wordlists,
   );
-  if (canonicalJson(finalClosure) !== canonicalJson(before.closure)
-      || canonicalJson(finalState.latest) !== canonicalJson(before.state.latest)) fail();
-  info("published and verified fixed beta prerelease without changing latest or history");
+  if (canonicalJson(finalClosure) !== canonicalJson(baselineClosure)
+      || canonicalJson(finalState.latest) !== canonicalJson(baselineLatest)) fail();
+  info("archived beta.1 and published verified beta.2 without changing latest or history");
   fs.rmSync(auditDirectory, { recursive: true, force: false });
   auditDirectory = "";
 }

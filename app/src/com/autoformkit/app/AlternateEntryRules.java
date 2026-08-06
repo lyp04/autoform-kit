@@ -28,7 +28,8 @@ final class AlternateEntryRules {
         "photoTargetFields", "joinWith", "minPhotos", "maxPhotos", "uploadNameTemplate",
         "scanner", "submissionRetry", "toggles", "flags", "dataOverrides", "dynamicOverrideFields",
         "dynamicOverrideProviders");
-    private static final Set<String> ENTRY_SCANNER_KEYS = setOf("applyExpectedLengthTo");
+    private static final Set<String> ENTRY_SCANNER_KEYS = setOf(
+        "applyExpectedLengthTo", "applyAllowedLengthsTo");
     private static final Set<String> SUBMISSION_RETRY_KEYS = setOf(
         "maxAttempts", "retryDelayMs");
     private static final Set<String> TOGGLE_KEYS = setOf(
@@ -229,6 +230,7 @@ final class AlternateEntryRules {
             throw invalid("entry config.identifierRole must be primary");
         }
         expectedLengthSources(entryConfig);
+        allowedLengthSourcesOverride(entryConfig);
         SubmissionRetryPolicy submissionRetry = submissionRetry(entryConfig);
 
         JSONObject target = uniqueTarget(catalogProfiles, targetId);
@@ -382,6 +384,50 @@ final class AlternateEntryRules {
      * entry length-checked only OCR/barcode values.
      */
     static Set<String> expectedLengthSources(JSONObject entryConfig) {
+        return requiredScannerSources(entryScanner(entryConfig),
+            "applyExpectedLengthTo");
+    }
+
+    /**
+     * Returns an independent-entry override for the allowed-length source scope.
+     *
+     * <p>An absent field means inherit the source profile's scanner scope. A configured field is
+     * strict and non-empty, so an empty returned set unambiguously means there is no override.</p>
+     */
+    static Set<String> allowedLengthSourcesOverride(JSONObject entryConfig) {
+        JSONObject scanner = entryScanner(entryConfig);
+        if (!scanner.has("applyAllowedLengthsTo")) return Collections.emptySet();
+        return requiredScannerSources(scanner, "applyAllowedLengthsTo");
+    }
+
+    /** Applies entry-owned scope overrides to an already-effective source scanner policy. */
+    static JSONObject applyScannerScopeOverrides(JSONObject sourceScanner,
+                                                  JSONObject entryConfig) {
+        if (sourceScanner == null) throw invalid("source scanner is required");
+        JSONObject scanner = entryScanner(entryConfig);
+        Set<String> expected = requiredScannerSources(
+            scanner, "applyExpectedLengthTo");
+        Set<String> allowed = scanner.has("applyAllowedLengthsTo")
+            ? requiredScannerSources(scanner, "applyAllowedLengthsTo")
+            : Collections.emptySet();
+        try {
+            JSONObject merged = new JSONObject(sourceScanner.toString());
+            // The entry schema has historically required this scope even for generic source
+            // profiles that do not configure an exact length. Preserve those catalogs: a scope
+            // is meaningful only when the effective source scanner actually has the policy.
+            if (merged.has("expectedLength")) {
+                merged.put("applyExpectedLengthTo", sourceArray(expected));
+            }
+            if (scanner.has("applyAllowedLengthsTo")) {
+                merged.put("applyAllowedLengthsTo", sourceArray(allowed));
+            }
+            return merged;
+        } catch (Exception error) {
+            throw invalid("entry scanner overrides could not be applied");
+        }
+    }
+
+    private static JSONObject entryScanner(JSONObject entryConfig) {
         if (entryConfig == null) throw invalid("entry config is required");
         Object rawScanner = entryConfig.opt("scanner");
         if (!(rawScanner instanceof JSONObject)) {
@@ -389,31 +435,41 @@ final class AlternateEntryRules {
         }
         JSONObject scanner = (JSONObject) rawScanner;
         rejectUnknownKeys(scanner, ENTRY_SCANNER_KEYS, "entry config.scanner");
-        JSONArray rawSources = requiredArray(scanner, "applyExpectedLengthTo",
-            "entry config.scanner.applyExpectedLengthTo");
+        return scanner;
+    }
+
+    private static Set<String> requiredScannerSources(JSONObject scanner, String key) {
+        String path = "entry config.scanner." + key;
+        JSONArray rawSources = requiredArray(scanner, key, path);
         if (rawSources.length() == 0 || rawSources.length() > 3) {
-            throw invalid("entry config.scanner.applyExpectedLengthTo must contain 1 to 3 sources");
+            throw invalid(path + " must contain 1 to 3 sources");
         }
         LinkedHashSet<String> sources = new LinkedHashSet<>();
         for (int index = 0; index < rawSources.length(); index++) {
             Object raw = rawSources.opt(index);
             if (!(raw instanceof String)) {
-                throw invalid("entry config.scanner.applyExpectedLengthTo[" + index
+                throw invalid(path + "[" + index
                     + "] must be a string");
             }
             String source = (String) raw;
             if (!(SnScanRules.SOURCE_OCR.equals(source)
                     || SnScanRules.SOURCE_BARCODE.equals(source)
                     || SnScanRules.SOURCE_ENTERED.equals(source))) {
-                throw invalid("entry config.scanner.applyExpectedLengthTo[" + index
+                throw invalid(path + "[" + index
                     + "] is unsupported");
             }
             if (!sources.add(source)) {
-                throw invalid("entry config.scanner.applyExpectedLengthTo contains duplicate "
+                throw invalid(path + " contains duplicate "
                     + source);
             }
         }
         return Collections.unmodifiableSet(sources);
+    }
+
+    private static JSONArray sourceArray(Set<String> sources) {
+        JSONArray array = new JSONArray();
+        for (String source : sources) array.put(source);
+        return array;
     }
 
     private static String validateUploadNameTemplate(JSONObject entryConfig) {

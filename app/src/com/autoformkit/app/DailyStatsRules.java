@@ -11,14 +11,17 @@ import java.util.Set;
 /** Upgrade-safe transformations for device-local aggregate counters. */
 final class DailyStatsRules {
     static final String LEGACY_RESULTS = "legacyResults";
+    static final String ALTERNATE_ENTRIES = "alternateEntries";
     static final String ALL_PROFILES_SCOPE = "all_profiles";
     static final int DAILY_STATS_V2_VERSION = 2;
+    static final int DAILY_STATS_ALTERNATE_ENTRIES_VERSION = 1;
     static final int MAX_V2_GROUPS = 16;
     static final int MAX_V2_FLAT_SUMMARIES = 8;
     static final int MAX_V2_SELECTORS = 512;
     static final int MAX_V2_LEGACY_KEYS = 128;
     private static final int MAX_ID_LENGTH = 128;
     private static final int MAX_TEXT_LENGTH = 256;
+    private static final int MAX_SERIAL_LENGTH = 512;
     private static final int MAX_LABEL_LENGTH = 160;
 
     private DailyStatsRules() {}
@@ -211,6 +214,189 @@ final class DailyStatsRules {
         return total >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
     }
 
+    /**
+     * Returns the optional Panel-owned mapping from independent entries to v2 presentation items.
+     * The counters themselves remain keyed by source profile + entry id; this setting only decides
+     * which card/flat summary displays them. Old catalogs without the setting remain unchanged.
+     */
+    static JSONObject allProfilesAlternateEntries(JSONObject catalogSettings,
+                                                   JSONArray allProfiles,
+                                                   JSONObject dailyStatsV2) {
+        JSONObject presentation = catalogSettings == null ? null
+            : catalogSettings.optJSONObject("dailyStatsAlternateEntries");
+        if (presentation == null
+                || !hasOnlyKeys(presentation,
+                    "version", "scope", "groups", "flatSummaries")) {
+            return null;
+        }
+        Object rawVersion = presentation.opt("version");
+        Object rawScope = presentation.opt("scope");
+        if (!(rawVersion instanceof Byte || rawVersion instanceof Short
+                || rawVersion instanceof Integer || rawVersion instanceof Long)
+                || ((Number) rawVersion).longValue()
+                    != DAILY_STATS_ALTERNATE_ENTRIES_VERSION
+                || !(rawScope instanceof String)
+                || !ALL_PROFILES_SCOPE.equals(rawScope)
+                || dailyStatsV2 == null) {
+            return null;
+        }
+        JSONArray groups = presentation.optJSONArray("groups");
+        JSONArray flatSummaries = presentation.optJSONArray("flatSummaries");
+        if (groups == null || groups.length() > MAX_V2_GROUPS
+                || flatSummaries == null
+                || flatSummaries.length() > MAX_V2_FLAT_SUMMARIES) {
+            return null;
+        }
+
+        Map<String, Set<String>> availableEntries = visibleAlternateEntries(allProfiles);
+        if (availableEntries == null) return null;
+        Set<String> groupIds = itemIds(dailyStatsV2.optJSONArray("groups"));
+        Set<String> flatIds = itemIds(dailyStatsV2.optJSONArray("flatSummaries"));
+        if (groupIds == null || flatIds == null
+                || !validAlternateItems(groups, groupIds, availableEntries)
+                || !validAlternateItems(flatSummaries, flatIds, availableEntries)) {
+            return null;
+        }
+        return presentation;
+    }
+
+    /** Adds the independent-entry counters assigned to one exact v2 item id. */
+    static int displayedAlternateCount(JSONObject stats, JSONArray configuredItems,
+                                       String itemId) {
+        if (!validAlternateEntryStats(stats) || configuredItems == null
+                || itemId == null || itemId.isEmpty()) {
+            return 0;
+        }
+        JSONObject selected = null;
+        for (int index = 0; index < configuredItems.length(); index++) {
+            JSONObject item = configuredItems.optJSONObject(index);
+            if (item == null || !itemId.equals(item.optString("id", ""))) continue;
+            if (selected != null) return 0;
+            selected = item;
+        }
+        JSONArray selectors = selected == null ? null : selected.optJSONArray("selectors");
+        JSONObject sources = stats.optJSONObject(ALTERNATE_ENTRIES);
+        long total = 0L;
+        Set<String> countedPairs = new LinkedHashSet<>();
+        for (int index = 0; selectors != null && index < selectors.length(); index++) {
+            JSONObject selector = selectors.optJSONObject(index);
+            String profileId = selector == null ? "" : selector.optString("profileId", "");
+            String entryId = selector == null ? "" : selector.optString("entryId", "");
+            if (profileId.isEmpty() || entryId.isEmpty()
+                    || !countedPairs.add(pairKey(profileId, entryId))) {
+                continue;
+            }
+            JSONObject entries = sources == null ? null : sources.optJSONObject(profileId);
+            total = addCount(total, entries, entryId);
+        }
+        return total >= Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) total;
+    }
+
+    /**
+     * Idempotently records one acknowledged independent entry in its own counter namespace.
+     * Returning true means the supplied stats object already contained, or now contains, the
+     * exact event. Main-form and independent-entry tokens cannot collide.
+     */
+    static boolean recordAlternateEntry(JSONObject stats, String sourceProfileId,
+                                        String entryId, String serial) {
+        if (!validAlternateEntryStats(stats)
+                || strictText(sourceProfileId, MAX_TEXT_LENGTH) == null
+                || strictText(entryId, MAX_TEXT_LENGTH) == null
+                || strictText(serial, MAX_SERIAL_LENGTH) == null) {
+            return false;
+        }
+        try {
+            JSONArray counted = stats.optJSONArray("counted");
+            if (stats.has("counted") && counted == null) return false;
+            if (counted == null) counted = new JSONArray();
+            for (int index = 0; index < counted.length(); index++) {
+                if (!(counted.opt(index) instanceof String)) return false;
+            }
+            String token = alternateCountedToken(sourceProfileId, entryId, serial);
+            if (arrayContains(counted, token)) return true;
+
+            JSONObject sources = stats.optJSONObject(ALTERNATE_ENTRIES);
+            if (stats.has(ALTERNATE_ENTRIES) && sources == null) return false;
+            if (sources == null) sources = new JSONObject();
+            JSONObject entries = sources.optJSONObject(sourceProfileId);
+            if (sources.has(sourceProfileId) && entries == null) return false;
+            if (entries == null) entries = new JSONObject();
+            Object rawCurrent = entries.opt(entryId);
+            if (rawCurrent == JSONObject.NULL
+                    || (rawCurrent != null
+                        && !(rawCurrent instanceof Byte || rawCurrent instanceof Short
+                            || rawCurrent instanceof Integer
+                            || rawCurrent instanceof Long))) {
+                return false;
+            }
+            long exactCurrent = rawCurrent instanceof Number
+                ? ((Number) rawCurrent).longValue() : 0L;
+            if (exactCurrent < 0L || exactCurrent > Integer.MAX_VALUE) return false;
+            int current = (int) exactCurrent;
+            entries.put(entryId, current == Integer.MAX_VALUE
+                ? Integer.MAX_VALUE : current + 1);
+            sources.put(sourceProfileId, entries);
+            counted.put(token);
+            stats.put(ALTERNATE_ENTRIES, sources);
+            stats.put("counted", counted);
+            return true;
+        } catch (Exception invalid) {
+            return false;
+        }
+    }
+
+    /** Strict private storage schema kept outside the old App's daily_stats_* rollback mirror. */
+    static boolean validAlternateEntryStats(JSONObject stats) {
+        if (stats == null || !hasOnlyKeys(stats, "counted", ALTERNATE_ENTRIES)) {
+            return false;
+        }
+        JSONArray counted = stats.optJSONArray("counted");
+        if (stats.has("counted") && counted == null) return false;
+        Set<String> tokens = new LinkedHashSet<>();
+        for (int index = 0; counted != null && index < counted.length(); index++) {
+            String token = strictText(counted.opt(index), 2048);
+            if (token == null || !tokens.add(token)) return false;
+        }
+
+        JSONObject sources = stats.optJSONObject(ALTERNATE_ENTRIES);
+        if (stats.has(ALTERNATE_ENTRIES) && sources == null) return false;
+        java.util.Iterator<String> profileIds = sources == null
+            ? null : sources.keys();
+        while (profileIds != null && profileIds.hasNext()) {
+            String profileId = profileIds.next();
+            if (strictText(profileId, MAX_TEXT_LENGTH) == null) return false;
+            JSONObject entries = sources.optJSONObject(profileId);
+            if (entries == null) return false;
+            java.util.Iterator<String> entryIds = entries.keys();
+            while (entryIds.hasNext()) {
+                String entryId = entryIds.next();
+                Object raw = entries.opt(entryId);
+                if (strictText(entryId, MAX_TEXT_LENGTH) == null
+                        || !(raw instanceof Byte || raw instanceof Short
+                            || raw instanceof Integer || raw instanceof Long)) {
+                    return false;
+                }
+                long count = ((Number) raw).longValue();
+                if (count < 0L || count > Integer.MAX_VALUE) return false;
+            }
+        }
+        return true;
+    }
+
+    static String mainCountedToken(String profileId, String serial) {
+        return "main|" + tokenPart(profileId) + tokenPart(serial);
+    }
+
+    static String legacyMainCountedToken(String profileId, String serial) {
+        return profileId + "|" + serial;
+    }
+
+    static String alternateCountedToken(String sourceProfileId, String entryId,
+                                        String serial) {
+        return "alternate|" + tokenPart(sourceProfileId)
+            + tokenPart(entryId) + tokenPart(serial);
+    }
+
     private static boolean validV2Items(JSONArray items, boolean flat,
                                         Map<String, Set<String>> visibleResults,
                                         Set<String> itemIds, Set<String> assignedPairs,
@@ -279,6 +465,77 @@ final class DailyStatsRules {
         return true;
     }
 
+    private static boolean validAlternateItems(JSONArray items, Set<String> availableItemIds,
+                                               Map<String, Set<String>> availableEntries) {
+        Set<String> itemIds = new LinkedHashSet<>();
+        Set<String> assignedPairs = new LinkedHashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            if (item == null || !hasOnlyKeys(item, "id", "selectors")) return false;
+            String id = strictText(item.opt("id"), MAX_ID_LENGTH);
+            JSONArray selectors = item.optJSONArray("selectors");
+            if (id == null || !availableItemIds.contains(id) || !itemIds.add(id)
+                    || selectors == null || selectors.length() == 0
+                    || selectors.length() > MAX_V2_SELECTORS) {
+                return false;
+            }
+            for (int selectorIndex = 0; selectorIndex < selectors.length(); selectorIndex++) {
+                JSONObject selector = selectors.optJSONObject(selectorIndex);
+                if (selector == null
+                        || !hasOnlyKeys(selector, "profileId", "entryId")) {
+                    return false;
+                }
+                String profileId = strictText(
+                    selector.opt("profileId"), MAX_TEXT_LENGTH);
+                String entryId = strictText(selector.opt("entryId"), MAX_TEXT_LENGTH);
+                Set<String> entries = profileId == null
+                    ? null : availableEntries.get(profileId);
+                if (entries == null || !entries.contains(entryId)
+                        || !assignedPairs.add(pairKey(profileId, entryId))) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static Map<String, Set<String>> visibleAlternateEntries(JSONArray allProfiles) {
+        Map<String, Set<String>> out = new LinkedHashMap<>();
+        for (int index = 0; allProfiles != null && index < allProfiles.length(); index++) {
+            JSONObject profile = allProfiles.optJSONObject(index);
+            if (profile == null || !Boolean.TRUE.equals(profile.opt("pickerVisible"))) continue;
+            String id = strictText(profile.opt("id"), MAX_TEXT_LENGTH);
+            if (id == null || out.containsKey(id)) return null;
+            JSONObject workflow = profile.optJSONObject("workflow");
+            final JSONArray configured;
+            try {
+                configured = AlternateEntryRules.configuredEntries(workflow);
+            } catch (RuntimeException invalid) {
+                return null;
+            }
+            Set<String> entryIds = new LinkedHashSet<>();
+            for (int entryIndex = 0; entryIndex < configured.length(); entryIndex++) {
+                JSONObject entry = configured.optJSONObject(entryIndex);
+                String entryId = entry == null
+                    ? null : strictText(entry.opt("id"), MAX_TEXT_LENGTH);
+                if (entryId == null || !entryIds.add(entryId)) return null;
+            }
+            out.put(id, entryIds);
+        }
+        return out;
+    }
+
+    private static Set<String> itemIds(JSONArray items) {
+        if (items == null) return null;
+        Set<String> out = new LinkedHashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            String id = item == null ? null : strictText(item.opt("id"), MAX_ID_LENGTH);
+            if (id == null || !out.add(id)) return null;
+        }
+        return out;
+    }
+
     private static Map<String, Set<String>> visibleProfileResults(JSONArray visibleProfiles) {
         Map<String, Set<String>> out = new LinkedHashMap<>();
         for (int index = 0; visibleProfiles != null && index < visibleProfiles.length(); index++) {
@@ -329,6 +586,18 @@ final class DailyStatsRules {
 
     private static String pairKey(String profileId, String resultKey) {
         return profileId.length() + ":" + profileId + resultKey;
+    }
+
+    private static String tokenPart(String value) {
+        String safe = value == null ? "" : value;
+        return safe.length() + ":" + safe;
+    }
+
+    private static boolean arrayContains(JSONArray values, String target) {
+        for (int index = 0; values != null && index < values.length(); index++) {
+            if (target.equals(values.optString(index))) return true;
+        }
+        return false;
     }
 
     private static Set<String> nonEmptyStrings(JSONArray values) {

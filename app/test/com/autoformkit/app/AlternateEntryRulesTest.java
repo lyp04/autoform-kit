@@ -353,6 +353,14 @@ public class AlternateEntryRulesTest {
     public void entryScannerLengthScopeIsExplicitAndStrict() throws Exception {
         assertEquals(new java.util.LinkedHashSet<>(Arrays.asList("ocr", "barcode")),
             AlternateEntryRules.expectedLengthSources(config()));
+        assertTrue(AlternateEntryRules.allowedLengthSourcesOverride(config()).isEmpty());
+
+        JSONObject allowed = config();
+        allowed.getJSONObject("scanner").put("applyAllowedLengthsTo",
+            new JSONArray().put("ocr").put("barcode").put("entered"));
+        assertEquals(new java.util.LinkedHashSet<>(
+                Arrays.asList("ocr", "barcode", "entered")),
+            AlternateEntryRules.allowedLengthSourcesOverride(allowed));
 
         JSONObject missing = config();
         missing.remove("scanner");
@@ -374,6 +382,73 @@ public class AlternateEntryRulesTest {
         unknown.getJSONObject("scanner").put("unexpected", true);
         assertRejected("unknown field unexpected", () ->
             AlternateEntryRules.expectedLengthSources(unknown));
+
+        JSONObject emptyAllowed = config();
+        emptyAllowed.getJSONObject("scanner").put(
+            "applyAllowedLengthsTo", new JSONArray());
+        assertRejected("applyAllowedLengthsTo must contain 1 to 3", () ->
+            AlternateEntryRules.allowedLengthSourcesOverride(emptyAllowed));
+
+        JSONObject duplicateAllowed = config();
+        duplicateAllowed.getJSONObject("scanner").put("applyAllowedLengthsTo",
+            new JSONArray().put("entered").put("entered"));
+        assertRejected("applyAllowedLengthsTo contains duplicate entered", () ->
+            AlternateEntryRules.allowedLengthSourcesOverride(duplicateAllowed));
+    }
+
+    @Test
+    public void entryScannerInheritsOrOverridesAllowedScopeAndKeepsLegacyExpectedScope()
+            throws Exception {
+        JSONObject sourceScanner = new JSONObject()
+            .put("expectedLength", 17)
+            .put("allowedLengths", new JSONArray().put(16).put(17));
+
+        SnScanRules.Policy mainPolicy = SnScanRules.Policy.from(sourceScanner);
+        SnScanRules.Policy inheritedEntry = SnScanRules.Policy.from(
+            AlternateEntryRules.applyScannerScopeOverrides(sourceScanner, config()));
+        for (SnScanRules.Policy policy : Arrays.asList(mainPolicy, inheritedEntry)) {
+            assertTrue(policy.valid);
+            for (String sourceKind : Arrays.asList(
+                    SnScanRules.SOURCE_OCR, SnScanRules.SOURCE_BARCODE,
+                    SnScanRules.SOURCE_ENTERED)) {
+                assertEquals(SnScanRules.Rejection.NONE,
+                    policy.rejectionForSource(repeat('A', 16), sourceKind));
+                assertEquals(SnScanRules.Rejection.NONE,
+                    policy.rejectionForSource(repeat('A', 17), sourceKind));
+                assertEquals(SnScanRules.Rejection.WRONG_LENGTH,
+                    policy.rejectionForSource(repeat('A', 15), sourceKind));
+            }
+        }
+
+        JSONObject overrideEntry = config();
+        overrideEntry.getJSONObject("scanner").put("applyAllowedLengthsTo",
+            new JSONArray().put("ocr").put("barcode").put("entered"));
+        JSONObject narrowSource = new JSONObject(sourceScanner.toString())
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr"));
+        SnScanRules.Policy overridden = SnScanRules.Policy.from(
+            AlternateEntryRules.applyScannerScopeOverrides(
+                narrowSource, overrideEntry));
+        assertTrue(overridden.valid);
+        assertTrue(overridden.appliesAllowedLengthsTo(SnScanRules.SOURCE_ENTERED));
+        assertEquals(SnScanRules.Rejection.NONE,
+            overridden.enteredRejection(repeat('A', 16)));
+
+        JSONObject legacySource = new JSONObject().put("expectedLength", 17);
+        SnScanRules.Policy legacyEntry = SnScanRules.Policy.from(
+            AlternateEntryRules.applyScannerScopeOverrides(legacySource, config()));
+        assertTrue(legacyEntry.valid);
+        assertEquals(SnScanRules.Rejection.WRONG_LENGTH,
+            legacyEntry.captureRejection(repeat('A', 16)));
+        assertEquals(SnScanRules.Rejection.NONE,
+            legacyEntry.barcodeRejection(repeat('A', 17)));
+        assertEquals(SnScanRules.Rejection.NONE,
+            legacyEntry.enteredRejection(repeat('A', 16)));
+
+        SnScanRules.Policy unconstrainedEntry = SnScanRules.Policy.from(
+            AlternateEntryRules.applyScannerScopeOverrides(new JSONObject(), config()));
+        assertTrue(unconstrainedEntry.valid);
+        assertEquals(SnScanRules.Rejection.NONE,
+            unconstrainedEntry.captureRejection(repeat('A', 15)));
     }
 
     @Test
@@ -560,6 +635,12 @@ public class AlternateEntryRulesTest {
 
     private static java.util.List<String> onePhoto() {
         return Collections.singletonList("https://example.invalid/photo");
+    }
+
+    private static String repeat(char value, int count) {
+        char[] chars = new char[count];
+        Arrays.fill(chars, value);
+        return new String(chars);
     }
 
     private static void assertRejected(String expected, ThrowingRunnable action)

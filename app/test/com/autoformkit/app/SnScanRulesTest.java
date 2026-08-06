@@ -212,6 +212,10 @@ public class SnScanRulesTest {
             legacy.barcodeRejection("AB1234"));
         assertEquals(SnScanRules.Rejection.WRONG_LENGTH,
             legacy.captureRejection("AB1234"));
+        assertEquals("AB123456", SnScanRules.selectTextCandidate(
+            Arrays.asList("AB123456"), legacy));
+        assertEquals("", SnScanRules.selectTextCandidate(
+            Arrays.asList("AB1234567"), legacy));
     }
 
     @Test
@@ -233,6 +237,160 @@ public class SnScanRulesTest {
             .put("applyExpectedLengthTo", "ocr")).valid);
         assertFalse(SnScanRules.Policy.from(new JSONObject()
             .put("applyExpectedLengthTo", new JSONArray().put("ocr"))).valid);
+    }
+
+    @Test
+    public void allowedLengthsDefaultToAllInputsAndAcceptOnlyConfiguredValues()
+            throws Exception {
+        SnScanRules.Policy policy = SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 17)
+            .put("allowedLengths", new JSONArray().put(16).put(17)));
+
+        assertTrue(policy.valid);
+        assertEquals(Arrays.asList(16, 17), policy.allowedLengths);
+        for (String source : new String[]{SnScanRules.SOURCE_OCR,
+                SnScanRules.SOURCE_BARCODE, SnScanRules.SOURCE_ENTERED}) {
+            assertTrue(policy.appliesAllowedLengthsTo(source));
+            assertEquals(Arrays.asList(16, 17), policy.requiredLengthsForSource(source));
+            assertEquals(SnScanRules.Rejection.NONE,
+                policy.rejectionForSource(repeat('A', 16), source));
+            assertEquals(SnScanRules.Rejection.NONE,
+                policy.rejectionForSource(repeat('A', 17), source));
+            assertEquals(SnScanRules.Rejection.WRONG_LENGTH,
+                policy.rejectionForSource(repeat('A', 15), source));
+        }
+        assertEquals("16 或 17",
+            SnScanRules.formatLengths(policy.allowedLengths, "或"));
+        assertEquals("16 or 17",
+            SnScanRules.formatLengths(policy.allowedLengths, "or"));
+        assertEquals(repeat('A', 16), SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 16)), policy));
+        assertEquals(repeat('A', 17), SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 17)), policy));
+        assertEquals("", SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 15)), policy));
+        assertEquals("", SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 18)), policy));
+    }
+
+    @Test
+    public void allowedLengthsOverrideExpectedLengthOnlyForTheirOwnSources()
+            throws Exception {
+        SnScanRules.Policy migration = SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 17)
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr").put("barcode")));
+
+        assertTrue(migration.valid);
+        assertTrue(migration.appliesAllowedLengthsTo("ocr"));
+        assertTrue(migration.appliesAllowedLengthsTo("barcode"));
+        assertFalse(migration.appliesAllowedLengthsTo("entered"));
+        assertFalse(migration.appliesExpectedLengthTo("ocr"));
+        assertFalse(migration.appliesExpectedLengthTo("barcode"));
+        assertTrue(migration.appliesExpectedLengthTo("entered"));
+        assertEquals(SnScanRules.Rejection.NONE,
+            migration.captureRejection(repeat('A', 16)));
+        assertEquals(SnScanRules.Rejection.NONE,
+            migration.barcodeRejection(repeat('A', 16)));
+        assertEquals(SnScanRules.Rejection.WRONG_LENGTH,
+            migration.enteredRejection(repeat('A', 16)));
+        assertEquals(SnScanRules.Rejection.NONE,
+            migration.enteredRejection(repeat('A', 17)));
+    }
+
+    @Test
+    public void allowedLengthsAndScopesAreStrictAndFallbackMustBeContained()
+            throws Exception {
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray())).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(16))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16.0d))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(0))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(257))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", "16,17")).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr"))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("applyAllowedLengthsTo", new JSONArray())).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr").put("ocr"))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("applyAllowedLengthsTo", new JSONArray().put("camera"))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("applyAllowedLengthsTo", new JSONArray().put(" ocr"))).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 15)
+            .put("allowedLengths", new JSONArray().put(16).put(17))).valid);
+    }
+
+    @Test
+    public void allowedLengthsRespectOnlyExplicitBoundsAndSupportOneTo256()
+            throws Exception {
+        SnScanRules.Policy implicitBounds = SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(1).put(256)));
+        assertTrue(implicitBounds.valid);
+        assertEquals(SnScanRules.Rejection.NONE,
+            implicitBounds.captureRejection(repeat('A', 1)));
+        assertEquals(SnScanRules.Rejection.NONE,
+            implicitBounds.captureRejection(repeat('A', 256)));
+
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("minLength", 17)).valid);
+        assertFalse(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("maxLength", 16)).valid);
+        assertTrue(SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(16).put(17))
+            .put("minLength", 16)
+            .put("maxLength", 17)).valid);
+    }
+
+    @Test
+    public void ocrTokensRequireBoundariesAndExpandOnlyForConfiguredAllowedLengths()
+            throws Exception {
+        String sixtyFive = repeat('A', 65);
+        SnScanRules.Policy legacy = SnScanRules.Policy.from(new JSONObject());
+        assertEquals("",
+            SnScanRules.selectTextCandidate(Arrays.asList(sixtyFive), legacy));
+
+        SnScanRules.Policy expanded = SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(65))
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr")));
+        assertTrue(expanded.valid);
+        assertEquals(sixtyFive,
+            SnScanRules.selectTextCandidate(Arrays.asList(sixtyFive), expanded));
+        assertEquals("", SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 66)), expanded));
+        assertEquals(sixtyFive, SnScanRules.selectTextCandidate(
+            Arrays.asList("#" + sixtyFive + "#"), expanded));
+
+        SnScanRules.Policy barcodeOnly = SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(65))
+            .put("applyAllowedLengthsTo", new JSONArray().put("barcode")));
+        assertTrue(barcodeOnly.valid);
+        assertEquals("",
+            SnScanRules.selectTextCandidate(Arrays.asList(sixtyFive), barcodeOnly));
+
+        SnScanRules.Policy prefixOnly = SnScanRules.Policy.from(new JSONObject()
+            .put("allowedLengths", new JSONArray().put(65))
+            .put("applyAllowedLengthsTo", new JSONArray().put("ocr"))
+            .put("preferredPrefixes", new JSONArray().put("AA"))
+            .put("candidateOrder", new JSONArray().put("prefix")));
+        assertTrue(prefixOnly.valid);
+        assertEquals("", SnScanRules.selectTextCandidate(
+            Arrays.asList(repeat('A', 66)), prefixOnly));
+        assertEquals(sixtyFive, SnScanRules.selectTextCandidate(
+            Arrays.asList(":" + sixtyFive + ":"), prefixOnly));
     }
 
     @Test
@@ -301,5 +459,11 @@ public class SnScanRulesTest {
         assertTrue(SnScanRules.cameraScanEnabled(new JSONObject().put("scan", true)));
         assertFalse(SnScanRules.cameraScanEnabled(new JSONObject().put("scan", false)));
         assertFalse(SnScanRules.cameraScanEnabled(new JSONObject().put("scan", "true")));
+    }
+
+    private static String repeat(char value, int count) {
+        char[] chars = new char[count];
+        Arrays.fill(chars, value);
+        return new String(chars);
     }
 }

@@ -651,6 +651,78 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void alternateEntryStatsUseExactEnabledVisibleSourceEntryPairs()
+            throws Exception {
+        JSONObject valid = catalogWithAlternate(false);
+        valid.getJSONObject("settings").put("dailyStatsV2", dailyStatsV2());
+        String sourceId = valid.getJSONArray("profiles").getJSONObject(0)
+            .getString("id");
+        String entryId = alternateEntry(valid).getString("id");
+        valid.getJSONObject("settings").put("dailyStatsAlternateEntries",
+            dailyStatsAlternateEntries("sample-card", sourceId, entryId));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+
+        JSONObject emptyCollections = copy(valid);
+        emptyCollections.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .put("groups", new JSONArray())
+            .put("flatSummaries", new JSONArray());
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(emptyCollections));
+
+        JSONObject wrongVersion = copy(valid);
+        wrongVersion.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries").put("version", 1.0d);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(wrongVersion));
+
+        JSONObject unknownKey = copy(valid);
+        unknownKey.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries").put("sampleUnknown", true);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(unknownKey));
+
+        JSONObject missingEntry = copy(valid);
+        missingEntry.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").getJSONObject(0)
+            .put("entryId", "sample-missing");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(missingEntry));
+
+        JSONObject hiddenSource = copy(valid);
+        String hiddenId = hiddenSource.getJSONArray("profiles").getJSONObject(2)
+            .getString("id");
+        hiddenSource.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").getJSONObject(0)
+            .put("profileId", hiddenId);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(hiddenSource));
+
+        JSONObject groupDuplicate = copy(valid);
+        JSONObject duplicateSelector = new JSONObject(groupDuplicate.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").getJSONObject(0).toString());
+        groupDuplicate.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("groups").getJSONObject(0)
+            .getJSONArray("selectors").put(duplicateSelector);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(groupDuplicate));
+
+        JSONObject groupAndFlat = copy(valid);
+        groupAndFlat.getJSONObject("settings").getJSONObject("dailyStatsV2")
+            .getJSONArray("flatSummaries").put(v2Item(
+                "sample-flat", "Sample flat", sourceId, "sample-ready"));
+        groupAndFlat.getJSONObject("settings")
+            .getJSONObject("dailyStatsAlternateEntries")
+            .getJSONArray("flatSummaries").put(new JSONObject()
+                .put("id", "sample-flat")
+                .put("selectors", new JSONArray().put(new JSONObject()
+                    .put("profileId", sourceId)
+                    .put("entryId", entryId))));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(groupAndFlat));
+    }
+
+    @Test
     public void profileAndResultColorsMustUseSixDigitHex() throws Exception {
         JSONObject valid = catalog();
         firstProfile(valid).put("uiColor", "#123ABC");
@@ -681,6 +753,62 @@ public class CatalogPromotionValidatorTest {
         assertFalse(CatalogPromotionValidator.isStructurallyValid(badOperatorLocale));
     }
 
+    @Test
+    public void scannerAllowedLengthsPromoteWithCompatibleLegacyFallbackOnly()
+            throws Exception {
+        JSONObject valid = catalog();
+        JSONObject profile = firstProfile(valid);
+        profile.put("expectedSnLength", 17);
+        JSONObject scanner = profile.getJSONArray("snPlugins")
+            .getJSONObject(0).getJSONObject("scanner");
+        scanner.put("allowedLengths", new JSONArray().put(16).put(17));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+
+        JSONObject contradictoryFallback = copy(valid);
+        contradictoryFallback.getJSONArray("profiles").getJSONObject(0)
+            .put("expectedSnLength", 15);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(
+            contradictoryFallback));
+
+        JSONObject explicitOverride = copy(contradictoryFallback);
+        explicitOverride.getJSONArray("profiles").getJSONObject(0)
+            .getJSONArray("snPlugins").getJSONObject(0).getJSONObject("scanner")
+            .put("expectedLength", 17);
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(explicitOverride));
+
+        JSONObject incompatibleBounds = copy(valid);
+        incompatibleBounds.getJSONArray("profiles").getJSONObject(0)
+            .getJSONArray("snPlugins").getJSONObject(0).getJSONObject("scanner")
+            .put("minLength", 17);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(incompatibleBounds));
+    }
+
+    @Test
+    public void alternateEntryAllowedLengthScopeInheritsOrOverridesPrimaryScanner()
+            throws Exception {
+        JSONObject inherited = catalogWithAlternate(false);
+        JSONObject source = inherited.getJSONArray("profiles").getJSONObject(0);
+        source.put("expectedSnLength", 17);
+        source.getJSONArray("snPlugins").getJSONObject(0).getJSONObject("scanner")
+            .put("allowedLengths", new JSONArray().put(16).put(17));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(inherited));
+
+        JSONObject overridden = copy(inherited);
+        overridden.getJSONArray("profiles").getJSONObject(0)
+            .getJSONObject("workflow").getJSONObject("alternateEntries")
+            .getJSONArray("entries").getJSONObject(0).getJSONObject("scanner")
+            .put("applyAllowedLengthsTo", new JSONArray()
+                .put("ocr").put("barcode").put("entered"));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(overridden));
+
+        JSONObject missingAllowedPolicy = copy(overridden);
+        missingAllowedPolicy.getJSONArray("profiles").getJSONObject(0)
+            .getJSONArray("snPlugins").getJSONObject(0).getJSONObject("scanner")
+            .remove("allowedLengths");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(
+            missingAllowedPolicy));
+    }
+
     private static JSONObject dailyStats(String resultKey) throws Exception {
         return new JSONObject()
             .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
@@ -699,6 +827,19 @@ public class CatalogPromotionValidatorTest {
             .put("groups", new JSONArray().put(v2Item(
                 "sample-card", "Sample card", "example-intake", "sample-ready")
                 .put("legacyResultKeys", new JSONArray().put("sample-ready"))))
+            .put("flatSummaries", new JSONArray());
+    }
+
+    private static JSONObject dailyStatsAlternateEntries(
+            String itemId, String profileId, String entryId) throws Exception {
+        return new JSONObject()
+            .put("version", DailyStatsRules.DAILY_STATS_ALTERNATE_ENTRIES_VERSION)
+            .put("scope", DailyStatsRules.ALL_PROFILES_SCOPE)
+            .put("groups", new JSONArray().put(new JSONObject()
+                .put("id", itemId)
+                .put("selectors", new JSONArray().put(new JSONObject()
+                    .put("profileId", profileId)
+                    .put("entryId", entryId)))))
             .put("flatSummaries", new JSONArray());
     }
 

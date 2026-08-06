@@ -71,6 +71,8 @@ final class SnScanRules {
         final boolean valid;
         final int expectedLength;
         final Set<String> applyExpectedLengthTo;
+        final List<Integer> allowedLengths;
+        final Set<String> applyAllowedLengthsTo;
         final int minLength;
         final int maxLength;
         final boolean minLengthConfigured;
@@ -91,6 +93,7 @@ final class SnScanRules {
         final boolean removeWhitespace;
 
         private Policy(boolean valid, int expectedLength, Set<String> applyExpectedLengthTo,
+                       List<Integer> allowedLengths, Set<String> applyAllowedLengthsTo,
                        int minLength, int maxLength,
                        boolean minLengthConfigured, boolean maxLengthConfigured,
                        List<String> preferredPrefixes, String autoTextMode,
@@ -103,6 +106,8 @@ final class SnScanRules {
             this.valid = valid;
             this.expectedLength = expectedLength;
             this.applyExpectedLengthTo = applyExpectedLengthTo;
+            this.allowedLengths = allowedLengths;
+            this.applyAllowedLengthsTo = applyAllowedLengthsTo;
             this.minLength = minLength;
             this.maxLength = maxLength;
             this.minLengthConfigured = minLengthConfigured;
@@ -128,14 +133,30 @@ final class SnScanRules {
             boolean valid = true;
 
             IntValue expected = positiveInteger(value, "expectedLength", 0);
+            IntegerList allowedLengths = positiveIntegerList(value, "allowedLengths");
             IntValue min = positiveInteger(value, "minLength", 6);
             IntValue max = positiveInteger(value, "maxLength", 64);
-            valid &= expected.valid && min.valid && max.valid;
+            valid &= expected.valid && allowedLengths.valid && min.valid && max.valid;
             if (min.value > max.value) valid = false;
             if (expected.value > 0 && (expected.value < min.value || expected.value > max.value)) {
                 // Only configured candidate bounds constrain expectedLength. The implicit 6..64
                 // candidate defaults must not invalidate an otherwise valid legacy expected length.
                 if (min.configured || max.configured) valid = false;
+            }
+            if (allowedLengths.configured) {
+                for (int allowedLength : allowedLengths.values) {
+                    if ((min.configured && allowedLength < min.value)
+                            || (max.configured && allowedLength > max.value)) {
+                        valid = false;
+                    }
+                }
+            }
+            // expectedLength may remain as an old-App fallback while a new App uses the set. The
+            // fallback must still be one of the newly accepted lengths so the two policies do not
+            // describe contradictory identities.
+            if (expected.configured && allowedLengths.configured
+                    && !allowedLengths.values.contains(expected.value)) {
+                valid = false;
             }
 
             StringValue autoText = oneOf(value, "autoTextMode", "",
@@ -163,8 +184,10 @@ final class SnScanRules {
             StringList ruleScopes = stringList(value, "applyCandidateRulesTo", false);
             StringList stripScopes = sourceList(value, "stripLabelsFrom");
             StringList expectedLengthScopes = sourceList(value, "applyExpectedLengthTo");
+            StringList allowedLengthScopes = sourceList(value, "applyAllowedLengthsTo");
             valid &= prefixes.valid && rejected.valid && labels.valid && order.valid
-                && ruleScopes.valid && stripScopes.valid && expectedLengthScopes.valid;
+                && ruleScopes.valid && stripScopes.valid && expectedLengthScopes.valid
+                && allowedLengthScopes.valid;
 
             List<String> normalizedOrder = order.configured ? normalizeOrder(order.values) : DEFAULT_ORDER;
             if (order.configured && normalizedOrder.size() != order.values.size()) valid = false;
@@ -199,11 +222,22 @@ final class SnScanRules {
                 valid = false;
             }
             if (expectedLengthScopes.configured && !expected.configured) valid = false;
+            Set<String> normalizedAllowedLengthScopes = normalizeSources(
+                allowedLengthScopes, ALL_VALUE_SOURCES);
+            if (allowedLengthScopes.configured
+                    && (normalizedAllowedLengthScopes.isEmpty()
+                        || normalizedAllowedLengthScopes.size()
+                            != allowedLengthScopes.values.size())) {
+                valid = false;
+            }
+            if (allowedLengthScopes.configured && !allowedLengths.configured) valid = false;
 
             return new Policy(
                 valid,
                 expected.value,
                 normalizedExpectedLengthScopes,
+                allowedLengths.values,
+                normalizedAllowedLengthScopes,
                 min.value,
                 max.value,
                 min.configured,
@@ -257,7 +291,25 @@ final class SnScanRules {
         }
 
         boolean appliesExpectedLengthTo(String source) {
-            return expectedLength > 0 && applyExpectedLengthTo.contains(source);
+            return expectedLength > 0 && applyExpectedLengthTo.contains(source)
+                && !appliesAllowedLengthsTo(source);
+        }
+
+        boolean appliesAllowedLengthsTo(String source) {
+            return !allowedLengths.isEmpty() && applyAllowedLengthsTo.contains(source);
+        }
+
+        boolean matchesConfiguredLength(String source, int actualLength) {
+            if (appliesAllowedLengthsTo(source)) return allowedLengths.contains(actualLength);
+            return !appliesExpectedLengthTo(source) || actualLength == expectedLength;
+        }
+
+        List<Integer> requiredLengthsForSource(String source) {
+            if (appliesAllowedLengthsTo(source)) return allowedLengths;
+            if (appliesExpectedLengthTo(source)) {
+                return Collections.singletonList(expectedLength);
+            }
+            return Collections.emptyList();
         }
 
         boolean acceptsEntered(String normalized) {
@@ -272,7 +324,7 @@ final class SnScanRules {
             if (!valid) return Rejection.INVALID_POLICY;
             String value = normalized == null ? "" : normalized;
             if (value.isEmpty()) return Rejection.EMPTY;
-            if (appliesExpectedLengthTo(source) && value.length() != expectedLength) {
+            if (!matchesConfiguredLength(source, value.length())) {
                 return Rejection.WRONG_LENGTH;
             }
             if (rejectNumericOnly && isPureNumeric(value)) return Rejection.NUMERIC_ONLY;
@@ -282,8 +334,15 @@ final class SnScanRules {
             if (!value.toUpperCase(Locale.US).matches(allowedPattern)) {
                 return Rejection.INVALID_CHARACTERS;
             }
-            if (value.length() < minLength) return Rejection.TOO_SHORT;
-            if (value.length() > maxLength) return Rejection.TOO_LONG;
+            boolean discreteLengthApplied = !requiredLengthsForSource(source).isEmpty();
+            if (value.length() < minLength
+                    && (minLengthConfigured || !discreteLengthApplied)) {
+                return Rejection.TOO_SHORT;
+            }
+            if (value.length() > maxLength
+                    && (maxLengthConfigured || !discreteLengthApplied)) {
+                return Rejection.TOO_LONG;
+            }
             if (requireLetterAndDigit
                     && (!LETTER.matcher(value).find() || !DIGIT.matcher(value).find())) {
                 return Rejection.MISSING_LETTER_OR_DIGIT;
@@ -338,8 +397,7 @@ final class SnScanRules {
         String compact = compactOcrLine(line);
         if (enabled.contains(SOURCE_PREFIX)) {
             for (String prefix : policy.preferredPrefixes) {
-                Matcher matcher = Pattern.compile("(" + Pattern.quote(prefix.toUpperCase(Locale.US))
-                    + candidateSuffixPattern(policy) + ")", Pattern.CASE_INSENSITIVE).matcher(compact);
+                Matcher matcher = prefixedCandidatePattern(policy, prefix).matcher(compact);
                 while (matcher.find()) {
                     addCandidate(candidates, matcher.group(1), SOURCE_PREFIX, 58 + lineBonus, policy);
                 }
@@ -431,6 +489,23 @@ final class SnScanRules {
         return false;
     }
 
+    /** Formats a configured discrete length set without embedding deployment-specific values. */
+    static String formatLengths(List<Integer> lengths, String conjunction) {
+        if (lengths == null || lengths.isEmpty()) return "";
+        if (lengths.size() == 1) return String.valueOf(lengths.get(0));
+        String joiner = conjunction == null || conjunction.trim().isEmpty()
+            ? "or" : conjunction.trim();
+        StringBuilder out = new StringBuilder();
+        for (int index = 0; index < lengths.size(); index++) {
+            if (index > 0) {
+                out.append(index == lengths.size() - 1
+                    ? " " + joiner + " " : ", ");
+            }
+            out.append(lengths.get(index));
+        }
+        return out.toString();
+    }
+
     static boolean cameraScanEnabled(JSONObject plugin) {
         if (plugin == null || !plugin.has("scan")) return true;
         return plugin.opt("scan") instanceof Boolean && (Boolean) plugin.opt("scan");
@@ -497,14 +572,41 @@ final class SnScanRules {
     }
 
     private static Pattern candidateTokenPattern(Policy policy) {
+        int maximum = candidateTokenMaximum(policy);
+        String characters = candidateCharacterClass(policy);
         String body = "alphanumeric".equals(policy.candidateCharacterMode)
-            ? "[A-Z0-9]{1,64}" : "[A-Z0-9][A-Z0-9._/-]{0,63}";
-        return Pattern.compile("(" + body + ")", Pattern.CASE_INSENSITIVE);
+            ? "[A-Z0-9]{1," + maximum + "}"
+            : "[A-Z0-9][A-Z0-9._/-]{0," + (maximum - 1) + "}";
+        return Pattern.compile("(?<!" + characters + ")(" + body + ")(?!"
+            + characters + ")", Pattern.CASE_INSENSITIVE);
+    }
+
+    private static Pattern prefixedCandidatePattern(Policy policy, String prefix) {
+        String characters = candidateCharacterClass(policy);
+        String body = Pattern.quote(prefix.toUpperCase(Locale.US))
+            + candidateSuffixPattern(policy);
+        return Pattern.compile("(?<!" + characters + ")(" + body + ")(?!"
+            + characters + ")", Pattern.CASE_INSENSITIVE);
     }
 
     private static String candidateSuffixPattern(Policy policy) {
+        int maximum = candidateTokenMaximum(policy);
         return "alphanumeric".equals(policy.candidateCharacterMode)
-            ? "[A-Z0-9]{0,63}" : "[A-Z0-9._/-]{0,63}";
+            ? "[A-Z0-9]{0," + (maximum - 1) + "}"
+            : "[A-Z0-9._/-]{0," + (maximum - 1) + "}";
+    }
+
+    private static String candidateCharacterClass(Policy policy) {
+        return "alphanumeric".equals(policy.candidateCharacterMode)
+            ? "[A-Z0-9]" : "[A-Z0-9._/-]";
+    }
+
+    private static int candidateTokenMaximum(Policy policy) {
+        int maximum = 64;
+        if (policy != null && policy.appliesAllowedLengthsTo(SOURCE_OCR)) {
+            for (int allowed : policy.allowedLengths) maximum = Math.max(maximum, allowed);
+        }
+        return maximum;
     }
 
     private static boolean isPureNumeric(String value) {
@@ -543,6 +645,36 @@ final class SnScanRules {
         double number = ((Number) raw).doubleValue();
         int integer = ((Number) raw).intValue();
         return new IntValue(integer, true, number == integer && integer > 0 && integer <= 256);
+    }
+
+    private static IntegerList positiveIntegerList(JSONObject value, String key) {
+        if (!value.has(key)) {
+            return new IntegerList(Collections.emptyList(), false, true);
+        }
+        Object raw = value.opt(key);
+        if (!(raw instanceof JSONArray)) {
+            return new IntegerList(Collections.emptyList(), true, false);
+        }
+        JSONArray array = (JSONArray) raw;
+        List<Integer> items = new ArrayList<>();
+        Set<Integer> unique = new LinkedHashSet<>();
+        boolean valid = array.length() > 0 && array.length() <= 256;
+        for (int index = 0; index < array.length(); index++) {
+            Object item = array.opt(index);
+            if (!(item instanceof Byte || item instanceof Short
+                    || item instanceof Integer || item instanceof Long)) {
+                valid = false;
+                continue;
+            }
+            long exact = ((Number) item).longValue();
+            if (exact < 1L || exact > 256L || !unique.add((int) exact)) {
+                valid = false;
+                continue;
+            }
+            items.add((int) exact);
+        }
+        return new IntegerList(
+            Collections.unmodifiableList(items), true, valid);
     }
 
     private static BooleanValue bool(JSONObject value, String key, boolean fallback) {
@@ -627,6 +759,17 @@ final class SnScanRules {
         final boolean valid;
         IntValue(int value, boolean configured, boolean valid) {
             this.value = value;
+            this.configured = configured;
+            this.valid = valid;
+        }
+    }
+
+    private static final class IntegerList {
+        final List<Integer> values;
+        final boolean configured;
+        final boolean valid;
+        IntegerList(List<Integer> values, boolean configured, boolean valid) {
+            this.values = values;
             this.configured = configured;
             this.valid = valid;
         }

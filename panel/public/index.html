@@ -161,7 +161,7 @@
 
     <div class="fsec">
       <h3>新版 App 精确今日统计（dailyStatsV2）</h3>
-      <div class="h">可选。每项按“表单 + result key”精确选择，避免同名 key 在不同表单中被误合并。分组显示为顶部统计卡片；扁平汇总显示在卡片下方且不重复计入今日总数。旧 App 继续读取上面的 v1 配置。</div>
+      <div class="h">可选。每项按“表单 + result key”精确选择，避免同名 key 在不同表单中被误合并；还可为同一项明确选择独立录入入口。分组显示为顶部统计卡片；扁平汇总显示在卡片下方且不重复计入今日总数。旧 App 继续读取上面的 v1 配置。</div>
       <div class="muted" style="font-size:12px;margin-bottom:8px">固定版本：<code>2</code>　固定范围：<code>all_profiles</code></div>
       <h4 style="margin:10px 0 6px;font-size:13px">统计卡片分组</h4>
       <div id="dailyStatsV2Groups"></div>
@@ -794,6 +794,49 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
   const patchEntry=(index,key,value,rerender=false)=>{
     const next=entries(); next[index]=Object.assign({},next[index]||{},{[key]:value}); save(next,rerender);
   };
+  const scannerSources=["ocr","barcode","entered"];
+  const sourceScannerPolicies=()=>{
+    const primary=Array.isArray(p.snPlugins)
+      ? p.snPlugins.find(plugin=>plugin?.key==="primary") : undefined;
+    const scanner=primary?.scanner&&typeof primary.scanner==="object"&&!Array.isArray(primary.scanner)
+      ? primary.scanner
+      : (p.scanner&&typeof p.scanner==="object"&&!Array.isArray(p.scanner)?p.scanner:{});
+    const expectedLength=scanner.expectedLength??p.expectedSnLength;
+    const hasAllowedLengths=Array.isArray(scanner.allowedLengths)&&scanner.allowedLengths.length>0;
+    const configuredAllowedScope=Array.isArray(scanner.applyAllowedLengthsTo)
+      &&scanner.applyAllowedLengthsTo.length>0
+      ? scanner.applyAllowedLengthsTo.filter(source=>scannerSources.includes(source))
+      : scannerSources;
+    return {
+      hasExpectedLength:Number.isInteger(expectedLength)&&expectedLength>=1&&expectedLength<=256,
+      hasAllowedLengths,
+      inheritedAllowedScope:hasAllowedLengths?configuredAllowedScope:[]
+    };
+  };
+  const patchScannerScope=(index,scopeKey,source,checked)=>{
+    const next=entries(); const item=Object.assign({},next[index]||{});
+    const scanner=Object.assign({},item.scanner||{});
+    const current=Array.isArray(scanner[scopeKey])
+      ? scanner[scopeKey]
+      : (scopeKey==="applyAllowedLengthsTo"
+        ? sourceScannerPolicies().inheritedAllowedScope : []);
+    const selected=checked
+      ? [...new Set([...current,source])]
+      : current.filter(item=>item!==source);
+    if(!selected.length){
+      alert((scopeKey==="applyExpectedLengthTo"?"精确长度":"允许长度")+"作用入口至少保留一个来源；如需取消允许长度覆盖，请使用“恢复继承”。");
+      render();
+      return;
+    }
+    scanner[scopeKey]=selected;
+    item.scanner=scanner; next[index]=item; save(next,true);
+  };
+  const resetAllowedScannerScope=index=>{
+    const next=entries(); const item=Object.assign({},next[index]||{});
+    const scanner=Object.assign({},item.scanner||{});
+    delete scanner.applyAllowedLengthsTo;
+    item.scanner=scanner; next[index]=item; save(next,true);
+  };
   const patchEntryObject=(index,key,childKey,value)=>{
     const next=entries(); const item=Object.assign({},next[index]||{});
     item[key]=Object.assign({},item[key]||{},{[childKey]:value}); next[index]=item; save(next);
@@ -885,7 +928,11 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
   };
 
   const render=()=>{
-    rows.textContent=""; const values=entries(); add.disabled=values.length>=16;
+    rows.textContent=""; const values=entries(); const sourcePolicies=sourceScannerPolicies();
+    add.disabled=values.length>=16
+      || (!sourcePolicies.hasExpectedLength&&!sourcePolicies.hasAllowedLengths);
+    add.title=!sourcePolicies.hasExpectedLength&&!sourcePolicies.hasAllowedLengths
+      ? "请先为来源主标识配置精确长度或允许长度策略" : "";
     values.forEach((entry,index)=>{
       const card=document.createElement("div"); card.style.cssText="border:1px solid var(--line);border-radius:8px;padding:10px;margin:9px 0;background:rgba(15,23,42,.015)";
       const head=document.createElement("div"); head.className="row"; head.style.alignItems="center";
@@ -930,15 +977,46 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
       retryHint.textContent="只复用同一 payload 与已上传 URL；超时、断线或未知响应绝不重试。";
       retryPolicy.appendChild(retryHint); card.appendChild(retryPolicy);
 
-      const scannerScope=document.createElement("div"); scannerScope.className="row"; scannerScope.style.marginTop="8px";
-      const sourceLabels={ocr:"独立入口长度校验：OCR",barcode:"独立入口长度校验：条码",entered:"独立入口长度校验：手工输入"};
-      ["ocr","barcode","entered"].forEach(source=>{
-        const selected=Array.isArray(entry.scanner?.applyExpectedLengthTo)&&entry.scanner.applyExpectedLengthTo.includes(source);
-        scannerScope.appendChild(swField(sourceLabels[source],selected,checked=>{
-          const fresh=entries()[index]; const current=Array.isArray(fresh?.scanner?.applyExpectedLengthTo)?fresh.scanner.applyExpectedLengthTo:[];
-          const next=checked?[...new Set([...current,source])]:current.filter(item=>item!==source);
-          patchEntry(index,"scanner",{applyExpectedLengthTo:next},true);
-        }));
+      const scannerScope=document.createElement("div"); scannerScope.style.cssText="border:1px dashed var(--line);border-radius:7px;padding:8px;margin-top:8px";
+      const sourceLabels={ocr:"OCR",barcode:"条码",entered:"手工输入"};
+      [
+        ["applyExpectedLengthTo","精确长度作用入口"],
+        ["applyAllowedLengthsTo","允许长度作用入口"]
+      ].forEach(([scopeKey,scopeLabel])=>{
+        const isAllowedScope=scopeKey==="applyAllowedLengthsTo";
+        const hasExplicitScope=Array.isArray(entry.scanner?.[scopeKey]);
+        const selectedScope=hasExplicitScope
+          ? entry.scanner[scopeKey]
+          : (isAllowedScope?sourcePolicies.inheritedAllowedScope:[]);
+        const group=document.createElement("div"); group.className="row"; group.style.marginTop="6px";
+        const label=document.createElement("label");
+        label.textContent=scopeLabel+(isAllowedScope&&!hasExplicitScope&&sourcePolicies.hasAllowedLengths?"（继承来源）":"");
+        label.style.cssText="flex:0 0 170px;align-self:center"; group.appendChild(label);
+        scannerSources.forEach(source=>{
+          const selected=Array.isArray(selectedScope)&&selectedScope.includes(source);
+          const control=swField(sourceLabels[source],selected,
+            checked=>patchScannerScope(index,scopeKey,source,checked));
+          const checkbox=control.querySelector("input");
+          if(checkbox)checkbox.disabled=isAllowedScope&&!sourcePolicies.hasAllowedLengths;
+          group.appendChild(control);
+        });
+        if(isAllowedScope){
+          const inherit=document.createElement("button"); inherit.type="button"; inherit.className="ghost sm";
+          inherit.textContent="恢复继承"; inherit.disabled=!hasExplicitScope;
+          inherit.onclick=()=>resetAllowedScannerScope(index); group.appendChild(inherit);
+        }
+        if(isAllowedScope&&!sourcePolicies.hasAllowedLengths){
+          const unavailable=document.createElement("span"); unavailable.className="muted";
+          unavailable.style.fontSize="12px"; unavailable.textContent="来源主标识未配置允许长度，当前不可用";
+          group.appendChild(unavailable);
+        }
+        if(!isAllowedScope&&!sourcePolicies.hasExpectedLength){
+          const inactive=document.createElement("span"); inactive.className="muted";
+          inactive.style.fontSize="12px";
+          inactive.textContent="来源当前无精确长度；该兼容范围保留但不生效";
+          group.appendChild(inactive);
+        }
+        scannerScope.appendChild(group);
       });
       card.appendChild(scannerScope);
 
@@ -1001,11 +1079,14 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
       toggleWrap.appendChild(addToggle); card.appendChild(toggleWrap); rows.appendChild(card);
     });
   };
-  add.onclick=()=>{ const next=entries(); if(next.length>=16)return; next.push({
+  add.onclick=()=>{ const next=entries(); const sourcePolicies=sourceScannerPolicies();
+    if(next.length>=16||(!sourcePolicies.hasExpectedLength&&!sourcePolicies.hasAllowedLengths))return;
+    const scanner={applyExpectedLengthTo:[...scannerSources]};
+    next.push({
     id:"",title:"",targetProfileId:"",identifierRole:"primary",resultKey:"",
     photoTargetFields:[],joinWith:",",minPhotos:1,maxPhotos:1,
     uploadNameTemplate:"",toggles:[],
-    scanner:{applyExpectedLengthTo:["ocr","barcode","entered"]},
+    scanner,
     submissionRetry:{maxAttempts:1,retryDelayMs:0},
     flags:{duplicateCheck:false,previousSteps:false,printing:false},dataOverrides:{},
     dynamicOverrideFields:[],dynamicOverrideProviders:[]
@@ -1033,6 +1114,7 @@ function scannerPolicyEditor(owner,title,onChange,opts={}){
     if(value===undefined) delete next[key]; else next[key]=value;
     if(key==="preferredPrefixes") delete next.preferredSnPrefixes;
     if(key==="stripLabels" && (!Array.isArray(value)||value.length===0)) delete next.stripLabelsFrom;
+    if(key==="allowedLengths" && (!Array.isArray(value)||value.length===0)) delete next.applyAllowedLengthsTo;
     if(Object.keys(next).length) owner.scanner=next; else delete owner.scanner;
     onChange();
   };
@@ -1051,12 +1133,25 @@ function scannerPolicyEditor(owner,title,onChange,opts={}){
       set(key,items.length?items:undefined);
     }); input.placeholder=placeholder; body.appendChild(field(label,input,"g"));
   };
+  const numberList=(key,label,placeholder)=>{
+    const configured=Array.isArray(current()[key])?current()[key]:[];
+    const input=inputCtl(configured.join(", "),value=>{
+      const items=value.split(",").map(x=>x.trim()).filter(Boolean)
+        .map(x=>/^\d+$/.test(x)?Number(x):x);
+      set(key,items.length?items:undefined);
+    }); input.placeholder=placeholder; body.appendChild(field(label,input,"g"));
+  };
   const optionalSelect=(key,label,choices)=>{
     const select=selectCtl(current()[key]??"",[["","未配置（兼容默认）"],...choices],value=>set(key,value===""?undefined:value));
     body.appendChild(field(label,select));
   };
-  optionalNum("expectedLength","精确长度"); optionalNum("minLength","候选最短"); optionalNum("maxLength","候选最长");
+  optionalNum("expectedLength","精确长度（旧版 fallback）");
+  numberList("allowedLengths","允许长度（逗号分隔）","例如 8, 10（仅示例）");
+  optionalNum("minLength","候选最短"); optionalNum("maxLength","候选最长");
   list("applyExpectedLengthTo","精确长度应用入口","ocr, barcode, entered");
+  list("applyAllowedLengthsTo","允许长度作用入口","ocr, barcode, entered");
+  const lengthHint=mutedLine("允许长度供新版 App 使用；精确长度可同时保留为旧版 App fallback，但必须包含在允许长度中。未配置允许长度作用入口时默认应用于 OCR、条码和手输。");
+  lengthHint.style.flexBasis="100%"; body.appendChild(lengthHint);
   optionalSelect("autoTextMode","自动文字识别",[["always","始终并行"],["fallback","条码失败后"]]);
   optionalSelect("candidateMode","候选选择",[["ranked","评分最高"],["ordered","按来源顺序"]]);
   optionalSelect("caseMode","大小写归一化",[["upper","转大写"],["preserve","保留"]]);
@@ -1397,6 +1492,9 @@ $("addDailyStatsGroupBtn").onclick=()=>{
 function dailyStatsV2PairKey(profileId,resultKey){
   return JSON.stringify([String(profileId||""),String(resultKey||"")]);
 }
+function dailyStatsAlternateEntryPairKey(profileId,entryId){
+  return JSON.stringify([String(profileId||""),String(entryId||"")]);
+}
 function dailyStatsV2AvailableSelectors(){
   const selectors=[]; const seen=new Set();
   CATALOG_PROFILES.forEach(profile=>{
@@ -1409,6 +1507,28 @@ function dailyStatsV2AvailableSelectors(){
       if(seen.has(pairKey)) return; seen.add(pairKey);
       const resultLabel=String(entry?.operatorLabel||entry?.label||resultKey);
       selectors.push({profileId,resultKey,profileLabel,resultLabel});
+    });
+  });
+  return selectors;
+}
+function dailyStatsAlternateEntryAvailableSelectors(){
+  const selectors=[]; const seen=new Set();
+  CATALOG_PROFILES.forEach(profile=>{
+    const alternateEntries=profile?.workflow?.alternateEntries;
+    if(profile?.pickerVisible!==true || alternateEntries?.enabled!==true
+        || !Array.isArray(alternateEntries.entries)) return;
+    const profileId=String(profile.id||"");
+    if(!profileId) return;
+    const profileLabel=String(profile.displayName||profileId);
+    alternateEntries.entries.forEach(entry=>{
+      const entryId=String(entry?.id||"");
+      if(!entryId) return;
+      const pairKey=dailyStatsAlternateEntryPairKey(profileId,entryId);
+      if(seen.has(pairKey)) return; seen.add(pairKey);
+      selectors.push({
+        profileId,entryId,profileLabel,
+        entryLabel:String(entry?.title||entryId)
+      });
     });
   });
   return selectors;
@@ -1427,11 +1547,22 @@ function dailyStatsV2SelectorText(selector){
   }
   return selector.profileId+" / "+selector.resultKey+"（当前无显式可见表单声明）";
 }
+function dailyStatsAlternateEntrySelectorText(selector){
+  if(selector.profileLabel){
+    return selector.profileLabel+" · "+selector.entryLabel
+      +"（"+selector.profileId+" / "+selector.entryId+"）";
+  }
+  return selector.profileId+" / "+selector.entryId+"（当前无可见独立录入入口声明）";
+}
 function renderDailyStatsV2Items(boxId,items,kind){
   const box=$(boxId); box.innerHTML="";
   const available=dailyStatsV2AvailableSelectors();
   const availableByPair=new Map(available.map(item=>[
     dailyStatsV2PairKey(item.profileId,item.resultKey),item
+  ]));
+  const availableAlternateEntries=dailyStatsAlternateEntryAvailableSelectors();
+  const availableAlternateEntriesByPair=new Map(availableAlternateEntries.map(item=>[
+    dailyStatsAlternateEntryPairKey(item.profileId,item.entryId),item
   ]));
   if(!items.length){
     const empty=document.createElement("div"); empty.className="muted";
@@ -1444,6 +1575,7 @@ function renderDailyStatsV2Items(boxId,items,kind){
   items.forEach((item,index)=>{
     if(!item.labelI18n || typeof item.labelI18n!=="object" || Array.isArray(item.labelI18n)) item.labelI18n={};
     if(!Array.isArray(item.selectors)) item.selectors=[];
+    if(!Array.isArray(item.alternateEntrySelectors)) item.alternateEntrySelectors=[];
     if(kind==="group" && !Array.isArray(item.legacyResultKeys)) item.legacyResultKeys=[];
     const card=document.createElement("div"); card.className="slot";
     const head=document.createElement("div"); head.className="row"; head.style.cssText="flex-basis:100%;width:100%";
@@ -1511,6 +1643,51 @@ function renderDailyStatsV2Items(boxId,items,kind){
       option.appendChild(checkbox); option.appendChild(text); choices.appendChild(option);
     });
     selectorWrap.appendChild(choices); card.appendChild(selectorWrap);
+
+    const alternateWrap=document.createElement("div"); alternateWrap.style.cssText="flex-basis:100%;width:100%";
+    const alternateLabel=document.createElement("label");
+    alternateLabel.textContent="独立录入入口（可选）"; alternateWrap.appendChild(alternateLabel);
+    const alternateHelp=document.createElement("div"); alternateHelp.className="muted";
+    alternateHelp.style.cssText="font-size:12px;margin-bottom:5px";
+    alternateHelp.textContent="按来源表单 + 入口精确计数；不会写入 dailyStatsV2 的表单 + result key selector。";
+    alternateWrap.appendChild(alternateHelp);
+    const alternateChoices=document.createElement("div"); alternateChoices.className="skipmat";
+    const selectedAlternateEntries=item.alternateEntrySelectors
+      .filter(selector=>selector&&typeof selector.profileId==="string"&&typeof selector.entryId==="string")
+      .map(selector=>({profileId:selector.profileId,entryId:selector.entryId}));
+    const selectedAlternateEntryPairs=new Set(selectedAlternateEntries.map(selector=>
+      dailyStatsAlternateEntryPairKey(selector.profileId,selector.entryId)));
+    const alternateChoicesInOrder=availableAlternateEntries.slice();
+    selectedAlternateEntries.forEach(selector=>{
+      const key=dailyStatsAlternateEntryPairKey(selector.profileId,selector.entryId);
+      if(!availableAlternateEntriesByPair.has(key)) alternateChoicesInOrder.push(selector);
+    });
+    if(!alternateChoicesInOrder.length){
+      const none=document.createElement("span"); none.className="muted";
+      none.textContent="当前没有可见来源表单启用独立录入入口。"; alternateChoices.appendChild(none);
+    }
+    alternateChoicesInOrder.forEach(selector=>{
+      const pairKey=dailyStatsAlternateEntryPairKey(selector.profileId,selector.entryId);
+      const resolved=availableAlternateEntriesByPair.get(pairKey)||selector;
+      const option=document.createElement("label");
+      const checkbox=document.createElement("input"); checkbox.type="checkbox";
+      checkbox.checked=selectedAlternateEntryPairs.has(pairKey);
+      checkbox.onchange=()=>{
+        if(checkbox.checked){
+          if(!item.alternateEntrySelectors.some(candidate=>
+              dailyStatsAlternateEntryPairKey(candidate?.profileId,candidate?.entryId)===pairKey)){
+            item.alternateEntrySelectors.push({profileId:selector.profileId,entryId:selector.entryId});
+          }
+        }else{
+          item.alternateEntrySelectors=item.alternateEntrySelectors.filter(candidate=>
+            dailyStatsAlternateEntryPairKey(candidate?.profileId,candidate?.entryId)!==pairKey);
+        }
+      };
+      const text=document.createElement("span"); text.className="mn";
+      text.textContent=dailyStatsAlternateEntrySelectorText(resolved); text.title=text.textContent;
+      option.appendChild(checkbox); option.appendChild(text); alternateChoices.appendChild(option);
+    });
+    alternateWrap.appendChild(alternateChoices); card.appendChild(alternateWrap);
 
     if(kind==="group"){
       const legacyWrap=document.createElement("div"); legacyWrap.style.cssText="flex-basis:100%;width:100%";
@@ -1616,6 +1793,65 @@ function buildDailyStatsV2(){
     flatSummaries:DAILY_STATS_V2_FLAT_WORKING.map((item,index)=>buildItem(item,index,"flat"))
   };
 }
+function mergeDailyStatsAlternateEntrySelectors(items,storedItems){
+  const storedById=new Map();
+  if(Array.isArray(storedItems)){
+    storedItems.forEach(item=>{
+      const id=String(item?.id||"");
+      if(id&&!storedById.has(id)&&Array.isArray(item?.selectors)) storedById.set(id,item.selectors);
+    });
+  }
+  items.forEach(item=>{
+    const stored=storedById.get(String(item?.id||""));
+    item.alternateEntrySelectors=stored
+      ? stored.map(selector=>({profileId:selector?.profileId,entryId:selector?.entryId})) : [];
+  });
+}
+function buildDailyStatsAlternateEntries(){
+  const available=new Set(dailyStatsAlternateEntryAvailableSelectors().map(selector=>
+    dailyStatsAlternateEntryPairKey(selector.profileId,selector.entryId)));
+  const buildCollection=(items,kind)=>{
+    const assigned=new Set();
+    const built=[];
+    items.forEach((item,index)=>{
+      const raw=Array.isArray(item.alternateEntrySelectors)?item.alternateEntrySelectors:[];
+      if(!raw.length) return;
+      const title=(kind==="group"?"精确分组 ":"扁平汇总 ")+(index+1);
+      const id=String(item.id||"").trim();
+      if(!id) throw new Error(title+" 的稳定 ID 不能为空，无法关联独立录入统计");
+      if(raw.length>512) throw new Error(title+" 最多选择 512 个独立录入入口");
+      const local=new Set();
+      const selectors=raw.map((selector,selectorIndex)=>{
+        const profileId=String(selector?.profileId||"");
+        const entryId=String(selector?.entryId||"");
+        if(!profileId||profileId!==profileId.trim()||profileId.length>256){
+          throw new Error(title+" 的独立录入 selector "+(selectorIndex+1)+" 表单 ID 无效");
+        }
+        if(!entryId||entryId!==entryId.trim()||entryId.length>256){
+          throw new Error(title+" 的独立录入 selector "+(selectorIndex+1)+" 入口 ID 无效");
+        }
+        const pair=dailyStatsAlternateEntryPairKey(profileId,entryId);
+        if(local.has(pair)) throw new Error(title+" 不能重复选择同一个独立录入入口");
+        local.add(pair);
+        if(!available.has(pair)){
+          throw new Error(title+" 包含当前无可见来源表单声明的独立录入入口："+profileId+" / "+entryId);
+        }
+        if(assigned.has(pair)){
+          throw new Error((kind==="group"?"精确分组":"扁平汇总")
+            +"之间不能重复选择独立录入入口："+profileId+" / "+entryId);
+        }
+        assigned.add(pair);
+        return {profileId,entryId};
+      });
+      built.push({id,selectors});
+    });
+    return built;
+  };
+  const groups=buildCollection(DAILY_STATS_V2_GROUPS_WORKING,"group");
+  const flatSummaries=buildCollection(DAILY_STATS_V2_FLAT_WORKING,"flat");
+  if(!groups.length&&!flatSummaries.length) return null;
+  return {version:1,scope:"all_profiles",groups,flatSummaries};
+}
 $("addDailyStatsV2GroupBtn").onclick=()=>{
   if(DAILY_STATS_V2_GROUPS_WORKING.length>=16) return;
   DAILY_STATS_V2_GROUPS_WORKING.push({
@@ -1638,6 +1874,10 @@ function applyDailyStatsV2ToLocalSettings(dailyStatsV2){
   if(dailyStatsV2) CATALOG_SETTINGS.dailyStatsV2=dailyStatsV2;
   else delete CATALOG_SETTINGS.dailyStatsV2;
 }
+function applyDailyStatsAlternateEntriesToLocalSettings(dailyStatsAlternateEntries){
+  if(dailyStatsAlternateEntries) CATALOG_SETTINGS.dailyStatsAlternateEntries=dailyStatsAlternateEntries;
+  else delete CATALOG_SETTINGS.dailyStatsAlternateEntries;
+}
 $("saveDailyStatsBtn").onclick=async()=>{
   let dailyStats;
   try { dailyStats=buildDailyStats(); }
@@ -1651,13 +1891,17 @@ $("saveDailyStatsBtn").onclick=async()=>{
   finally { btn.disabled=false; btn.textContent=label; }
 };
 $("saveDailyStatsV2Btn").onclick=async()=>{
-  let dailyStatsV2;
-  try { dailyStatsV2=buildDailyStatsV2(); }
+  let dailyStatsV2,dailyStatsAlternateEntries;
+  try {
+    dailyStatsV2=buildDailyStatsV2();
+    dailyStatsAlternateEntries=buildDailyStatsAlternateEntries();
+  }
   catch(e){ $("dailyStatsV2Msg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return; }
   const btn=$("saveDailyStatsV2Btn"),label=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("dailyStatsV2Msg").textContent="";
   try {
-    const saved=await api("/api/settings",{method:"POST",body:{baseVersion:CATALOG_VERSION,dailyStatsV2}});
+    const saved=await api("/api/settings",{method:"POST",body:{baseVersion:CATALOG_VERSION,dailyStatsV2,dailyStatsAlternateEntries}});
     CATALOG_VERSION=saved.version; applyDailyStatsV2ToLocalSettings(dailyStatsV2);
+    applyDailyStatsAlternateEntriesToLocalSettings(dailyStatsAlternateEntries);
     $("dailyStatsV2Msg").innerHTML='<span class="ok">✅ 已保存</span>';
   } catch(e){ $("dailyStatsV2Msg").innerHTML='<span class="err">保存失败：'+esc(e.message)+'</span>'; }
   finally { btn.disabled=false; btn.textContent=label; }
@@ -1703,6 +1947,13 @@ function openGlobalSettings(){
   DAILY_STATS_V2_FLAT_WORKING=dailyStatsV2?.version===2
       &&dailyStatsV2?.scope==="all_profiles"&&Array.isArray(dailyStatsV2.flatSummaries)
     ? JSON.parse(JSON.stringify(dailyStatsV2.flatSummaries)) : [];
+  const dailyStatsAlternateEntries=CATALOG_SETTINGS?.dailyStatsAlternateEntries;
+  const hasDailyStatsAlternateEntries=dailyStatsAlternateEntries?.version===1
+      &&dailyStatsAlternateEntries?.scope==="all_profiles";
+  mergeDailyStatsAlternateEntrySelectors(DAILY_STATS_V2_GROUPS_WORKING,
+    hasDailyStatsAlternateEntries?dailyStatsAlternateEntries.groups:[]);
+  mergeDailyStatsAlternateEntrySelectors(DAILY_STATS_V2_FLAT_WORKING,
+    hasDailyStatsAlternateEntries?dailyStatsAlternateEntries.flatSummaries:[]);
   renderDailyStatsV2Editors();
   const dlg=$("globalSettingsDlg");
   if(dlg.showModal) dlg.showModal(); else dlg.setAttribute("open","");
@@ -1765,7 +2016,7 @@ $("saveNotifyBtn").onclick = async () => {
   // The endpoints textarea is only the legacy flat override. Blank = {}; the complete structured
   // backendAdapter remains required because the App has no deployment endpoint defaults.
   // A bad JSON (or a non-object) aborts the save with an inline error — never POST a malformed body.
-  let endpoints, backendAdapter, notificationAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns, updateSource, dailyStats, dailyStatsV2;
+  let endpoints, backendAdapter, notificationAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns, updateSource, dailyStats, dailyStatsV2, dailyStatsAlternateEntries;
   try {
     if(!Number.isInteger(minAppVersionCode) || minAppVersionCode<0) throw new Error("最低 App versionCode 必须是非负整数");
     endpoints=parseSettingsObject("endpointsInput", "旧版接口路径");
@@ -1778,16 +2029,18 @@ $("saveNotifyBtn").onclick = async () => {
     updateSource=buildUpdateSource(updateOwner, updateRepo);
     dailyStats=buildDailyStats();
     dailyStatsV2=buildDailyStatsV2();
+    dailyStatsAlternateEntries=buildDailyStatsAlternateEntries();
   } catch (e) {
     $("notifyMsg").innerHTML='<span class="err">'+esc(e.message)+'</span>'; return;
   }
   const btn=$("saveNotifyBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("notifyMsg").textContent="";
   try {
-    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationAdapter, diagnosticsPolicy, dailyStats, dailyStatsV2, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
+    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationAdapter, diagnosticsPolicy, dailyStats, dailyStatsV2, dailyStatsAlternateEntries, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
     CATALOG_VERSION=saved.version;
     CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notificationAdapter, diagnosticsPolicy, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns });
     applyDailyStatsToLocalSettings(dailyStats);
     applyDailyStatsV2ToLocalSettings(dailyStatsV2);
+    applyDailyStatsAlternateEntriesToLocalSettings(dailyStatsAlternateEntries);
     BACKEND_ADAPTER = backendAdapter;
     BACKEND_CLIENT = window.BackendClient.createBackendClient(BACKEND_ADAPTER, { fingerprint:FP });
     $("notifyMsg").innerHTML='<span class="ok">✅ 已保存</span>';

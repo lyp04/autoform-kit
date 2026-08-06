@@ -65,6 +65,12 @@ public class DailyStatsWiringTest {
         assertTrue(method.contains(
             "stats, summary.optJSONArray(\"selectors\"), null"));
         assertTrue(method.contains(
+            "DailyStatsRules.allProfilesAlternateEntries("));
+        assertTrue(method.contains(
+            "alternateStats, configuredAlternateGroups, group.optString(\"id\", \"\")"));
+        assertTrue(method.contains(
+            "alternateStats, configuredAlternateFlatSummaries,"));
+        assertTrue(method.contains(
             "flatStatLabels.add(localized(summary, \"label\", \"labelI18n\"))"));
         assertTrue(method.contains(
             "panel.addView(flatStatRow(flatStatLabels.get(index), flatStatCounts.get(index)"));
