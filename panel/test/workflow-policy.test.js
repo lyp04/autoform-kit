@@ -313,7 +313,8 @@ test("printing and submission policy bounds are enforced", () => {
     retryDelayMs: 60001,
     interUnitDelayMs: 60001,
     roundLedgerRetentionDays: 31,
-    maxConsecutiveFailures: 101
+    maxConsecutiveFailures: 101,
+    structuredNonSuccessAction: "guess"
   });
   Object.assign(profile.workflow.submission.networkRetry, {
     maxAttempts: 101,
@@ -344,6 +345,7 @@ test("printing and submission policy bounds are enforced", () => {
     "workflow.submission.interUnitDelayMs must be an integer from 0 to 60000",
     "workflow.submission.roundLedgerRetentionDays must be an integer from 1 to 30",
     "workflow.submission.maxConsecutiveFailures must be an integer from 1 to 100",
+    "workflow.submission.structuredNonSuccessAction must be one of: lock, reject_as_not_written",
     "workflow.submission.networkRetry.maxAttempts must be an integer from 0 to 100",
     "workflow.submission.networkRetry.baseDelayMs must be an integer from 250 to 60000",
     "workflow.submission.networkRetry.maxDelayMs must be an integer from 250 to 300000",

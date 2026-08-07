@@ -147,4 +147,30 @@ public class SubmissionOutcomeWiringTest {
             assertFalse(branch.contains("clearAlternateSubmissionAttempt("));
         }
     }
+
+    @Test
+    public void profileOptInTurnsOnlyParsedNonSuccessIntoAnOrdinaryRejection()
+            throws Exception {
+        String source = mainSource();
+        String submit = method(source,
+            "private void submitUnit(",
+            "private void ensurePreviousSteps(");
+        String retry = method(source,
+            "private void runWithSubmissionNetworkRetry(",
+            "private void runWithPreUploadNetworkRetry(");
+
+        int parsedResponse = submit.indexOf("JSONObject response = journaled.response");
+        int optIn = submit.indexOf(
+            "workflow.submissionStructuredNonSuccessAction", parsedResponse);
+        int rejected = submit.indexOf("confirmMainSubmissionRejected(journaled)", optIn);
+        int ordinaryFailure = submit.indexOf(
+            "new SubmissionExplicitlyRejectedException", rejected);
+        assertTrue(parsedResponse >= 0 && parsedResponse < optIn);
+        assertTrue(optIn < rejected && rejected < ordinaryFailure);
+        assertTrue(retry.contains("exc instanceof SubmissionExplicitlyRejectedException"));
+        assertTrue(retry.contains("finishActiveMainUploadBarrier(context)"));
+        assertFalse(retry.substring(retry.indexOf(
+            "exc instanceof SubmissionExplicitlyRejectedException"))
+            .contains("markUncertain("));
+    }
 }

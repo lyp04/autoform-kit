@@ -467,6 +467,11 @@ function validateRuntimePolicy(profile, resultKeys, errors) {
     }
     validateIntegerRange(submission.maxConsecutiveFailures, 1, 100,
       "workflow.submission.maxConsecutiveFailures", errors);
+    if (submission.structuredNonSuccessAction !== undefined) {
+      validateOneOf(submission.structuredNonSuccessAction,
+        ["lock", "reject_as_not_written"],
+        "workflow.submission.structuredNonSuccessAction", errors);
+    }
     const networkRetry = submission.networkRetry;
     if (!isPlainObject(networkRetry)) {
       errors.push("workflow.submission.networkRetry must be an object");

@@ -35,6 +35,9 @@ final class ProfileWorkflow {
         "deferred_missing_two_pass";
     static final String PRINT_UNKNOWN_PRESENTATION_AS_ONGOING = "as_ongoing";
     static final String PRINT_UNKNOWN_PRESENTATION_DISTINCT = "distinct";
+    static final String STRUCTURED_NON_SUCCESS_LOCK = "lock";
+    static final String STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN =
+        "reject_as_not_written";
 
     final boolean declared;
     final boolean operationalPoliciesExplicit;
@@ -89,6 +92,7 @@ final class ProfileWorkflow {
     final long submissionInterUnitDelayMs;
     final int roundLedgerRetentionDays;
     final int submissionMaxConsecutiveFailures;
+    final String submissionStructuredNonSuccessAction;
     final int submissionNetworkRetryMaxAttempts;
     final long submissionNetworkRetryBaseDelayMs;
     final long submissionNetworkRetryMaxDelayMs;
@@ -175,6 +179,8 @@ final class ProfileWorkflow {
         this.submissionInterUnitDelayMs = policies.submissionInterUnitDelayMs;
         this.roundLedgerRetentionDays = policies.roundLedgerRetentionDays;
         this.submissionMaxConsecutiveFailures = policies.submissionMaxConsecutiveFailures;
+        this.submissionStructuredNonSuccessAction =
+            policies.submissionStructuredNonSuccessAction;
         this.submissionNetworkRetryMaxAttempts = policies.submissionNetworkRetryMaxAttempts;
         this.submissionNetworkRetryBaseDelayMs = policies.submissionNetworkRetryBaseDelayMs;
         this.submissionNetworkRetryMaxDelayMs = policies.submissionNetworkRetryMaxDelayMs;
@@ -631,6 +637,7 @@ final class ProfileWorkflow {
         final long submissionInterUnitDelayMs;
         final int roundLedgerRetentionDays;
         final int submissionMaxConsecutiveFailures;
+        final String submissionStructuredNonSuccessAction;
         final int submissionNetworkRetryMaxAttempts;
         final long submissionNetworkRetryBaseDelayMs;
         final long submissionNetworkRetryMaxDelayMs;
@@ -652,6 +659,7 @@ final class ProfileWorkflow {
                                int submissionMaxAttempts, long submissionRetryDelayMs,
                                long submissionInterUnitDelayMs, int roundLedgerRetentionDays,
                                int submissionMaxConsecutiveFailures,
+                               String submissionStructuredNonSuccessAction,
                                int submissionNetworkRetryMaxAttempts,
                                long submissionNetworkRetryBaseDelayMs,
                                long submissionNetworkRetryMaxDelayMs) {
@@ -680,6 +688,8 @@ final class ProfileWorkflow {
             this.submissionInterUnitDelayMs = submissionInterUnitDelayMs;
             this.roundLedgerRetentionDays = roundLedgerRetentionDays;
             this.submissionMaxConsecutiveFailures = submissionMaxConsecutiveFailures;
+            this.submissionStructuredNonSuccessAction =
+                submissionStructuredNonSuccessAction;
             this.submissionNetworkRetryMaxAttempts = submissionNetworkRetryMaxAttempts;
             this.submissionNetworkRetryBaseDelayMs = submissionNetworkRetryBaseDelayMs;
             this.submissionNetworkRetryMaxDelayMs = submissionNetworkRetryMaxDelayMs;
@@ -747,6 +757,11 @@ final class ProfileWorkflow {
                 submission, "roundLedgerRetentionDays", 1, 1, 30);
             int maxConsecutiveFailures = boundedInt(
                 submission, "maxConsecutiveFailures", 1, 1, 100);
+            String structuredNonSuccessAction = allowedAction(
+                submission, "structuredNonSuccessAction",
+                STRUCTURED_NON_SUCCESS_LOCK,
+                STRUCTURED_NON_SUCCESS_LOCK,
+                STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN);
             JSONObject networkRetry = submission == null
                 ? null : submission.optJSONObject("networkRetry");
             int networkMaxAttempts = boundedInt(networkRetry, "maxAttempts", 0, 0, 100);
@@ -766,7 +781,8 @@ final class ProfileWorkflow {
                 manualReprintRequiresConfirmation,
                 recoveryEnabled, localNotice, maxAttempts, retryDelayMs,
                 interUnitDelayMs, retentionDays,
-                maxConsecutiveFailures, networkMaxAttempts, networkBaseDelayMs,
+                maxConsecutiveFailures, structuredNonSuccessAction,
+                networkMaxAttempts, networkBaseDelayMs,
                 networkMaxDelayMs);
         }
     }

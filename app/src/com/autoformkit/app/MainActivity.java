@@ -9668,6 +9668,14 @@ public class MainActivity extends Activity {
         }
     }
 
+    /** A parsed backend response which the active profile declares as definitely not written. */
+    private static final class SubmissionExplicitlyRejectedException extends IOException {
+        SubmissionExplicitlyRejectedException(String message) {
+            super(message == null || message.trim().isEmpty()
+                ? "submission was rejected" : message);
+        }
+    }
+
     private static final class PreviousStepSubmissionOutcomeUncertainException
             extends IOException {
         PreviousStepSubmissionOutcomeUncertainException() {
@@ -9980,6 +9988,13 @@ public class MainActivity extends Activity {
                     }
                     return;
                 } catch (Exception exc) {
+                    if (exc instanceof SubmissionExplicitlyRejectedException) {
+                        // All upload calls completed and the final parsed response is declared
+                        // not-written by this profile. The URLs are not persisted for a later run,
+                        // so retire the exact upload barrier and keep the source draft retryable.
+                        finishActiveMainUploadBarrier(context);
+                        throw exc;
+                    }
                     if (!Api.isTransientApiNetworkError(exc)) {
                         if (retries > 0) {
                             setSubmitProgressMessage(t("submit_loading"));
@@ -10253,6 +10268,13 @@ public class MainActivity extends Activity {
             // record. Every other non-success result remains ambiguous and is never replayed.
             if (retryableResponse || missingResponse) {
                 confirmMainSubmissionRejected(journaled);
+            } else if (ProfileWorkflow.STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN.equals(
+                    workflow.submissionStructuredNonSuccessAction)) {
+                // This compatibility behavior is explicitly profile-owned. Transport, parse and
+                // response-loss errors never reach this branch and therefore remain locked.
+                confirmMainSubmissionRejected(journaled);
+                throw new SubmissionExplicitlyRejectedException(
+                    api.apiErrorMessage(response));
             } else {
                 markMainSubmissionUncertain(journaled);
             }
@@ -10283,7 +10305,8 @@ public class MainActivity extends Activity {
                     }
                 }
                 if (!willRetry) {
-                    throw new IOException(api.apiErrorMessage(response));
+                    throw new SubmissionExplicitlyRejectedException(
+                        api.apiErrorMessage(response));
                 }
                 removed.addAll(missing);
                 payload = buildPayload(api.endpoints, unit, frontUrl, backUrl,
@@ -10295,9 +10318,11 @@ public class MainActivity extends Activity {
             }
             // A recognized missing-material rejection with no resolvable configured code is still
             // known not-written, but cannot be changed or retried safely.
-            throw new IOException(api.apiErrorMessage(response));
+            throw new SubmissionExplicitlyRejectedException(
+                api.apiErrorMessage(response));
         }
-        throw new IOException(t("submit_retry_failed") + unit.sn);
+        throw new SubmissionExplicitlyRejectedException(
+            t("submit_retry_failed") + unit.sn);
     }
 
     private void ensurePreviousSteps(Api api, UnitRecord unit,

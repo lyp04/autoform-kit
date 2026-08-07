@@ -20,10 +20,10 @@
   "buildBindings": {
     "androidGradlePlugin": "8.7.3",
     "files": [
-      {
-        "path": "app/build.gradle",
-        "sha256": "a7ebd029ef3b42905512089e70d997275b0051852098afa6d370d245eca410c7"
-      },
+    {
+      "path": "app/build.gradle",
+      "sha256": "6f43ac8e5911f7fc5cc4875c9b1c5f6d5ed9716ca714dda4b426e901ddd811e6"
+    },
       {
         "path": "build.gradle",
         "sha256": "9779e64941ef00fdb75ecd9ccbf290bad2a4924ea0e1688bb1c617884e2753b6"

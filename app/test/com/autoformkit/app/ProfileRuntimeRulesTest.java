@@ -71,6 +71,8 @@ public class ProfileRuntimeRulesTest {
         assertEquals(0L, workflow.submissionInterUnitDelayMs);
         assertEquals(1, workflow.roundLedgerRetentionDays);
         assertEquals(1, workflow.submissionMaxConsecutiveFailures);
+        assertEquals(ProfileWorkflow.STRUCTURED_NON_SUCCESS_LOCK,
+            workflow.submissionStructuredNonSuccessAction);
         assertEquals(0, workflow.submissionNetworkRetryMaxAttempts);
         assertEquals(3000L, workflow.submissionNetworkRetryBaseDelayMs);
         assertEquals(30000L, workflow.submissionNetworkRetryMaxDelayMs);
@@ -465,6 +467,7 @@ public class ProfileRuntimeRulesTest {
                 .put("interUnitDelayMs", 1250)
                 .put("roundLedgerRetentionDays", 9)
                 .put("maxConsecutiveFailures", 3)
+                .put("structuredNonSuccessAction", "reject_as_not_written")
                 .put("networkRetry", new JSONObject()
                     .put("maxAttempts", 8)
                     .put("baseDelayMs", 3000)
@@ -510,6 +513,8 @@ public class ProfileRuntimeRulesTest {
         assertEquals(1250L, workflow.submissionInterUnitDelayMs);
         assertEquals(9, workflow.roundLedgerRetentionDays);
         assertEquals(3, workflow.submissionMaxConsecutiveFailures);
+        assertEquals(ProfileWorkflow.STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN,
+            workflow.submissionStructuredNonSuccessAction);
         assertEquals(8, workflow.submissionNetworkRetryMaxAttempts);
         assertEquals(3000L, workflow.submissionNetworkRetryBaseDelayMs);
         assertEquals(30000L, workflow.submissionNetworkRetryMaxDelayMs);
