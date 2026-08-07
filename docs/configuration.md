@@ -363,9 +363,9 @@ Panel-first 只是必要条件，不是发布充分条件。还必须通过公�
 
 首次从 signed v1 覆盖安装当前版之前，还必须让旧 App 完全停止且没有相机结果待返回，并逐台确认 `settings` 中 `pending_a_step_photo_path`、`pending_a_step_photo_seq`、`pending_a_step_entry_photo_path` 三个旧槽位均可读且不存在。旧版安装器无法执行这项门禁；当前版只能在安装完成后保留这些证据并阻止下一次更新、Panel 切换和 candidate promotion。任一槽位存在或不可读时都不得首跳安装，也不得手工删除，必须先用兼容旧流程恢复，或停止该设备的发布。
 
-App 的 HTTP transport 只对只读 GET 做有界兼容重试：DNS、连接、超时、TLS 或 502/503/504 等瞬时故障后等待 3 秒再试一次，合计最多两次；每次尝试都重新校验当前 Panel、session 与远程 worker gate。POST、multipart upload、OCR upload 与打印 POST 的 transport 调用仍各执行一次。业务 POST 只在 Panel-owned adapter/profile classifier 明确拒绝并证明未写入时有限重试，并复用完全相同的请求字节、目标绑定与已上传 URL，不重复上传。Profile 缺少相应字段时，上一工序 recipe 与业务提交各只尝试一次，网络额外重试和相邻条目等待均为零；结构化编辑器会把这些安全值与显式的本地核对记录保留天数写入旧 profile 草稿。发布门仍要求策略全部显式存在。
+App 的 HTTP transport 只对只读 GET 做有界兼容重试：DNS、连接、超时、TLS 或 502/503/504 等瞬时故障后等待 3 秒再试一次，合计最多两次；每次尝试都重新校验当前 Panel、session 与远程 worker gate。每次具体的 POST、multipart upload、OCR upload 与打印 POST transport 调用仍各执行一次；外层整单元有限网络重试允许重新上传图片。业务 POST 只在 Panel-owned adapter/profile classifier 明确拒绝并证明未写入时有限重试，并复用完全相同的请求字节与目标绑定。Profile 缺少相应字段时，上一工序 recipe 与业务提交各只尝试一次，网络额外重试和相邻条目等待均为零；结构化编辑器会把这些值与显式的本地核对记录保留天数写入旧 profile 草稿。发布门仍要求策略全部显式存在。
 
-主流程/独立入口最终提交、按序的上一工序 recipe POST 和补打 POST 分别受持久化 fail-closed journal 保护。未知结果会锁定而不是重放；上一工序还保留已完成 recipe 前缀，且 `recipeMaxAttempts` 是跨重启/再次提交的每 recipe 持久累计上限。主流程/独立入口最终提交与上一工序的未知结果需要部署方先在原 backend 精确核对；本仓库目前没有操作员可用的受控恢复工具，因此这些状态不能被描述为已经可恢复，也不能手工删除。补打仅可由成功的精确绑定远端查询在同一上下文确认同一 job/SN 已被 adapter 分类为 printed 后自动清理。Multipart upload 另有持久防重放 barrier：首个 socket 前写入，正常本地终态后精确清理；开始上传后整单元网络重试、后续记录、profile/Panel 切换和 App 安装均被阻止。上传结果不明时同样保持锁定，直到部署方提供经过审查、与 backend 核对结果绑定的恢复工具；当前代码不会续传、清理孤立文件或使 backend 自动幂等。任何大于默认值的 recipe、业务或网络重试仍须按实际影响完成不确定结果测试。
+主流程/独立入口最终提交、按序的上一工序 recipe POST 和补打 POST 分别受持久化 fail-closed journal 保护。未知结果会锁定而不是重放；上一工序还保留已完成 recipe 前缀，且 `recipeMaxAttempts` 是跨重启/再次提交的每 recipe 持久累计上限。主流程/独立入口最终提交与上一工序的未知结果需要部署方先在原 backend 精确核对；本仓库目前没有操作员可用的受控恢复工具，因此这些状态不能被描述为已经可恢复，也不能手工删除。补打仅可由成功的精确绑定远端查询在同一上下文确认同一 job/SN 已被 adapter 分类为 printed 后自动清理。Multipart 图片 upload 是可重试准备动作，不创建最终表单；旧 upload-only barrier 会被自动清理，不再阻止后续记录、profile/Panel 切换或 App 安装。任何大于默认值的 recipe 或业务 POST 重试仍须按实际影响完成不确定结果测试。
 
 ## 不得存放的内容
 

@@ -174,7 +174,7 @@ signed v1.0.4 与 signed v1.0.6 的历史 cache 本身没有连接 binding。**P
 - 打印 v1 只接受 adapter allow-list 中的任务类型，按主标识精确匹配，并以最大正 numeric job ID 选择最新任务。printed / failed / ongoing 状态集合必须非空且互不重叠；未知状态保持未确认。
 - 手动补打只允许 profile 显式列出的 failed / ongoing / unknown 状态；无论是否显示确认框，发送前都重新验证最新任务 ID 和状态。Printed 或缺失任务永不允许补打。补打 POST 还必须先写入精确 job/SN/session/policy/payload journal；printing v1 没有 Panel-owned “明确未受理”分类器，所以 socket 可能已发出后只有 configured success 才能直接完成该 POST。结果不明时保持 `UNCERTAIN`；之后仅当成功的精确绑定状态查询在同一远端上下文返回同一 job/SN，且 adapter 将其分类为 printed，才可原子清理同一条记录。Business non-success、解析/传输错误、缺失/failed/ongoing/unknown 状态、目标不符或本地清理失败都继续锁定。
 - Profile 缺少新 workflow policy 时按安全关闭/阻止处理。Panel 结构化编辑器会把默认值写入旧 profile 草稿，发布前必须检查完整 diff。
-- HTTP transport 只对只读 GET 做有界兼容重试：DNS、连接、超时、TLS 或 502/503/504 等瞬时故障后等待 3 秒再试一次，合计最多两次；每次尝试都重新校验当前 Panel、session 与远程 worker gate。POST、multipart upload、OCR upload 与打印 POST 的 transport 调用仍各执行一次。业务 POST 只有被 Panel-owned adapter/profile classifier 明确拒绝并证明未写入时才可有限重试，且复用完全相同的请求字节、目标绑定和已上传 URL，不重新上传照片。主流程/独立入口最终提交、按序的上一工序 recipe POST 与补打 POST 分别有 fail-closed journal；遗留 `POSTING` 或不可分类结果保持 `UNCERTAIN` 并禁止 App 重放。主流程/独立入口最终提交与上一工序不确定记录必须先在原 backend 精确核对；补打只有上一条所述的同一 job/SN 精确 printed 状态可以自动收敛。Recipe 只能在私有 classifier 明确证明未写入时消耗下一次持久累计尝试，已完成前缀不会在重启后从头发送。首个 multipart socket 前还会同步保存只含上下文摘要的 upload replay barrier；上传开始后整单元网络重试关闭，失败、超时、进程退出或本地清锁失败会停止批次，并跨重启锁住后续提交、profile/Panel 切换和 App 安装。Barrier 只阻止客户端重传，不会续传、删除孤立文件或让 backend 自动幂等。本仓库目前没有供操作员核销不确定最终提交、上一工序或 upload 的受控恢复工具；部署方提供经过审查且绑定 backend 核对证据的工具之前，这些状态必须保持锁定，文档与 release 也不得声称已经可恢复。
+- HTTP transport 对只读 GET 使用有界兼容重试；图片 multipart upload 是不会创建最终表单的准备动作，也可在 profile 的整单元有限网络重试预算内重新上传。旧版留下的 upload-only barrier 会被当前 App 自动移除，不再阻止后续提交、profile/Panel 切换或 App 更新。主流程/独立入口最终提交、按序的上一工序 recipe POST 与补打 POST 仍分别使用 fail-closed journal；真正的表单 POST 一旦进入 `POSTING`，遗留或不可分类结果保持 `UNCERTAIN` 并禁止 App 重放。业务 POST 只有被 Panel-owned adapter/profile classifier 明确证明未写入时才可有限重试，且复用完全相同的请求字节和目标绑定。主流程/独立入口最终提交与上一工序不确定记录必须先在原 backend 精确核对；补打只有同一 job/SN 的精确 printed 状态可以自动收敛。
 
 ## 11. Release 与 supply chain
 
@@ -199,10 +199,10 @@ signed v1.0.4 与 signed v1.0.6 的历史 cache 本身没有连接 binding。**P
 - [ ] Adapter 不含 secret，每个 enabled operation 都完成 end-to-end test。
 - [ ] Duplicate date transform order/unit/format/time zone 已显式验证；printing 的精确标识、非重叠状态与单调 numeric job ID 契约已验证，或对应模块关闭。
 - [ ] Recipe、提交与网络重试保持默认单次/关闭，或 backend 幂等/去重已通过不确定结果测试。
-- [ ] 最终提交、上一工序 recipe、补打 journal 与 upload replay barrier 已在 signed upgrade build 上覆盖进程退出、存储失败、登录失效、超时和未分类响应；上传开始后不会整单元重试或继续下一条，不确定记录不能重提、切换 profile/Panel、安装更新或被新 catalog 重解释。当前仓库没有最终提交、上一工序和 upload 的操作员恢复工具；在部署方实现并审查与原 backend 核对证据绑定的工具前，不把这些锁定状态列为可恢复。补打已证明只有同一远端上下文、同一 job/SN 的成功 configured-printed 查询可以自动收敛。
+- [ ] 最终提交、上一工序 recipe 与补打 journal 已在 signed upgrade build 上覆盖进程退出、存储失败、登录失效、超时和未分类响应；真正的 POST 不确定记录不能重提或被新 catalog 重解释。图片上传失败允许在有限预算内重新上传，并证明不会创建或重复最终表单。补打已证明只有同一远端上下文、同一 job/SN 的成功 configured-printed 查询可以自动收敛。
 - [ ] Panel 的 `defaultPhotoOrder` 结构化控件与 App 顺序一致；新可见 `singleChoice` 字段保持 `reviewRequired:true`，直到管理员明确选择提交值。
 - [ ] 手动队列备份跨重启长期保留并固定原 active pair；只有明确确认且成功删除备份后才释放 pair pin。
-- [ ] 回滚到不识别新 schema 的旧 App 前，设备已证明主流程、独立入口、上一工序、补打 journal 和 upload replay barrier 五个 slot 全部不存在且可读，并且没有相关远程 worker 在执行；任一 slot 存在、无法读取或未解决时回滚必须 fail closed。
+- [ ] 回滚到旧 App 前，设备已证明主流程、独立入口、上一工序与补打四类 POST journal 均不存在且可读、遗留 upload-only key 已清理，并且没有相关远程 worker 在执行；任一业务 POST slot 存在、无法读取或未解决时回滚必须 fail closed。
 - [ ] App 已同步目标 catalog，不再显示 fallback seed。
 - [ ] AI 与 notification data policy 已批准，或相应功能关闭。
 - [ ] Optional cross-App session 未启用，或已完成 signer verification 与专项审计。

@@ -767,11 +767,11 @@ stable 与 beta 的入口不同：stable 匿名读取 GitHub `/releases/latest`�
 
 已有设备时不要把 App release 作为第一步。先部署向后兼容的新 Panel，再只在 private catalog 中补齐 adapter 与每个 profile 的完整策略：旧 App 仍需的 recipe 文案数组原样保留给旧 App，新 App 的 `recipeOutcomePolicy` 与 submit `outcomePolicy` 必须分别根据各自私有 replay 证据配置，不能互相复用或从 legacy 数组自动生成；只有真正新增的能力关闭。确认旧 App 仍能同步、登录、上传和提交，并证明 candidate App 行为等价后，才用原 signer 发布新 App。未迁移完整策略的 profile 会被新 App 明确阻止提交。设备升级并确认目标 catalog version 后，再从 Panel 逐项开启新功能。完整步骤见 [Panel staged upgrade](./worker-setup.md#10-staged-upgrade-for-an-existing-deployment)。
 
-HTTP transport 只对只读 GET 做有界兼容重试：DNS、连接、超时、TLS 或 502/503/504 等瞬时故障后等待 3 秒再试一次，合计最多两次；每次尝试都重新校验当前 Panel、session 与远程 worker gate。POST、multipart upload、OCR upload 与打印 POST 的 transport 调用仍各执行一次。业务 POST 只有被 Panel-owned adapter/profile classifier 明确拒绝并证明未写入时才可有限重试，且复用完全相同的请求字节、目标绑定与已上传 URL，不重复上传。主流程/独立入口最终提交、按序的上一工序 recipe POST 和手动/自动补打 POST 分别使用 fail-closed journal。最终提交只有自己的 `operations.submit.outcomePolicy` 可以授权明确未写入后的下一次；recipe 只有独立的 `operations.previousSteps.recipeOutcomePolicy.retryableNotWrittenRules` 可以消耗下一次持久累计尝试，`alreadyExistsAcknowledgedRules` 只确认同一 recipe 已完成或去重。Legacy `retryableMessagePatterns` 与 `alreadyExistsMessagePatterns` 仅供旧 App 兼容。
+HTTP transport 只对只读 GET 做有界兼容重试：DNS、连接、超时、TLS 或 502/503/504 等瞬时故障后等待 3 秒再试一次，合计最多两次；每次尝试都重新校验当前 Panel、session 与远程 worker gate。每次具体的 POST、multipart upload、OCR upload 与打印 POST transport 调用仍各执行一次；外层整单元有限网络重试允许重新上传不会创建最终表单的图片。业务 POST 只有被 Panel-owned adapter/profile classifier 明确拒绝并证明未写入时才可有限重试，且复用完全相同的请求字节与目标绑定。主流程/独立入口最终提交、按序的上一工序 recipe POST 和手动/自动补打 POST 分别使用 fail-closed journal。最终提交只有自己的 `operations.submit.outcomePolicy` 可以授权明确未写入后的下一次；recipe 只有独立的 `operations.previousSteps.recipeOutcomePolicy.retryableNotWrittenRules` 可以消耗下一次持久累计尝试，`alreadyExistsAcknowledgedRules` 只确认同一 recipe 已完成或去重。Legacy `retryableMessagePatterns` 与 `alreadyExistsMessagePatterns` 仅供旧 App 兼容。
 
-Session-invalid policy 不能释放任何已开始的副作用 POST。Socket 调用后命中 configured session-invalid HTTP 状态、业务码或消息时，App 必须先把对应 journal 持久化为 `UNCERTAIN`；登出或重新登录都不能清 journal、改成明确拒绝或自动重放。这些不确定记录必须经后端侧核对和受控恢复。Printing v1 没有明确未受理 classifier，只有 configured success 可直接完成已发补打；未解决补打仅可由成功的精确绑定状态查询在同一远端上下文确认同一 job/SN 为 adapter-configured printed 后自动收敛。Signed-upgrade 测试必须对四类 POST journal 和 upload replay barrier 的全部状态逐态做进程退出/存储失败注入，并确认不能重复上传/提交/上一工序/补打、串到另一 profile/Panel/catalog，且已确认的终态可安全收尾。
+Session-invalid policy 不能释放任何已开始的副作用 POST。Socket 调用后命中 configured session-invalid HTTP 状态、业务码或消息时，App 必须先把对应 journal 持久化为 `UNCERTAIN`；登出或重新登录都不能清 journal、改成明确拒绝或自动重放。这些不确定记录必须经后端侧核对和受控恢复。Printing v1 没有明确未受理 classifier，只有 configured success 可直接完成已发补打；未解决补打仅可由成功的精确绑定状态查询在同一远端上下文确认同一 job/SN 为 adapter-configured printed 后自动收敛。Signed-upgrade 测试必须对四类 POST journal 的全部状态逐态做进程退出/存储失败注入，确认业务 POST 不会重复；同时验证图片上传可在有限预算内重新上传且不会创建最终表单，并验证旧 upload-only key 会被清理。
 
-Recipe/final-submit journal 阻止 App 重放不确定 POST，但不会为 backend endpoint 提供幂等性。Multipart upload 使用独立 barrier：首个 socket 前同步保存，开始后整单元重试关闭；不确定结果必须跨重启保留，并阻止后续记录、profile/Panel 切换和 App 安装。若 candidate catalog 开启上一工序 recipe 或整单元网络重试，必须覆盖 backend 已处理请求但客户端超时、前/后/附加/slot/上一工序/独立入口部分上传和本地清锁失败，确认 App 不重放、不续传，也不误把已确认终态降为 failed。
+Recipe/final-submit journal 阻止 App 重放不确定业务 POST，但不会为 backend endpoint 提供幂等性。Multipart 图片 upload 是可重试的准备动作，不创建最终表单；旧版 upload-only barrier 会被清理，不再阻止后续记录、profile/Panel 切换或 App 安装。若 candidate catalog 开启上一工序 recipe 或整单元网络重试，必须覆盖 backend 已处理业务 POST 但客户端超时，以及前/后/附加/slot/独立入口图片部分上传失败，确认图片可重传、业务 POST 不重放，也不误把已确认终态降为 failed。
 
 私有 gate 必须分别用脱敏响应 replay 验证 lookup missing code/message、结构化 `recipeOutcomePolicy` 的 retryable/already-exists rules，以及 submit `outcomePolicy` 的 retryable/missing-material rules，并把每个 policy 的 `evidenceSha256` 与其 exact replay 原始字节真实绑定；只通过 64 位格式校验不够。Policy rule 只能读取配置的 code 与 scalar message 路径，同一 rule 的非空 selector 取 AND、rules 之间取 OR；测试必须包含同一 recipe non-success 同时命中 retryable 与 already-exists 的冲突样本，并确认结果为 `UNCERTAIN`。还要证明未分类 lookup 不会被整单元重试或发送创建 POST。
 
@@ -786,10 +786,10 @@ Recipe outcome 发布门只针对 `workflow.previousSteps.enabled:true`、`trigg
 3. 用 `apksigner verify --print-certs` 核对 signer；
 4. 在已安装上一版的非生产设备上执行覆盖升级；
 5. 确认本地草稿 / 设置迁移、Panel 连接、catalog 同步、登录、提交与更新检查；
-6. 对断网、超时、登录失效、进程被杀和本地存储失败做故障注入，覆盖最终提交、上一工序 recipe、补打 journal 和 upload replay barrier；逐一验证前/后/附加/slot/上一工序/独立入口的部分上传不会重放或继续下一条，session-invalid 在 socket 后只会留下 `UNCERTAIN` 且重登不清锁，锁存在时不能换 profile/Panel 或安装更新；另验证补打只有同一远端上下文、同一 job/SN 的成功 printed 查询可以清理，其他状态、错误或绑定均保持锁定；
+6. 对断网、超时、登录失效、进程被杀和本地存储失败做故障注入，覆盖最终提交、上一工序 recipe 与补打 journal；逐一验证图片上传失败可在有限预算内重新上传且不创建最终表单，业务 POST 的 session-invalid 在 socket 后只留下 `UNCERTAIN` 且重登不清锁；另验证补打只有同一远端上下文、同一 job/SN 的成功 printed 查询可以清理，其他状态、错误或绑定均保持锁定；
 7. 记录 tag、commit、versionCode、signer digest 与验证结果。
 
-Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布一个使用相同 signer、但 `versionCode` 更高且代码回退的新版本；提前演练这一流程。回滚到不识别 candidate schema 的旧代码前，必须在设备上证明主流程、独立入口、上一工序、补打 journal 和 upload replay barrier 五个 slot 全部不存在且可读，并且没有相关远程 worker 在执行。任一 slot 存在、无法读取或未解决时，回滚门禁必须 fail closed，不能通过清 App 数据规避。
+Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布一个使用相同 signer、但 `versionCode` 更高且代码回退的新版本；提前演练这一流程。回滚到不识别 candidate schema 的旧代码前，必须在设备上证明主流程、独立入口、上一工序与补打四类 POST journal 全部不存在且可读、遗留 upload-only key 已清理，并且没有相关远程 worker 在执行。任一业务 POST slot 存在、无法读取或未解决时，回滚门禁必须 fail closed，不能通过清 App 数据规避。
 
 ## 公开历史重写与发布面重建
 
@@ -835,8 +835,8 @@ Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布
 - [ ] 私有正常流程 replay 精确绑定同一 source/catalog/adapter/App source，已覆盖每个可见 profile、可选结果、照片槽、条件字段、操作字段、物料组及 adapter envelope/item；真实脱敏扫码候选已按每个 profile/identifier role 与旧版逐项比对，计数或 hash 缺失时 fail closed。
 - [ ] 私有 live replay 已覆盖 duplicate 成功/未重复/未分类响应，以及上一工序双候选两种延迟反转顺序；打印 replay 已覆盖 printed/failed/ongoing/unknown/missing、延迟、补打和 session 绑定。批末额外复查若与旧版不同，已有 signed live/UI 接受证据或经过审计的兼容开关。
 - [ ] signed v1.0.4 与 signed v1.0.6 都完成 Panel-first prewarm，并分别经 stable 及现场实际启用的 beta/固定-tag 路由覆盖安装到同一 exact candidate；candidate catalog 显式保留经核对的可见/隐藏 profile 数，旧 raw catalog 缺少 visibility 字段时的 fallback 差异不能作为等价证据。
-- [ ] 主流程/独立入口最终提交、上一工序 recipe、补打 journal 和 upload replay barrier 已完成编译、单元测试和设备逐态故障注入；不确定结果不会重放、继续下一条、换 profile/Panel 或安装更新，主/独立入口、上一工序和 upload 有受控后端核对/恢复 runbook，且补打只在同一远端上下文、同一 job/SN 的成功 configured-printed 查询后自动收敛。
-- [ ] 高 `versionCode` 旧代码回滚前已在设备证明五个远程副作用 slot 全部不存在/可读且无远程 worker；存在或无法读取时已验证回滚门禁 fail closed。
+- [ ] 主流程/独立入口最终提交、上一工序 recipe 与补打 journal 已完成编译、单元测试和设备逐态故障注入；不确定业务 POST 不会重放，图片上传允许有限重传且不创建最终表单，旧 upload-only key 可自动清理；主/独立入口与上一工序有受控后端核对/恢复 runbook，且补打只在同一远端上下文、同一 job/SN 的成功 configured-printed 查询后自动收敛。
+- [ ] 高 `versionCode` 旧代码回滚前已在设备证明四类业务 POST slot 全部不存在/可读、遗留 upload-only key 已清理且无远程 worker；存在或无法读取时已验证回滚门禁 fail closed。
 - [ ] Private migration 报告为 `releaseReady:true`，不是仅 `ok:true` / `structuralOk:true`；validation、missing、unresolved 与 compatibility review 均已清零/完成。
 - [ ] 私有 gate 现场生成的 attestation 精确绑定本候选，且 worktree/history/APK/signed-upgrade/rollback/flow-parity/controlled-recovery checks 全为布尔值 `true`；controlled-recovery 由精确 adapter/Panel pair/contract/replay/device 证据生成，不是手填结论。
 - [ ] 全部 branch/tag/pull refs、commit/tag/ref metadata、Releases/assets、Actions、PR attachments、Packages、Pages、Wiki 与 forks 已在 authenticated 与匿名视角复核；任何无法删除的 pull ref/cache 已由 GitHub Support 处理并重新验证。

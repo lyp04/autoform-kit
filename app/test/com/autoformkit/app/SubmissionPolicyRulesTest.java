@@ -35,16 +35,16 @@ public class SubmissionPolicyRulesTest {
     }
 
     @Test
-    public void wholeUnitRetryIsAllowedOnlyBeforeTheFirstUploadStarts() {
+    public void wholeUnitRetryRemainsAllowedAfterAnImageUploadStarts() {
         SubmissionPolicyRules.NetworkRetryGate gate =
             new SubmissionPolicyRules.NetworkRetryGate();
 
         assertTrue(gate.canRetryWholeUnit());
         gate.markUploadStarted();
-        assertFalse(gate.canRetryWholeUnit());
+        assertTrue(gate.canRetryWholeUnit());
 
-        // The barrier is monotonic across every attempt in one outer retry invocation.
+        // Multiple images may be re-uploaded within the bounded profile retry budget.
         gate.markUploadStarted();
-        assertFalse(gate.canRetryWholeUnit());
+        assertTrue(gate.canRetryWholeUnit());
     }
 }

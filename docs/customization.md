@@ -109,7 +109,7 @@ App 的 HTTP transport 只为只读 GET 提供有界兼容重试：DNS、连接�
 
 最终提交、上一工序 recipe 和补打 POST 都有独立 fail-closed journal；transport、解析、分类冲突、未分类结果或 socket 后命中的 session-invalid 信号都会进入持久化 `UNCERTAIN` 并停止，不由整单元网络策略重放。重新登录不会把 journal 改写为明确拒绝、清锁或自动重放。最终提交与上一工序需要后端侧核对后才能恢复，但本仓库目前没有提供执行该核对并安全清锁的受控恢复工具；在部署方实现并审阅工具前必须保持锁定，不能手工删除状态。补打仅在成功的精确绑定远端查询返回同一 job/SN、且 Panel-owned adapter 分类为 printed 时自动清理同一条记录。
 
-Multipart upload 使用独立的持久防重放 barrier。App 在首个 upload socket 前同步保存精确 Panel/catalog/backend/profile/session/source 摘要和非敏感绑定 ID；记录不含真实记录/SN、URL、凭据、请求头、上传结果或 payload。上传一旦开始，本次整单元网络重试立即关闭；正常本地终态精确清锁，失败、超时、进程退出或清锁失败则跨重启阻止后续记录、profile/Panel 切换和 App 安装。当前同样没有可执行的 upload 受控恢复工具，不能把“需要后端核对”写成“已经可以恢复”。Barrier 不会续传、回收孤立文件或让 backend 本身获得幂等性；只有部署后端对相关 upload、recipe 和 submit 全链路提供经验证的幂等/去重语义时才能启用非默认重试，否则保持默认 `1` 次 recipe、`1` 次提交和 `0` 次网络额外重试。
+Multipart 图片 upload 是不会创建最终表单的准备动作，允许在 profile 的有限整单元网络重试预算内重新上传；App 不再创建持久 upload-only barrier，并会清理旧版留下的该 key，所以图片响应丢失不会跨重启阻止后续记录、profile/Panel 切换或 App 安装。最终 submit、上一工序 recipe 与补打 POST 仍分别使用持久 journal；只有业务 POST 的 classifier、幂等或去重语义得到验证后，才提高对应 POST 的非默认重试值。
 
 动态 recipe 与独立入口 live provider 都是迁移工具，不是标题猜测开关。发布前必须在受控私有环境保存最小化的真实 `templateDetail` replay corpus，逐条证明 identity、字段与 option cardinality、required/omit、照片 alias、toggle on/off 和最终 payload 与当前 App 一致，并证明 provider 全部在任何 upload/POST 前完成或 fail closed。为了完成等价校验，template identity、SKU、field、option 等必要机器值必须原样保留，因此 corpus 本身仍是敏感资料；只剥离 token/cookie/header、真实 SN、照片、不相关用户记录以及不参与解析的文案。Corpus 只能存在于 ignored/private test storage，不能提交到公开仓库。未完成主流程接线或 replay 时保持 provider 为空、`workflow.compatibilityReviewed:false`。
 

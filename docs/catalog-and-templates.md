@@ -109,7 +109,7 @@ Panel 编辑器从已发布的完整 profile 建立草稿，因此会携带不�
 
 不要把 live catalog 搬进 public source 作为迁移中转或备份。每个阶段都保留可回滚的 private catalog version。现场设备的完整顺序、旧 App 重启预热要求与 signed-device 验证见 [Staged upgrade](./worker-setup.md#10-staged-upgrade-for-an-existing-deployment) 和 [Releasing](./releasing.md)。
 
-主提交、上一工序或 multipart upload 的不确定远端结果不会因 catalog 更新而解除。当前仓库没有提供能在后端核对后安全清除这些记录的受控恢复工具；在部署方实现、审阅并验证工具之前，应把对应状态视为持续锁定，而不是声称已有恢复能力。
+主提交或上一工序业务 POST 的不确定远端结果不会因 catalog 更新而解除。图片 multipart upload 可重新执行，不会创建最终表单，也不再形成跨重启锁。当前仓库没有提供能在后端核对后安全清除不确定业务 POST 的受控恢复工具；在部署方实现、审阅并验证工具之前，应把对应 POST 状态视为持续锁定。
 
 ## 发布前数据检查
 

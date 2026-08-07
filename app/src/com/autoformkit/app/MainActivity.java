@@ -161,6 +161,13 @@ public class MainActivity extends Activity {
         "pending_previous_step_submission_attempt_json";
     static final String UPLOAD_REPLAY_BARRIER_KEY =
         "pending_upload_replay_barrier_v1_json";
+    // Image uploads do not create form records. The final/previous-step POST journals below remain
+    // authoritative for duplicate prevention, while this legacy upload-only barrier is disabled
+    // so a lost image response cannot permanently lock production, Panel refresh, or App update.
+    private static final boolean DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED = false;
+    // A newly downloaded Panel pair stays staged until the existing immutable workflow reaches a
+    // safe install boundary, but its mere presence must not make the current pair inaccessible.
+    private static final boolean BLOCK_ACTIVE_USE_ON_STAGED_PANEL_PAIR = false;
     private static final String LOCAL_PREVIEW_FINGERPRINT_KEY =
         "local_preview_web_fingerprint_v1";
     private static final String EXTRA_EXPECTED_SN_LENGTH = "EXPECTED_SN_LENGTH";
@@ -1807,7 +1814,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean hasStoredUploadReplayBarrier() {
-        return prefs.contains(UPLOAD_REPLAY_BARRIER_KEY);
+        return blockingUploadReplayBarrier() != null;
     }
 
     private UploadReplayBarrier.RestoreResult restoreUploadReplayBarrier() {
@@ -1841,6 +1848,10 @@ public class MainActivity extends Activity {
 
     private boolean beginUploadReplayBarrier(UploadReplayBarrier.Identity identity) {
         if (identity == null) return false;
+        if (!DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED) {
+            discardDisabledUploadReplayBarrier();
+            return true;
+        }
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
             try {
                 if (UpdateManager.installerHandoffActive(this)) {
@@ -1860,6 +1871,10 @@ public class MainActivity extends Activity {
 
     /** Clear only the exact in-memory operation which durably reached its local terminal state. */
     private boolean clearUploadReplayBarrier(UploadReplayBarrier.Identity expected) {
+        if (!DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED) {
+            discardDisabledUploadReplayBarrier();
+            return expected != null;
+        }
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
             UploadReplayBarrier.RestoreResult restored = restoreUploadReplayBarrier();
             if (expected == null
@@ -1916,6 +1931,7 @@ public class MainActivity extends Activity {
 
     private boolean uploadReplayBarrierMatches(
             UploadReplayBarrier.Identity expected) {
+        if (!DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED) return expected != null;
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
             UploadReplayBarrier.RestoreResult restored = restoreUploadReplayBarrier();
             return expected != null
@@ -1926,11 +1942,31 @@ public class MainActivity extends Activity {
     }
 
     private UploadReplayBarrier.RestoreResult blockingUploadReplayBarrier() {
+        if (!DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED) {
+            discardDisabledUploadReplayBarrier();
+            return null;
+        }
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
             UploadReplayBarrier.RestoreResult restored = restoreUploadReplayBarrier();
             if (restored.kind == UploadReplayBarrier.RestoreKind.NONE) return null;
             if (retireExactlyCompletedUploadReplayBarrier(restored)) return null;
             return restored;
+        }
+    }
+
+    /** Best-effort migration for devices which were stranded by the removed upload-only lock. */
+    private void discardDisabledUploadReplayBarrier() {
+        uploadReplayBarrierClearFailure = null;
+        try {
+            if (prefs.contains(UPLOAD_REPLAY_BARRIER_KEY)
+                    && !prefs.edit().remove(UPLOAD_REPLAY_BARRIER_KEY).commit()) {
+                Diagnostics.append(this,
+                    "Disabled upload-only lock cleanup will retry");
+            }
+        } catch (RuntimeException error) {
+            Diagnostics.append(this,
+                "Disabled upload-only lock cleanup will retry: "
+                    + conciseError(error));
         }
     }
 
@@ -14987,6 +15023,12 @@ public class MainActivity extends Activity {
      * is unambiguously either before the barrier (leased) or after it (rejected).
      */
     private boolean unsafeCandidatesBlockActiveUse() {
+        if (!BLOCK_ACTIVE_USE_ON_STAGED_PANEL_PAIR) {
+            synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+                unsafeCandidateContinuationLease = null;
+            }
+            return false;
+        }
         synchronized (UpdateInstallRules.HANDOFF_LOCK) {
             if (AppConfig.panelBase(this).isEmpty()) {
                 unsafeCandidateContinuationLease = null;

@@ -33,7 +33,7 @@ coordinates do not belong in the APK or public Git history.
 - Worker-proxied structured notifications; v2/v3 provider configuration remains Worker-only.
   The migration-only legacy `notifyWebhook` remains App-facing until old devices are upgraded and
   the field is cleared.
-- Fail-closed journals for remote side effects and a durable multipart-upload replay barrier.
+- Fail-closed journals for form-creating remote POSTs, with bounded retryable image uploads.
 - Optional AI authoring assistance and optional App updates from public GitHub Releases.
 
 ## Architecture

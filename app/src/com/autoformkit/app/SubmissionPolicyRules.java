@@ -9,20 +9,16 @@ final class SubmissionPolicyRules {
     }
 
     /**
-     * One gate is retained for every invocation of the outer whole-unit network retry loop.
-     * Read-only preparation may be replayed, but once an upload has started the backend may
-     * already own a file even when the client never received its response.  From that point on,
-     * replaying the whole unit would be capable of creating duplicate/orphan uploads.
+     * Image upload is retryable preparation: it cannot create the final form record. The final
+     * and previous-step POST journals independently prevent replay once either form POST starts.
      */
     static final class NetworkRetryGate {
-        private boolean uploadStarted;
-
         boolean canRetryWholeUnit() {
-            return !uploadStarted;
+            return true;
         }
 
         void markUploadStarted() {
-            uploadStarted = true;
+            // Retained as a source-compatible hook for older call sites. Uploads are replayable.
         }
     }
 

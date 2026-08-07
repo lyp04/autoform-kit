@@ -9,13 +9,13 @@ import java.util.Objects;
 import java.util.Set;
 
 /**
- * Pure durable barrier which prevents an upload sequence from being replayed after its start.
+ * Legacy durable upload barrier parser retained only to remove records written by older builds.
  *
  * <p>The record contains only immutable, non-sensitive binding identities. It deliberately has no
  * URL, serial number, credential, request header, uploaded value, or payload field. The caller
- * must persist {@link #toJsonString()} synchronously before the first upload side effect. A valid
- * restored STARTED record remains blocking after process restart; damaged storage is also blocking
- * and can never masquerade as an empty slot.
+ * Older builds persisted {@link #toJsonString()} before the first upload side effect. Current
+ * builds do not create or enforce this record because image upload may be replayed; the actual
+ * form POST journals remain the duplicate-prevention authority.
  */
 final class UploadReplayBarrier {
     static final int SCHEMA_VERSION = 1;

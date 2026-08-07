@@ -467,15 +467,15 @@ App 只对文本日期按顺序应用 `dateTransforms`，纯整数不经过文�
 
 ## HTTP 重试边界
 
-Adapter 不包含隐式的副作用 transport retry。为贴近旧版本的只读网络体验，App 的底层 GET 在 DNS、连接、超时、TLS 或 502/503/504 这类瞬时错误后等待 3 秒，最多再请求一次（合计最多两次）；非瞬时错误不重试。每个 POST、multipart upload、OCR upload 与打印 POST 仍只执行一次，避免在不知道后端幂等性的情况下重放请求。GET 的第二次尝试会重新检查当前 Panel、session 与远程 worker gate，配置已经变化时不会沿用旧上下文继续。
+Adapter 不包含隐式的副作用 transport retry。为贴近旧版本的只读网络体验，App 的底层 GET 在 DNS、连接、超时、TLS 或 502/503/504 这类瞬时错误后等待 3 秒，最多再请求一次（合计最多两次）；非瞬时错误不重试。每次具体的 POST、multipart upload、OCR upload 与打印 POST transport 调用仍只执行一次；外层 profile 网络重试可以重新执行不会创建最终表单的图片 upload，但不会重放结果不确定的业务 POST。GET 的第二次尝试会重新检查当前 Panel、session 与远程 worker gate，配置已经变化时不会沿用旧上下文继续。
 
 Profile 的 `workflow.previousSteps.recipeMaxAttempts` 只有在上一工序独立的 `recipeOutcomePolicy.retryableNotWrittenRules` 明确命中、证明 recipe 未写入时才允许进入下一次；它不是 submit `outcomePolicy` 的复用。该上限是每个精确 recipe 位置跨进程/重启/再次提交的持久累计总数；policy 缺失时有效上限收敛为一次，已完成前缀会保留，`UNCERTAIN` 不得继续。`workflow.submission.maxAttempts` 则只在最终 submit non-success 命中其自己的 `outcomePolicy` retryable / missing-material not-written rule 后进入下一次。所有消息分类器只读取 `response.messageFields` 声明路径上的 scalar 值，绝不扫描完整响应、对象/数组、data、请求回显或其他任意字段；同一关键词只出现在这些非消息字段时必须保持未分类并停止。上一工序 recipe 和最终 submit 都在 socket 调用前写入独立 journal；transport、解析、分类冲突或未分类响应保持锁定，不会自动重放对应 POST。
 
 会话失效也不能把已经开始的副作用 POST 解释为“确定未写入”。主流程/独立入口最终提交或上一工序 recipe 在 socket 调用后遇到 configured session-invalid HTTP 状态、业务码或消息时，App 会先把对应 attempt 持久化为 `UNCERTAIN` 再交给登录恢复；重新登录不会清理该 journal、改写为明确拒绝或自动重放。其他副作用 POST 同样不能仅凭 session-invalid 信号获得重试授权。
 
-独立录入使用 entry 自己的 `submissionRetry.{maxAttempts,retryDelayMs}`，而且只有最终响应明确命中 submit `outcomePolicy.retryableNotWrittenRules` 时才重试。照片只上传一轮；App 在循环前冻结返回 URL、最终 payload、请求字节、目标 identity 与 operation ID，后续尝试复用完全相同的请求。明确拒绝达到上限后，最终 POST journal 可按“确定未写入”清理，但 upload barrier 仍保留，防止下一次手工操作重新上传同一批照片；因此这条耗尽路径仍是需要受控处理的兼容差异，不能描述成与旧版完全一致。任何 transport、网关、解析或未分类结果都立即写为 `UNCERTAIN` 并停止。
+独立录入使用 entry 自己的 `submissionRetry.{maxAttempts,retryDelayMs}`，而且只有最终响应明确命中 submit `outcomePolicy.retryableNotWrittenRules` 时才重试。同一次最终 POST 重试会复用循环前冻结的图片 URL、payload、请求字节、目标 identity 与 operation ID；若整个独立录入在图片阶段失败，保留的草稿允许操作员再次提交并重新上传图片。明确拒绝达到上限后，最终 POST journal 可按“确定未写入”清理，草稿继续可用。任何业务 POST transport、网关、解析或未分类结果都立即写为 `UNCERTAIN` 并停止。
 
-`workflow.submission.networkRetry` 仍是整单元策略，但只允许重放尚未开始 upload 的只读准备。首个 multipart socket 前，App 会同步保存独立的 upload replay barrier；开始上传后本次整单元重试立即关闭，任何不确定结果跨重启锁住后续远程动作、profile/Panel 切换和 App 安装，直到原后端经受控流程核对。Barrier 不保存返回 URL，也不会续传、删除孤立文件或给 backend endpoint 提供幂等性。只有后端对受影响操作提供经过验证的 idempotency key、唯一约束或等价去重保证时才设置非默认重试值。Legacy `alreadyExistsMessagePatterns` 只能为仍在使用的旧 App 保留；新 App 只有在私有 replay 绑定的 `recipeOutcomePolicy.alreadyExistsAcknowledgedRules` 命中时才确认同一 recipe 已完成。Adapter v1 本身不声明或证明幂等性。
+`workflow.submission.networkRetry` 是整单元有限重试策略。图片 multipart upload 只是最终表单的准备动作，允许随整单元重试重新上传；它不会自行创建表单记录。最终提交和上一工序 recipe POST 仍在打开 socket 前写入各自的持久 journal，结果不确定时不会被整单元策略重放。只有后端对业务 POST 提供明确的未写入 classifier、idempotency key、唯一约束或等价去重保证时才提高对应 POST 的重试值。Legacy `alreadyExistsMessagePatterns` 只能为仍在使用的旧 App 保留；新 App 只有在私有 replay 绑定的 `recipeOutcomePolicy.alreadyExistsAcknowledgedRules` 命中时才确认同一 recipe 已完成。Adapter v1 本身不声明或证明幂等性。
 
 ## 与通知适配器的边界
 
