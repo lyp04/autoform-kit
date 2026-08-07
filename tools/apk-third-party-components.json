@@ -3352,6 +3352,233 @@
           "kind": "model"
         }
       ]
+    },
+    {
+      "id": "official-gradle-release-v1.0.10",
+      "buildType": "release",
+      "generatedBy": "Android Gradle Plugin 8.7.3",
+      "dexStringComponents": [
+        "androidx-core",
+        "play-services-basement"
+      ],
+      "entries": [
+        {
+          "path": "assets/dexopt/baseline.prof",
+          "sha256": "c0c77a18acbac2fac92c5aad70adf7e0b604c8da3fa377ad9980b37f7b91931a",
+          "component": "androidx-runtime-baseline-profiles",
+          "kind": "runtime-profile"
+        },
+        {
+          "path": "assets/dexopt/baseline.profm",
+          "sha256": "f90d90b5ef04c54acb64a84aa33991bd94bd1ef5b7724de0b32a5d8ec29878be",
+          "component": "androidx-runtime-baseline-profiles",
+          "kind": "runtime-profile"
+        },
+        {
+          "path": "classes2.dex",
+          "sha256": "af4cd8889079b0316b94d9f9e26d484ca6222369a4d3a722559de802c2b77994",
+          "component": "resolved-runtime-classpath",
+          "kind": "dex"
+        },
+        {
+          "path": "classes3.dex",
+          "sha256": "d3a9d93a1e48983dbdf8709bc43e504479e3bba279b87a968836856e0ef2596d",
+          "component": "resolved-runtime-classpath",
+          "kind": "dex"
+        },
+        {
+          "path": "lib/arm64-v8a/libbarhopper_v3.so",
+          "sha256": "ec09597e9eb3aee0eb55ae3366da0d4ba416f5aa35a1af0b3811f50ff46743a1",
+          "component": "mlkit-barcode-scanning",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/arm64-v8a/libmlkit_google_ocr_pipeline.so",
+          "sha256": "fa41d509a661e8aa8b3e3ac1a28541f8823f308414fcad733fe26d61feea2646",
+          "component": "mlkit-text-recognition-bundled-common",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/armeabi-v7a/libbarhopper_v3.so",
+          "sha256": "b3c162c69e4906b816227ae116bfd8b9ff19cfdd58a3de0c9a9b110e030063e9",
+          "component": "mlkit-barcode-scanning",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/armeabi-v7a/libmlkit_google_ocr_pipeline.so",
+          "sha256": "06b9e2f587e401c6446aa0db344bb31b622957a2d04aa4eac03cde8b3a6ed78a",
+          "component": "mlkit-text-recognition-bundled-common",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/x86/libbarhopper_v3.so",
+          "sha256": "212dad60137637d3cbaf1ba5fd9d2c0e163c67731ed3a86ecb5d9f8bb9a60c3b",
+          "component": "mlkit-barcode-scanning",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/x86/libmlkit_google_ocr_pipeline.so",
+          "sha256": "50b7ee3a7efe130ae236456f5d953bc91fa9c3fbb17a38d78e79148bf3e6c2d7",
+          "component": "mlkit-text-recognition-bundled-common",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/x86_64/libbarhopper_v3.so",
+          "sha256": "6c5deea87d962af008fd48c3229db13ab68eef2e9feeccb2df5b33a920c0579a",
+          "component": "mlkit-barcode-scanning",
+          "kind": "native-library"
+        },
+        {
+          "path": "lib/x86_64/libmlkit_google_ocr_pipeline.so",
+          "sha256": "3ddffb498b60f7f9512e341d4ee3abe4e1580c4fd65ef9b2c8ce9e490de467d8",
+          "component": "mlkit-text-recognition-bundled-common",
+          "kind": "native-library"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/aksara/aksara_page_layout_analysis_rpn_gcn.binarypb",
+          "sha256": "b2963b78c7e55fdfd5ed82ca60f045aace7a7e373b5d93254e9ac979dcb5bb67",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/aksara/aksara_page_layout_analysis_ti_rpn_gcn.binarypb",
+          "sha256": "d448c5de8d480d491ac128657926e6253a770baa90afb0e97a67740c93c1e9f3",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/gocr_models/line_recognition_legacy_mobile/Latn_ctc/optical/assets.extra/LabelMap.pb",
+          "sha256": "c6d345043a561f9dfdb1472cfca7cdda0128b19cb6909c67032c5783077c92b3",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/gocr_models/line_recognition_legacy_mobile/Latn_ctc/optical/conv_model.fb",
+          "sha256": "64aba719b4ed1ee5b3d4886c5aaf0b1ac051bf5879e9b08e861e0e29e20a08a7",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/gocr_models/line_recognition_legacy_mobile/Latn_ctc/optical/lstm_model.fb",
+          "sha256": "0ed62e4fbe0fc5c4090aec473b136e188f828590765c028382358daddb3ccb6e",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/gocr_models/line_recognition_legacy_mobile/Latn_ctc_cpu.binarypb",
+          "sha256": "a1dce9a376905a597366f6c9a0b3723205486880e176869e1ad65e92d68e068b",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/gocr_models/line_recognition_legacy_mobile/tflite_langid.tflite",
+          "sha256": "7f931f6f7c1dd0ec591ace7780df91645a450fafc83505f3ff45ce5ef7c8441b",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/layout/line_clustering_custom_ops/model.tflite",
+          "sha256": "ecda697ed244c5762410e0497878eabcda5f8b0682fb7c3800cd88a7f45dd8e6",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/gocr/layout/line_splitting_custom_ops/model.tflite",
+          "sha256": "f42197e656972c330bb9f092edbe298b4a6c2fcd808ff6d614381311f8dd22a7",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/detector/region_proposal_text_detector_tflite_vertical_mbv2_v1.bincfg",
+          "sha256": "7ac2d4c04fb2fe0cd5c33e3030d9276c40286c73f97c2daa3ab94ea8c3f314c3",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/detector/rpn_text_detector_mobile_space_to_depth_quantized_mbv2_v1.tflite",
+          "sha256": "eb811a1290738f131e4005d8a1d63ef21770866414b847190a932f0b56c0d18f",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/rpn_text_detection_tflite_mobile_mbv2.binarypb",
+          "sha256": "86660be29934bdd123a65ea30ec09eaa66481a7ac2def8e8f376e78484f8774a",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/segmenter/tflite_script_detector_0.3.bincfg",
+          "sha256": "d4223c23cd8ee3d3d4999d4e10bb16ec0b8119f8812e5e66e64e907c5508f21b",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/segmenter/tflite_script_detector_0.3.conv_model",
+          "sha256": "16be9fc0c0c9429cc3714d5d2e8662c53bd28cf0031375e237db288dc8da8d5f",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/segmenter/tflite_script_detector_0.3.lstm_model",
+          "sha256": "2281a01686f9ff9164f2a12ed743818e2b8e0af6ae7c73240924d70342d3f2cb",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser/taser_script_identification_tflite_mobile.binarypb",
+          "sha256": "a3ebf2720f86e1440e42604f8bd48194111e152fa93886f987655f01a9336d32",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser_tflite_gocrlatin_mbv2_scriptid_aksara_layout_gcn_mobile_engine.binarypb",
+          "sha256": "78210a92ad8ff692898e15d37718094c179149c9546a8fd53759b22939d39348",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser_tflite_gocrlatin_mbv2_scriptid_aksara_layout_gcn_mobile_engine_ti.binarypb",
+          "sha256": "bfd6e9cb8ed0536d03fc9c06a31bc79de3996bc7dcfbe9f4cc19f819231b7d0a",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser_tflite_gocrlatin_mbv2_scriptid_aksara_layout_gcn_mobile_recognizer.binarypb",
+          "sha256": "e80538539371576a5ad7dd58ed314a4f4d9fd9fca7ad73efdac476a6c3eb1ab4",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser_tflite_gocrlatin_mbv2_scriptid_aksara_layout_gcn_mobile_runner.binarypb",
+          "sha256": "32c2c1b72ba32605c23a96a8b7bf4ebf8f5a916df6cd672724556a17d3d6c59e",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit-google-ocr-models/taser_tflite_gocrlatin_mbv2_scriptid_aksara_layout_gcn_mobile_runner_ti.binarypb",
+          "sha256": "2c8581869ebb972a2d82403c9cd871a1d4c8d6419ae371fc1d859ad2bce2d5dc",
+          "component": "mlkit-text-recognition",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit_barcode_models/barcode_ssd_mobilenet_v1_dmp25_quant.tflite",
+          "sha256": "6c7b209f4256ca4521d86f83d00904ada1a6a443010698463b750d757fae15a4",
+          "component": "mlkit-barcode-scanning",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit_barcode_models/oned_auto_regressor_mobile.tflite",
+          "sha256": "8e07cd3b38da1ded3c07d6c81d06990cbdfa284c214557b94e106372e0497442",
+          "component": "mlkit-barcode-scanning",
+          "kind": "model"
+        },
+        {
+          "path": "assets/mlkit_barcode_models/oned_feature_extractor_mobile.tflite",
+          "sha256": "981c89dcca6aac10c7ff7304933747f6936292b6395d02ee944e6fbc73b3c92b",
+          "component": "mlkit-barcode-scanning",
+          "kind": "model"
+        }
+      ]
     }
   ]
 }
