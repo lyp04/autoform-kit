@@ -3362,11 +3362,11 @@
         "play-services-basement"
       ],
       "entries": [
-        {
-          "path": "assets/dexopt/baseline.prof",
-          "sha256": "c0c77a18acbac2fac92c5aad70adf7e0b604c8da3fa377ad9980b37f7b91931a",
-          "component": "androidx-runtime-baseline-profiles",
-          "kind": "runtime-profile"
+      {
+        "path": "assets/dexopt/baseline.prof",
+        "sha256": "9a8b5e9fabbb0681162de6c4a7f2b85b0f286f01d7e0c659912b6a17bebee083",
+        "component": "androidx-runtime-baseline-profiles",
+        "kind": "runtime-profile"
         },
         {
           "path": "assets/dexopt/baseline.profm",
