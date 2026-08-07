@@ -48,4 +48,14 @@ public class MaterialCodeRulesTest {
             "echo contains SAMPLE-A-01", KNOWN_CODES, Collections.emptyList(),
             "OTHER-[A-Z]-[0-9]{2}").isEmpty());
     }
+
+    @Test
+    public void legacyProfileCompatibilityMatchesOnlyCurrentKnownCodes() {
+        assertEquals(Collections.singletonList("SAMPLE-A-01"),
+            MaterialCodeRules.findKnownCodesForAutomaticRecoveryCompatible(
+                "missing SAMPLE-X-99 and SAMPLE-A-01", KNOWN_CODES,
+                Collections.emptyList(), ""));
+        assertTrue(MaterialCodeRules.findKnownCodesForAutomaticRecoveryCompatible(
+            "missing SAMPLE-A-01", KNOWN_CODES, Collections.emptyList(), "[").isEmpty());
+    }
 }

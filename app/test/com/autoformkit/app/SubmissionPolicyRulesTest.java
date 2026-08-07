@@ -6,6 +6,9 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.util.Arrays;
+import java.util.Collections;
+
 public class SubmissionPolicyRulesTest {
     private static final long DAY_MS = 24L * 60L * 60L * 1000L;
 
@@ -46,5 +49,20 @@ public class SubmissionPolicyRulesTest {
         // Multiple images may be re-uploaded within the bounded profile retry budget.
         gate.markUploadStarted();
         assertTrue(gate.canRetryWholeUnit());
+    }
+
+    @Test
+    public void structuredNotWrittenResponseCanUseLegacyMaterialRemovalRecovery() {
+        assertTrue(SubmissionPolicyRules.shouldRecoverMissingMaterials(
+            true, false, true, Arrays.asList("SAMPLE-A", "SAMPLE-B")));
+        assertTrue(SubmissionPolicyRules.shouldRecoverMissingMaterials(
+            true, true, false, Collections.singletonList("SAMPLE-A")));
+
+        assertFalse(SubmissionPolicyRules.shouldRecoverMissingMaterials(
+            false, true, true, Collections.singletonList("SAMPLE-A")));
+        assertFalse(SubmissionPolicyRules.shouldRecoverMissingMaterials(
+            true, false, false, Collections.singletonList("SAMPLE-A")));
+        assertFalse(SubmissionPolicyRules.shouldRecoverMissingMaterials(
+            true, true, true, Collections.emptyList()));
     }
 }

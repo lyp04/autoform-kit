@@ -43,7 +43,7 @@ public class SubmissionOutcomeWiringTest {
     }
 
     @Test
-    public void automaticMaterialRecoveryUsesOnlyTheStrictConfiguredMessageExtractor()
+    public void automaticMaterialRecoveryUsesTheBoundedLegacyProfileCompatibleExtractor()
             throws Exception {
         String source = mainSource();
         String extractor = method(source,
@@ -51,9 +51,9 @@ public class SubmissionOutcomeWiringTest {
             "private Set<String> notifySkipMaterialCodes(");
 
         assertTrue(extractor.contains(
-            "MaterialCodeRules.findKnownCodesForAutomaticRecovery("));
+            "MaterialCodeRules.findKnownCodesForAutomaticRecoveryCompatible("));
         assertTrue(extractor.contains("excluded.addAll(notifySkipMaterialCodes())"));
-        assertFalse(extractor.contains("MaterialCodeRules.findKnownCodes("));
+        assertFalse(extractor.contains("response.toString()"));
     }
 
     @Test
@@ -87,7 +87,7 @@ public class SubmissionOutcomeWiringTest {
             "private void ensurePreviousSteps(");
 
         int decision = submit.indexOf(
-            "boolean willRetry = attempt < workflow.submissionMaxAttempts");
+            "boolean willRetry = attempt < submissionMaxAttempts");
         int record = submit.indexOf("recordRoundMissing(unit.sn, missing)", decision);
         int remember = submit.indexOf("rememberMissingMaterials(missing)", record);
         int notice = submit.indexOf("notifyMissing(unit.sn, firstTime, willRetry)", remember);
@@ -100,6 +100,56 @@ public class SubmissionOutcomeWiringTest {
         assertTrue(notice > remember);
         assertTrue(stop > notice);
         assertTrue(rebuild > stop);
+    }
+
+    @Test
+    public void parsedStructuredRejectionStillRunsConfiguredMaterialRecovery()
+            throws Exception {
+        String source = mainSource();
+        String submit = method(source,
+            "private void submitUnit(",
+            "private void ensurePreviousSteps(");
+
+        int extract = submit.indexOf("missingMaterials(text, removed)");
+        int structured = submit.indexOf("boolean structuredResponseRejected", extract);
+        int recover = submit.indexOf(
+            "SubmissionPolicyRules.shouldRecoverMissingMaterials(", structured);
+        int confirm = submit.indexOf(
+            "retryableResponse || missingResponse || recoverableMissing", recover);
+        int rebuild = submit.indexOf("payload = buildPayload(", confirm);
+
+        assertTrue(extract >= 0);
+        assertTrue(structured > extract);
+        assertTrue(recover > structured);
+        assertTrue(confirm > recover);
+        assertTrue(rebuild > confirm);
+    }
+
+    @Test
+    public void materialDraftsKeepTheLegacyFourAttemptRemoveAndRetryContract()
+            throws Exception {
+        String source = mainSource();
+        String submit = method(source,
+            "private void submitUnit(",
+            "private void ensurePreviousSteps(");
+
+        int compatibility = submit.indexOf(
+            "boolean materialCompatibility = hasConfiguredMaterialItems()");
+        int recovery = submit.indexOf(
+            "workflow.missingRecoveryEnabled || materialCompatibility", compatibility);
+        int attempts = submit.indexOf(
+            "Math.max(4, workflow.submissionMaxAttempts)", recovery);
+        int delay = submit.indexOf(
+            "Math.max(4000L, workflow.submissionRetryDelayMs)", attempts);
+        int extract = submit.indexOf("missingMaterials(text, removed)", delay);
+        int rebuild = submit.indexOf("payload = buildPayload(", extract);
+
+        assertTrue(compatibility >= 0);
+        assertTrue(recovery > compatibility);
+        assertTrue(attempts > recovery);
+        assertTrue(delay > attempts);
+        assertTrue(extract > delay);
+        assertTrue(rebuild > extract);
     }
 
     @Test

@@ -1,5 +1,7 @@
 package com.autoformkit.app;
 
+import java.util.Collection;
+
 /** Pure helpers for profile-owned batch pacing and local round-ledger retention. */
 final class SubmissionPolicyRules {
     private static final long DAY_MS = 24L * 60L * 60L * 1000L;
@@ -36,5 +38,20 @@ final class SubmissionPolicyRules {
     static int retentionDays(int snapshotDays, int currentProfileDays) {
         if (snapshotDays >= 1 && snapshotDays <= 30) return snapshotDays;
         return Math.max(1, Math.min(30, currentProfileDays));
+    }
+
+    /**
+     * A material submission may recover only after the parsed response has provided explicit
+     * not-written evidence: a dedicated classifier, the bounded legacy material-code contract, or
+     * a profile-wide structured-rejection declaration. Transport/parse failures never reach here.
+     */
+    static boolean shouldRecoverMissingMaterials(
+            boolean recoveryEnabled, boolean dedicatedMissingRejection,
+            boolean allStructuredNonSuccessIsNotWritten,
+            Collection<String> removableCodes) {
+        return recoveryEnabled
+            && removableCodes != null
+            && !removableCodes.isEmpty()
+            && (dedicatedMissingRejection || allStructuredNonSuccessIsNotWritten);
     }
 }

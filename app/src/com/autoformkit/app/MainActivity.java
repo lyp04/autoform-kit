@@ -161,10 +161,13 @@ public class MainActivity extends Activity {
         "pending_previous_step_submission_attempt_json";
     static final String UPLOAD_REPLAY_BARRIER_KEY =
         "pending_upload_replay_barrier_v1_json";
-    // Image uploads do not create form records. The final/previous-step POST journals below remain
-    // authoritative for duplicate prevention, while this legacy upload-only barrier is disabled
-    // so a lost image response cannot permanently lock production, Panel refresh, or App update.
+    // Image uploads do not create form records, so a lost image response must not permanently lock
+    // production, Panel refresh, or App update.
     private static final boolean DURABLE_UPLOAD_REPLAY_BARRIER_ENABLED = false;
+    // Production explicitly permits an operator retry after an unconfirmed final form POST. Every
+    // retry still runs the configured duplicate lookup first, so an already-visible write is
+    // classified as submitted instead of issuing the final POST again.
+    private static final boolean DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED = false;
     // A newly downloaded Panel pair stays staged until the existing immutable workflow reaches a
     // safe install boundary, but its mere presence must not make the current pair inaccessible.
     private static final boolean BLOCK_ACTIVE_USE_ON_STAGED_PANEL_PAIR = false;
@@ -446,6 +449,7 @@ public class MainActivity extends Activity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
+        discardDisabledFinalSubmissionReplayBarriers();
         // A successful Panel switch may have crashed after its atomic preference commit but before
         // deleting old alternate-entry photos. Replay that receipt before any code can start an
         // update, Panel sync, captcha, login, notification flush, or other bound operation.
@@ -1813,6 +1817,38 @@ public class MainActivity extends Activity {
             previousStepSubmissionAttemptPreferenceKey()).commit();
     }
 
+    /** Best-effort upgrade cleanup for final-POST records which no longer block operator retry. */
+    private void discardDisabledFinalSubmissionReplayBarriers() {
+        if (DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED) return;
+        discardReplayableFinalSubmissionAttempt(
+            restoreMainSubmissionAttempt(), true);
+        discardReplayableFinalSubmissionAttempt(
+            restoreAlternateSubmissionAttempt(), false);
+    }
+
+    private void discardReplayableFinalSubmissionAttempt(
+            AlternateSubmissionAttempt.RestoreResult restored, boolean main) {
+        if (restored.kind == AlternateSubmissionAttempt.RestoreKind.NONE) return;
+        // Preserve an acknowledged write so existing local completion recovery can finish. Only
+        // PREPARED/POSTING/UNCERTAIN/rejected or malformed slots lose their blocking authority.
+        if (restored.kind == AlternateSubmissionAttempt.RestoreKind.RESTORED
+                && restored.attempt != null
+                && restored.attempt.state == AlternateSubmissionAttempt.State.COMPLETED) {
+            return;
+        }
+        boolean cleared;
+        try {
+            cleared = main ? clearMainSubmissionAttempt()
+                : clearAlternateSubmissionAttempt();
+        } catch (RuntimeException error) {
+            cleared = false;
+        }
+        if (!cleared) {
+            Diagnostics.append(this,
+                "Disabled final submission lock cleanup will retry");
+        }
+    }
+
     private boolean hasStoredUploadReplayBarrier() {
         return blockingUploadReplayBarrier() != null;
     }
@@ -2204,6 +2240,13 @@ public class MainActivity extends Activity {
         UploadReplayBarrier.RestoreResult uploadBarrier =
             blockingUploadReplayBarrier();
         AlternateSubmissionAttempt.RestoreResult result = restoreMainSubmissionAttempt();
+        if (!DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED
+                && !(result.kind == AlternateSubmissionAttempt.RestoreKind.RESTORED
+                    && result.attempt != null
+                    && result.attempt.state == AlternateSubmissionAttempt.State.COMPLETED)) {
+            discardReplayableFinalSubmissionAttempt(result, true);
+            return null;
+        }
         if (uploadBarrier != null
                 && result.kind != AlternateSubmissionAttempt.RestoreKind.NONE) {
             // Never destroy the strongest completed receipt while an unretired upload barrier may
@@ -9793,8 +9836,12 @@ public class MainActivity extends Activity {
             mainSubmissionSourceSnapshotSha256(unit),
             AlternateSubmissionAttempt.payloadSha256(exactRequestBody),
             operationId);
-        AlternateSubmissionAttempt attempt = AlternateSubmissionAttempt.prepare(
-            key, restoreMainSubmissionAttempt());
+        AlternateSubmissionAttempt.RestoreResult slot = restoreMainSubmissionAttempt();
+        if (!DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED) {
+            discardReplayableFinalSubmissionAttempt(slot, true);
+            slot = AlternateSubmissionAttempt.restoreStoredValue(false, null);
+        }
+        AlternateSubmissionAttempt attempt = AlternateSubmissionAttempt.prepare(key, slot);
         if (!writeMainSubmissionAttempt(attempt)) {
             throw new SubmissionJournalLockedException(
                 "Could not persist submission intent");
@@ -9809,6 +9856,12 @@ public class MainActivity extends Activity {
                 BackendAdapter.ENDPOINT_SUBMIT_ENTRY, exactRequestBody);
             return new JournaledSubmissionResponse(response, attempt, key);
         } catch (Exception transportOrResponseError) {
+            if (!DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED) {
+                clearMainSubmissionAttempt();
+                // Preserve the original exception so the normal UI reports the real network,
+                // HTTP or JSON problem and the next operator submit remains available.
+                throw transportOrResponseError;
+            }
             if (BackendSessionErrors.isSessionInvalid(transportOrResponseError)) {
                 // A session rejection proves only that credentials are no longer usable. It does
                 // not prove that this exact POST was not committed before the rejection arrived.
@@ -10282,7 +10335,23 @@ public class MainActivity extends Activity {
         JSONObject payload = buildPayload(api.endpoints, unit, frontUrl, backUrl,
             supplementalUrls, removed, slotUrls);
 
-        for (int attempt = 1; attempt <= workflow.submissionMaxAttempts; attempt++) {
+        // Material forms have always used the production-compatible sequence: submit the complete
+        // Panel-selected list, remove only the codes named by a parsed rejection, then try again.
+        // Keep that behavior for drafts opened under an older cached Panel revision whose optional
+        // workflow flags predate the current missingRecovery/submission policy fields.
+        boolean materialCompatibility = hasConfiguredMaterialItems();
+        boolean materialRecoveryEnabled =
+            workflow.missingRecoveryEnabled || materialCompatibility;
+        boolean materialRecoveryLocalNotice =
+            workflow.missingRecoveryLocalNotice || materialCompatibility;
+        int submissionMaxAttempts = materialCompatibility
+            ? Math.max(4, workflow.submissionMaxAttempts)
+            : workflow.submissionMaxAttempts;
+        long submissionRetryDelayMs = materialCompatibility
+            ? Math.max(4000L, workflow.submissionRetryDelayMs)
+            : workflow.submissionRetryDelayMs;
+
+        for (int attempt = 1; attempt <= submissionMaxAttempts; attempt++) {
             appendUnitLog(unit, t("submit_attempt") + "#" + attempt);
             JournaledSubmissionResponse journaled =
                 postMainSubmissionOnce(api, unit, payload, expectedDraftBinding);
@@ -10297,17 +10366,30 @@ public class MainActivity extends Activity {
             boolean retryableResponse =
                 api.endpoints.operations.submit.isRetryableResponse(
                     response, api.endpoints.response);
-            boolean missingResponse = workflow.missingRecoveryEnabled
-                && api.endpoints.operations.submit.isMissingMaterialResponse(
-                    response, api.endpoints.response);
+            boolean missingResponse = api.endpoints.operations.submit.isMissingMaterialResponse(
+                response, api.endpoints.response);
+            List<String> missing = materialRecoveryEnabled
+                ? missingMaterials(text, removed) : Collections.emptyList();
+            boolean structuredResponseRejected =
+                ProfileWorkflow.STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN.equals(
+                    workflow.submissionStructuredNonSuccessAction);
+            boolean recoverableMissing =
+                SubmissionPolicyRules.shouldRecoverMissingMaterials(
+                    materialRecoveryEnabled,
+                    missingResponse || materialCompatibility,
+                    structuredResponseRejected, missing);
             // Only these two Panel-owned response classifiers prove that the backend rejected the
-            // record. Every other non-success result remains ambiguous and is never replayed.
-            if (retryableResponse || missingResponse) {
+            // record. A profile-wide structured rejection declaration is equivalent proof for a
+            // parsed response; it never applies to transport, HTTP or JSON failures.
+            if (retryableResponse || missingResponse || recoverableMissing) {
                 confirmMainSubmissionRejected(journaled);
-            } else if (ProfileWorkflow.STRUCTURED_NON_SUCCESS_REJECT_AS_NOT_WRITTEN.equals(
-                    workflow.submissionStructuredNonSuccessAction)) {
+            } else if (structuredResponseRejected) {
                 // This compatibility behavior is explicitly profile-owned. Transport, parse and
-                // response-loss errors never reach this branch and therefore remain locked.
+                // response-loss errors never reach this parsed-response branch.
+                confirmMainSubmissionRejected(journaled);
+                throw new SubmissionExplicitlyRejectedException(
+                    api.apiErrorMessage(response));
+            } else if (!DURABLE_FINAL_SUBMISSION_REPLAY_BARRIER_ENABLED) {
                 confirmMainSubmissionRejected(journaled);
                 throw new SubmissionExplicitlyRejectedException(
                     api.apiErrorMessage(response));
@@ -10315,22 +10397,20 @@ public class MainActivity extends Activity {
                 markMainSubmissionUncertain(journaled);
             }
             if (retryableResponse) {
-                if (attempt < workflow.submissionMaxAttempts
-                        && workflow.submissionRetryDelayMs > 0L) {
-                    Thread.sleep(workflow.submissionRetryDelayMs);
+                if (attempt < submissionMaxAttempts
+                        && submissionRetryDelayMs > 0L) {
+                    Thread.sleep(submissionRetryDelayMs);
                 }
                 continue;
             }
-            List<String> missing = missingResponse
-                ? missingMaterials(text, removed) : Collections.emptyList();
-            if (!missing.isEmpty()) {
-                boolean willRetry = attempt < workflow.submissionMaxAttempts;
+            if (recoverableMissing) {
+                boolean willRetry = attempt < submissionMaxAttempts;
                 // Preserve the last classified missing response too.  Even when no attempt remains,
                 // the operator-facing cache and the round summary must describe the backend's final
                 // known-not-written result rather than silently dropping its last set of codes.
                 recordRoundMissing(unit.sn, missing);
                 rememberMissingMaterials(missing);
-                if (workflow.missingRecoveryLocalNotice) {
+                if (materialRecoveryLocalNotice) {
                     List<String> firstTime = firstTimeMissingMaterials(missing);
                     if (!firstTime.isEmpty()) {
                         notifyMissing(unit.sn, firstTime, willRetry);
@@ -10347,8 +10427,8 @@ public class MainActivity extends Activity {
                 removed.addAll(missing);
                 payload = buildPayload(api.endpoints, unit, frontUrl, backUrl,
                     supplementalUrls, removed, slotUrls);
-                if (workflow.submissionRetryDelayMs > 0L) {
-                    Thread.sleep(workflow.submissionRetryDelayMs);
+                if (submissionRetryDelayMs > 0L) {
+                    Thread.sleep(submissionRetryDelayMs);
                 }
                 continue;
             }
@@ -11808,7 +11888,7 @@ public class MainActivity extends Activity {
         Set<String> excluded = new HashSet<>(alreadyRemoved);
         excluded.addAll(notifySkipMaterialCodes());
         String configuredPattern = profile == null ? "" : profile.optString("materialCodePattern", "");
-        return MaterialCodeRules.findKnownCodesForAutomaticRecovery(
+        return MaterialCodeRules.findKnownCodesForAutomaticRecoveryCompatible(
             text, known, excluded, configuredPattern);
     }
 

@@ -87,6 +87,24 @@ final class MaterialCodeRules {
         return out;
     }
 
+    /**
+     * Compatibility for an already-open draft bound to a pre-recognizer Panel profile. The input
+     * is still only the configured scalar response message, and matches are still intersected with
+     * the exact material codes in the current payload. New profiles with a recognizer remain on
+     * the strict path above; an invalid declared recognizer never falls back.
+     */
+    static List<String> findKnownCodesForAutomaticRecoveryCompatible(
+            String configuredMessage, Collection<String> knownCodes,
+            Collection<String> excludedCodes, String configuredPattern) {
+        String regex = configuredPattern == null ? "" : configuredPattern.trim();
+        if (!regex.isEmpty()) {
+            return findKnownCodesForAutomaticRecovery(
+                configuredMessage, knownCodes, excludedCodes, regex);
+        }
+        return findKnownCodes(
+            configuredMessage, knownCodes, excludedCodes, "");
+    }
+
     /** Preserve source order while applying an explicit exclusion list. */
     static List<String> excludeCodes(Collection<String> codes, Collection<String> excludedCodes) {
         Set<String> excluded = excludedCodes == null
