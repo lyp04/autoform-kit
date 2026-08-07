@@ -15312,6 +15312,10 @@ public class MainActivity extends Activity {
                     if (savedToken().isEmpty() && captchaClient.isEmpty()) refreshCaptcha();
                 }
             }
+            if (after.mode == PanelBootstrapRules.Mode.READY
+                    && activePair != null && updateManager != null) {
+                updateManager.checkAfterPanelReady();
+            }
             if (interactive && roundFinished) {
                 toast(after.mode == PanelBootstrapRules.Mode.READY
                     ? t("panel_connected") : t("panel_connect_failed"));

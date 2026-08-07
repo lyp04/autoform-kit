@@ -66,7 +66,11 @@ final class UpdateManager {
 
     private final Activity activity;
     private final SharedPreferences prefs;
-    private boolean checkedThisProcess = false;
+    /** Exact Panel/update configuration already checked in this process. An empty value means
+     *  startup ran before a complete Panel pair was available and must be retried when it is. */
+    private String checkedConfigIdentity = "";
+    private boolean updateCheckActive = false;
+    private boolean retryAfterPanelReady = false;
     private int operationGeneration = 0;
     private boolean pendingResumeActive = false;
     private boolean installValidationActive = false;
@@ -104,6 +108,22 @@ final class UpdateManager {
         check(false);
     }
 
+    /**
+     * The first startup probe can legitimately beat Panel synchronization. In that case there is
+     * no trustworthy update source yet, so the probe must not consume this process's automatic
+     * check. MainActivity calls this again after a complete config/catalog pair becomes READY.
+     */
+    void checkAfterPanelReady() {
+        if (!BuildConfig.AUTO_UPDATE_ENABLED) return;
+        synchronized (this) {
+            if (updateCheckActive) {
+                retryAfterPanelReady = true;
+                return;
+            }
+        }
+        check(false);
+    }
+
     /** Called from {@link Activity#onResume()}; throttled by {@link #FOREGROUND_CHECK_INTERVAL_MS}. */
     void checkOnForeground() {
         if (!BuildConfig.AUTO_UPDATE_ENABLED) return;
@@ -119,14 +139,28 @@ final class UpdateManager {
     }
 
     private void check(boolean force) {
-        if (!force && checkedThisProcess) return;
-        checkedThisProcess = true;
-        prefs.edit().putLong(PREF_LAST_CHECK_MS, System.currentTimeMillis()).apply();
-        final int generation = nextOperationGeneration();
+        synchronized (this) {
+            // Startup, foreground and Panel-ready callbacks can arrive almost together. One
+            // source-bound probe is sufficient; a Panel-ready callback is explicitly replayed
+            // below only when the source changed or startup had no complete pair.
+            if (updateCheckActive) return;
+            updateCheckActive = true;
+        }
         new Thread(() -> {
+            Config config = null;
+            String configIdentity = "";
             try {
-                Config config = loadConfig();
+                config = loadConfig();
+                if (!config.panelReady) return;
+                configIdentity = checkIdentity(config);
+                synchronized (UpdateManager.this) {
+                    if (!force && configIdentity.equals(checkedConfigIdentity)) return;
+                }
+                // Do not start the foreground throttle until a complete, current Panel pair has
+                // actually resolved the update policy. A pre-Panel startup no-op must be retryable.
+                prefs.edit().putLong(PREF_LAST_CHECK_MS, System.currentTimeMillis()).apply();
                 if (!config.enabled || config.source == null) return;
+                final int generation = nextOperationGeneration();
                 requireCurrentSource(config.source, generation, "release check");
                 UpdateInfo update = findUpdate(config, generation);
                 if (update == null) return;
@@ -134,8 +168,45 @@ final class UpdateManager {
                 showUpdateDialog(update, generation);
             } catch (Exception exc) {
                 // Update checks must never block the form workflow.
+                Diagnostics.append(activity,
+                    "Update check deferred: " + exc.getClass().getSimpleName());
+            } finally {
+                boolean configurationStillCurrent = config != null && config.panelReady
+                    && checkIdentityStillCurrent(configIdentity);
+                boolean retry;
+                synchronized (UpdateManager.this) {
+                    if (configurationStillCurrent) {
+                        checkedConfigIdentity = configIdentity;
+                    }
+                    updateCheckActive = false;
+                    retry = retryAfterPanelReady && !configurationStillCurrent;
+                    retryAfterPanelReady = false;
+                }
+                if (retry) check(false);
             }
         }, "update-check").start();
+    }
+
+    private boolean checkIdentityStillCurrent(String expectedIdentity) {
+        if (expectedIdentity == null || expectedIdentity.isEmpty()) return false;
+        try {
+            Config current = loadConfig();
+            return current.panelReady && expectedIdentity.equals(checkIdentity(current));
+        } catch (Exception error) {
+            return false;
+        }
+    }
+
+    private static String checkIdentity(Config config) {
+        if (config == null || !config.panelReady) return "";
+        return config.connectionNamespace + "\n"
+            + config.panelPairSha256 + "\n"
+            + config.enabled + "\n"
+            + config.channel + "\n"
+            + config.owner + "\n"
+            + config.repo + "\n"
+            + config.manifestAsset + "\n"
+            + config.releaseTag;
     }
 
     private synchronized int nextOperationGeneration() {
@@ -256,6 +327,9 @@ final class UpdateManager {
         UpdateSourceRules.Resolved resolved = AppConfig.resolveUpdateSource(
             json, panelCfg, devicePreference);
         Config config = new Config();
+        config.panelReady = compatiblePanelPair && panelCfg != null;
+        config.connectionNamespace = expectedConnection;
+        config.panelPairSha256 = panelPairSha256;
         config.channel = resolved.channel;
         config.enabled = resolved.enabled;
         config.owner = resolved.owner;
@@ -1417,6 +1491,9 @@ final class UpdateManager {
     }
 
     private static final class Config {
+        boolean panelReady;
+        String connectionNamespace;
+        String panelPairSha256;
         boolean enabled;
         String channel;
         String owner;
