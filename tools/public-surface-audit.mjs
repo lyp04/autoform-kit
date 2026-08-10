@@ -1876,7 +1876,8 @@ function isExampleHost(host) {
 }
 
 function isNonPersonalInfrastructureEmail(value) {
-  return value.toLowerCase() === "git@github.com";
+  const lower = value.toLowerCase();
+  return lower === "git@github.com" || lower === "noreply@github.com";
 }
 
 function isCommentOnlyMatch(text, offset) {
