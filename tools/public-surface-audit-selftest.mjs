@@ -569,6 +569,23 @@ try {
     "schema prose and the standard GitHub SSH principal are not credentials or personal email");
   fs.unlinkSync(genericInfrastructure);
 
+  const githubMergeMetadata = path.join(repo, "github-merge-commit.txt");
+  fs.writeFileSync(githubMergeMetadata,
+    "committer GitHub <noreply@github.com> 0 +0000\n",
+    "utf8");
+  const githubMergeMetadataAudit = audit(["--worktree", "--repo", repo]);
+  assert.equal(githubMergeMetadataAudit.status, 0,
+    "GitHub's exact merge-commit service address is public infrastructure metadata");
+  const githubPersonalAddress = ["operator", "@", "github.com"].join("");
+  fs.writeFileSync(githubMergeMetadata,
+    `committer Operator <${githubPersonalAddress}> 0 +0000\n`,
+    "utf8");
+  const githubPersonalAddressAudit = audit(["--worktree", "--repo", repo]);
+  assert.equal(githubPersonalAddressAudit.status, 1,
+    "other github.com mailboxes must remain subject to the personal-email gate");
+  assert.ok(findingRules(githubPersonalAddressAudit.report).has("pii-email"));
+  fs.unlinkSync(githubMergeMetadata);
+
   const pairingDocsDir = path.join(repo, "docs");
   const pairingProtocolDoc = path.join(pairingDocsDir, "app-pairing.md");
   fs.mkdirSync(pairingDocsDir);
