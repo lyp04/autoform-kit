@@ -3818,13 +3818,13 @@
       "entries": [
         {
           "path": "assets/dexopt/baseline.prof",
-          "sha256": "12e9204efadd3422ad8d6549f68d6ff1c3ee42c9af54918f0e68efa5e553607e",
+          "sha256": "949620aaf3b1dba6cfc5a9553dd006df96be98204690e8cbc11c9a98ca079dd6",
           "component": "androidx-runtime-baseline-profiles",
           "kind": "runtime-profile"
         },
         {
           "path": "assets/dexopt/baseline.profm",
-          "sha256": "d05b45979499d1695b0bab921c2f043060629ffc891e569a75d01f1c7542d9b2",
+          "sha256": "77cd2498a1ad892912943b2e2de59a4fdd82ef8f305162530ff3009b0966aa32",
           "component": "androidx-runtime-baseline-profiles",
           "kind": "runtime-profile"
         },
