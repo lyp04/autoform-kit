@@ -328,6 +328,10 @@ public class MainActivity extends Activity {
     private volatile boolean reconcileDialogOpen = false; // true while the reconcile dialog shows — closing it stops the cloud-verify walk
     private int chineseTapCount = 0;
     private long chineseTapWindowStarted = 0L;
+    private int englishTapCount = 0;
+    private long englishTapWindowStarted = 0L;
+    // Deliberately process-local: a configured device hides maintenance controls again after restart.
+    private static boolean advancedSettingsRevealed = false;
 
     private SharedPreferences prefs;
     private volatile String activeSessionRealmSha256 = "";
@@ -674,6 +678,9 @@ public class MainActivity extends Activity {
         reconcileManualQueueCopies(false);
         maybeInstallBoundPanelSnapshotAtSafeBoundary();
         missingMaterialsText = null;
+        // Never retain references to diagnostics views from a detached settings/form hierarchy.
+        logText = null;
+        crashLogText = null;
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(0xFFF1F5F9);
         LinearLayout root = rootLayout();
@@ -731,7 +738,10 @@ public class MainActivity extends Activity {
             handleChineseLanguageTap();
             if (!"zh".equals(lang)) switchLanguage("zh");
         }));
-        langRow.addView(button(languageLabel("en"), v -> switchLanguage("en")));
+        langRow.addView(button(languageLabel("en"), v -> {
+            handleEnglishLanguageTap();
+            if (!"en".equals(lang)) switchLanguage("en");
+        }));
         langRow.addView(button(languageLabel("es"), v -> switchLanguage("es")));
         languagePanel.addView(langRow);
         updateChannelText = text(updateChannelStatusText(), 12, false);
@@ -785,51 +795,55 @@ public class MainActivity extends Activity {
 
         root.addView(dailyStatsView());
 
-        // Panel connection: the app points at a form system by its panel address (+ access key).
-        // Both default to empty — the user must fill them in; the backend base, catalog and notify
-        // notification route are then all driven by that panel. Saving persists + reconnects.
-        LinearLayout panelPanel = panel();
-        panelPanel.addView(compactLabel(t("panel_connection")));
-        TextView panelHint = text(t("panel_connection_hint"), 12, false);
-        panelHint.setTextColor(0xFF64748B);
-        panelPanel.addView(panelHint);
+        boolean showAdvancedSettings = AdvancedSettingsVisibilityRules.shouldShow(
+            AppConfig.panelBase(this), AppConfig.catalogKey(this), advancedSettingsRevealed);
+        if (showAdvancedSettings) {
+            // Panel connection: the app points at a form system by its panel address (+ access key).
+            // Both default to empty — the user must fill them in; the backend base, catalog and notify
+            // notification route are then all driven by that panel. Saving persists + reconnects.
+            LinearLayout panelPanel = panel();
+            panelPanel.addView(compactLabel(t("panel_connection")));
+            TextView panelHint = text(t("panel_connection_hint"), 12, false);
+            panelHint.setTextColor(0xFF64748B);
+            panelPanel.addView(panelHint);
 
-        panelPanel.addView(compactLabel(t("panel_base")));
-        final EditText panelBaseEdit = edit(t("panel_base_hint"));
-        panelBaseEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
-            | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        panelBaseEdit.setText(AppConfig.panelBase(this));
-        panelPanel.addView(panelBaseEdit);
+            panelPanel.addView(compactLabel(t("panel_base")));
+            final EditText panelBaseEdit = edit(t("panel_base_hint"));
+            panelBaseEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_URI
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            panelBaseEdit.setText(AppConfig.panelBase(this));
+            panelPanel.addView(panelBaseEdit);
 
-        panelPanel.addView(compactLabel(t("catalog_key")));
-        final EditText catalogKeyEdit = edit(t("catalog_key_hint"));
-        catalogKeyEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
-        catalogKeyEdit.setText(AppConfig.catalogKey(this));
-        panelPanel.addView(catalogKeyEdit);
+            panelPanel.addView(compactLabel(t("catalog_key")));
+            final EditText catalogKeyEdit = edit(t("catalog_key_hint"));
+            catalogKeyEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            catalogKeyEdit.setText(AppConfig.catalogKey(this));
+            panelPanel.addView(catalogKeyEdit);
 
-        panelPanel.addView(button(t("panel_save"), v -> savePanelConnection(
-            panelBaseEdit.getText().toString(), catalogKeyEdit.getText().toString())));
+            panelPanel.addView(button(t("panel_save"), v -> savePanelConnection(
+                panelBaseEdit.getText().toString(), catalogKeyEdit.getText().toString())));
 
-        // Read-only: which backend is actually in effect right now (from the cached panel config).
-        TextView panelCurrent = text(t("panel_current_api")
-            + (backendConfigured() ? apiBase()
-                : (panelConnectionSyncBlocked() ? t("panel_syncing_short")
-                    : (panelUseBlocked()
-                        ? t("panel_pair_pending_short") : t("panel_unconfigured")))), 12, false);
-        panelCurrent.setTextColor(0xFF64748B);
-        panelCurrent.setTextIsSelectable(true);
-        panelCurrent.setPadding(0, dp(6), 0, 0);
-        panelPanel.addView(panelCurrent);
-        root.addView(panelPanel);
+            // Read-only: which backend is actually in effect right now (from the cached panel config).
+            TextView panelCurrent = text(t("panel_current_api")
+                + (backendConfigured() ? apiBase()
+                    : (panelConnectionSyncBlocked() ? t("panel_syncing_short")
+                        : (panelUseBlocked()
+                            ? t("panel_pair_pending_short") : t("panel_unconfigured")))), 12, false);
+            panelCurrent.setTextColor(0xFF64748B);
+            panelCurrent.setTextIsSelectable(true);
+            panelCurrent.setPadding(0, dp(6), 0, 0);
+            panelPanel.addView(panelCurrent);
+            root.addView(panelPanel);
 
-        logText = text("", 12, false);
-        logText.setTextColor(0xFF475569);
-        root.addView(logText);
-        root.addView(compactLabel(t("last_crash_title")));
-        crashLogText = text(lastCrashText(), 12, false);
-        crashLogText.setTextColor(0xFF475569);
-        crashLogText.setTextIsSelectable(true);
-        root.addView(crashLogText);
+            logText = text("", 12, false);
+            logText.setTextColor(0xFF475569);
+            root.addView(logText);
+            root.addView(compactLabel(t("last_crash_title")));
+            crashLogText = text(lastCrashText(), 12, false);
+            crashLogText.setTextColor(0xFF475569);
+            crashLogText.setTextIsSelectable(true);
+            root.addView(crashLogText);
+        }
         setPageContentView(scroll);
         refreshLoginStatus();
         scroll.post(this::maybeShowPanelPairingPrompt);
@@ -5254,6 +5268,20 @@ public class MainActivity extends Activity {
         if (!panelBoundaryCleanupBlocked && updateManager != null) {
             updateManager.checkNow();
         }
+    }
+
+    private void handleEnglishLanguageTap() {
+        if (advancedSettingsRevealed) return;
+        AdvancedSettingsVisibilityRules.TapProgress progress =
+            AdvancedSettingsVisibilityRules.onEnglishTap(
+                englishTapCount, englishTapWindowStarted, System.currentTimeMillis());
+        englishTapCount = progress.count;
+        englishTapWindowStarted = progress.windowStartedAtMs;
+        if (!progress.revealed) return;
+
+        advancedSettingsRevealed = true;
+        showSettingsPage();
+        toast(t("advanced_settings_shown"));
     }
 
     private void refreshUpdateChannelText() {
@@ -17573,6 +17601,7 @@ public class MainActivity extends Activity {
             case "update_channel_beta": return "Beta";
             case "update_channel_beta_toast": return "已切换到 Beta 更新通道，正在检查更新";
             case "update_channel_stable_toast": return "已切换到正式版更新通道，正在检查更新";
+            case "advanced_settings_shown": return "面板连接与诊断日志已显示";
             case "login": return "登录";
             case "account": return "公司账号";
             case "password": return "公司密码";
@@ -17973,6 +18002,7 @@ public class MainActivity extends Activity {
             case "update_channel_beta": return "Beta";
             case "update_channel_beta_toast": return "Switched to Beta updates. Checking now.";
             case "update_channel_stable_toast": return "Switched to Stable updates. Checking now.";
+            case "advanced_settings_shown": return "Panel connection and diagnostic logs are now visible";
             case "login": return "Login";
             case "account": return "Company account";
             case "password": return "Password";
@@ -18373,6 +18403,7 @@ public class MainActivity extends Activity {
             case "update_channel_beta": return "Beta";
             case "update_channel_beta_toast": return "Canal Beta activado. Revisando actualización.";
             case "update_channel_stable_toast": return "Canal estable activado. Revisando actualización.";
+            case "advanced_settings_shown": return "La conexión del Panel y los registros de diagnóstico están visibles";
             case "login": return "Inicio de sesión";
             case "account": return "Cuenta de la empresa";
             case "password": return "Contraseña";
