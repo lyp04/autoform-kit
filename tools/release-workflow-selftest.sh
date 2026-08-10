@@ -1305,8 +1305,8 @@ cat > "${GATE_PROGRAM}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 printf 'called\n' >> "${AUTOFORM_SELFTEST_GATE_LOG}"
-rollback="${AUTOFORM_SELFTEST_GATE_ROLLBACK:-true}"
-controlled_recovery="${AUTOFORM_SELFTEST_GATE_CONTROLLED_RECOVERY:-true}"
+fresh_install="${AUTOFORM_SELFTEST_GATE_FRESH_INSTALL:-true}"
+automatic_update="${AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE:-true}"
 commit_object_input="${AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_INPUT_SHA256}"
 if [[ "${AUTOFORM_SELFTEST_GATE_HISTORY_BINDING:-true}" != true ]]; then
   commit_object_input="0000000000000000000000000000000000000000000000000000000000000000"
@@ -1384,10 +1384,10 @@ jq -n \
   --argjson privatePanelSettingsPresent "${AUTOFORM_RELEASE_PRIVATE_PANEL_SETTINGS_PRESENT}" \
   --arg privateGate "${AUTOFORM_RELEASE_PRIVATE_GATE_SHA256}" \
   --argjson privateCatalogVersion "${AUTOFORM_RELEASE_PRIVATE_CATALOG_VERSION}" \
-  --argjson rollback "${rollback}" \
-  --argjson controlledRecovery "${controlled_recovery}" \
+  --argjson freshInstall "${fresh_install}" \
+  --argjson automaticUpdate "${automatic_update}" \
   '{
-    schemaVersion: 4,
+    schemaVersion: 5,
     releaseReady: true,
     bindings: {
       candidateManifestSha256: $manifest,
@@ -1496,15 +1496,16 @@ jq -n \
       }
     },
     checks: {
-      privateMigration: true,
+      privateUpgradeEvidence: true,
       privateDeployment: true,
       publicWorktree: true,
       publicHistory: true,
       candidateApk: true,
-      signedUpgrade: true,
-      rollback: $rollback,
-      flowParity: true,
-      controlledRecovery: $controlledRecovery
+      signedCurrentUpgrade: true,
+      freshInstall: $freshInstall,
+      liveCatalogCompatibility: true,
+      automaticUpdateProtocol: $automaticUpdate,
+      productionMutationFree: true
     }
   }' > "${AUTOFORM_RELEASE_ATTESTATION_OUT}"
 EOF
@@ -1565,8 +1566,8 @@ run_publish() {
   AUTOFORM_SELFTEST_ASSET_TAMPER_ID="${AUTOFORM_SELFTEST_ASSET_TAMPER_ID:-}" \
   AUTOFORM_SELFTEST_APK_PATH="${APK_PATH}" \
   AUTOFORM_SELFTEST_GATE_LOG="${GATE_LOG}" \
-  AUTOFORM_SELFTEST_GATE_ROLLBACK="${AUTOFORM_SELFTEST_GATE_ROLLBACK:-true}" \
-  AUTOFORM_SELFTEST_GATE_CONTROLLED_RECOVERY="${AUTOFORM_SELFTEST_GATE_CONTROLLED_RECOVERY:-true}" \
+  AUTOFORM_SELFTEST_GATE_FRESH_INSTALL="${AUTOFORM_SELFTEST_GATE_FRESH_INSTALL:-true}" \
+  AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE="${AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE:-true}" \
   AUTOFORM_SELFTEST_GATE_HISTORY_BINDING="${AUTOFORM_SELFTEST_GATE_HISTORY_BINDING:-true}" \
   AUTOFORM_SELFTEST_GATE_MUTATE_HISTORY="${AUTOFORM_SELFTEST_GATE_MUTATE_HISTORY:-false}" \
   AUTOFORM_SELFTEST_PRIVATE_WORDLIST="${PRIVATE_WORDLIST}" \
@@ -2542,17 +2543,16 @@ fi
 [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
   die "unknown remote ref reached the private gate or release creation"
 
-# Until a reviewed real private gate is pinned in the source-committed policy,
-# even a gate that copies every environment hash and writes every boolean true
-# must stop before gate execution and before GitHub Release creation.
+# An arbitrary external gate must still stop before execution and before GitHub
+# Release creation when its bytes do not match the reviewed source-pinned identity.
 : > "${GATE_LOG}"
 : > "${GH_LOG}"
-if run_publish >"${FIXTURE_ROOT}/disabled-trusted-gate-policy.log" 2>&1; then
-  die "publisher bypassed the disabled trusted private gate policy"
+if run_publish >"${FIXTURE_ROOT}/untrusted-gate-identity.log" 2>&1; then
+  die "publisher bypassed the trusted private gate identity"
 fi
-grep -q 'trusted private release gate policy is disabled' \
-  "${FIXTURE_ROOT}/disabled-trusted-gate-policy.log" || \
-  die "publisher did not explain the missing reviewed gate identity"
+grep -q 'private release gate does not match the source-committed trusted gate SHA-256' \
+  "${FIXTURE_ROOT}/untrusted-gate-identity.log" || \
+  die "publisher did not explain the unreviewed gate identity"
 [[ ! -s "${GATE_LOG}" ]] || die "publisher invoked an arbitrary private gate"
 [[ ! -s "${GH_LOG}" ]] || die "publisher called release create without a trusted gate"
 

@@ -159,10 +159,12 @@ deployment truth must be established with private evidence bound to the exact Pa
 adapter, candidate APK, and retry/outcome policies.
 
 Publication is blocked until the complete public surface—history, branches, tags, pull-request refs,
-Releases, assets, and APK contents—passes the privacy audit. Signed in-place upgrade and rollback,
-old/new update routing, real-profile payload replay, and fail-closed handling of uncertain remote
-side effects are separate required gates. Deleting a file or merging a cleanup commit does not erase
-older Git objects.
+Releases, assets, and APK contents—passes the privacy audit. The one-time v1.0.14 maintenance gate
+also binds the exact v1.0.13 predecessor, reviewed source diff, current private Panel/R2 snapshot,
+signed in-place upgrade, fresh install, live-catalog smoke, and update protocol. Releases that change
+submission, upload, or recovery behavior still require the full rollback, payload-replay, and
+controlled-recovery evidence. Deleting a file or merging a cleanup commit does not erase older Git
+objects.
 
 The exact evidence formats, capture requirements, and publication sequence are documented in
 [Releasing](./docs/releasing.md) and [deployment security](./docs/security.md). Repository visibility
@@ -255,14 +257,16 @@ must remain deployment-neutral.
 
 **Panel 是主体，Android App 是通用运行框架。** 发布政策只允许 GitHub Release 包含通用框架产物，
 但内容在 GitHub 上可见，不代表现有历史或 Release 已完成规定的重写和发布后审计，也不等于任何
-真实部署已经通过投产门；当前没有已声明可发布的候选。表单、字段与结果映射、照片框和拍摄顺序、
+真实部署已经通过投产门；当前一次性 v1.0.14 maintenance gate 仍须在发布现场通过全部 live 证据。
+表单、字段与结果映射、照片框和拍摄顺序、
 扫描规则、可选流程、后端适配器、通知和更新源都在私有 Panel/catalog 中维护；候选工作树只允许
 通用代码和不可运行示例。公开前必须独立复核完整历史、tags、Releases 与 assets，普通合并或删除
 提交不能清除旧对象。新装 App 的 Panel 地址与 read key 均为空，不能从 APK 获得生产配置。
 
 升级旧设备必须先部署兼容 Panel，并让旧 App 在目标 revision 发布后彻底退出、重新启动，缓存
-带精确 proof 的同一 config/catalog pair；这是兼容迁移的必要条件，不是充分条件，签名升级、完整
-运行流等价、回滚与 recovery 门禁仍须全部通过。无 proof、摘要不符或连接改变时不能猜旧 cache
+带精确 proof 的同一 config/catalog pair；这是兼容迁移的必要条件，不是充分条件。v1.0.14 通过精确
+v1.0.13 基线与 changed-path allowlist、当前签名升级/fresh-install/live-catalog/update 证据发布；任何
+触及提交、上传或 recovery 的后续版本仍须完整运行流等价、回滚与 recovery 门禁。无 proof、摘要不符或连接改变时不能猜旧 cache
 或草稿归属。严格更新候选等待时可以继续使用完整旧 active pair；同版本篡改、损坏或错绑候选会
 锁定。手动队列备份会长期保留并 pin 住原 pair，只有用户明确确认删除后才会解除。
 

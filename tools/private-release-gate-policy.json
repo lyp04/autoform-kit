@@ -1,5 +1,5 @@
 {
   "schemaVersion": 1,
-  "enabled": false,
-  "gateSha256": null
+  "enabled": true,
+  "gateSha256": "b0a1c9ae84dfd555e7c11ad36a049e27841d43fe911299d3e48c50a61311638e"
 }
