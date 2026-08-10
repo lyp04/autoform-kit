@@ -65,7 +65,7 @@ These are the current customization entry points, including the deployment-gated
 | Entry point | What belongs there | Storage |
 | --- | --- | --- |
 | Panel template import | Read backend templates through the Panel-managed adapter and convert their fields, choices, compatibility metadata, and opaque result mappings into a review-required draft; an administrator reviews required values and visibility before publishing | Private draft, then private `form-profiles.json` |
-| Panel profile editor | Form identity and visibility, localized operator labels (without rewriting legacy/import result labels or values), template/field bindings, choices, opaque result mappings, photo slots and order, scanner policy, materials, alternate entries, previous steps, duplicate checks, printing, retries, and profile notification policy | Private `form-profiles.json` |
+| Panel profile editor | Form identity and visibility, localized input labels/placeholders and operator labels (without rewriting legacy/import result labels or values), template/field bindings, choices, opaque result mappings, photo slots and order, scanner policy, materials, alternate entries including optional mutually exclusive result presets (code visibility/label wrapping/localization/color/result/toggles/overrides), previous steps, duplicate checks, printing, retries, and profile notification policy | Private `form-profiles.json` |
 | Panel advanced JSON | Profile fields not yet covered by a structured control, plus opaque legacy extensions required by an already-signed client during a migration window; preserve those extensions privately, do not invent or publish them, and remove them only after old-client replay | Private `form-profiles.json` |
 | Panel global settings | `backendAdapter` (including final-submit outcome policy, the independent previous-step recipe outcome policy, and the release-only controlled-recovery verification capability), live resolvers/builders, printing protocol, Settings-title brand prefix, request overrides, profile order, legacy result-key daily groups plus exact profile/result daily groups and flat summaries, versioned public-update repository owner/repo, minimum App version, diagnostics policy, and migration-only legacy fields | Private `form-profiles.json` and derived `manifest.json` |
 | Panel notification settings | Provider protocol, templates, delivery rules, response policy, and timeouts | Optional private Worker-only `panel-settings.json`; absence is valid |
@@ -178,8 +178,10 @@ operator explicitly deletes that backup.
 Legacy upgrades are **Panel first**: publish a behavior-equivalent higher revision, then let the old
 App cache the exact target pair before installing the signed update. The first upgrade requires one
 new login because unbound legacy credentials are never imported or sent; drafts, queues, ledgers,
-pending photos, and rollback credentials are preserved. Missing proof or uncertain remote results
-fail closed and must not be cleared or replayed by hand.
+pending photos, and rollback credentials are preserved. Unscoped legacy statistics and round-ledger
+mirrors are migrated when their ownership can be established, but they do not permanently block an
+otherwise valid Panel pair. Active drafts, queues, pending photos, submissions and uncertain remote
+results still fail closed and must not be cleared or replayed by hand.
 
 Follow the operational checks in [Connect the App](./docs/connect-app.md) and the recovery limits in
 [deployment security](./docs/security.md) before upgrading a real device.

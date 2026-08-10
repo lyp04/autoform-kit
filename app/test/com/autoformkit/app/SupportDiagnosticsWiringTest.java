@@ -70,8 +70,8 @@ public class SupportDiagnosticsWiringTest {
     public void releaseBuildIsNeverMadeDebuggable() throws Exception {
         String gradle = read("app/build.gradle");
         assertFalse(gradle.contains("release {\n            debuggable true"));
-        assertTrue(gradle.contains("versionCode = (project.findProperty(\"versionCode\") ?: \"17\")"));
-        assertTrue(gradle.contains("versionName = (project.findProperty(\"versionName\") ?: \"1.0.13\")"));
+        assertTrue(gradle.contains("versionCode = (project.findProperty(\"versionCode\") ?: \"18\")"));
+        assertTrue(gradle.contains("versionName = (project.findProperty(\"versionName\") ?: \"1.0.14\")"));
     }
 
     private static String mainActivitySource() throws Exception {

@@ -1147,7 +1147,7 @@ public class MainActivity extends Activity {
             if (pLabel.isEmpty()) pLabel = pField;
             capturePanel.addView(compactLabel(pLabel + (pl.optBoolean("required") ? " *" : "")));
             LinearLayout plRow = row();
-            EditText plEdit = edit(pl.optString("placeholder", pLabel));
+            EditText plEdit = edit(inputPlaceholder(pl, pLabel));
             if ("number".equals(pl.optString("inputType", "text"))) {
                 plEdit.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
             }
@@ -3879,6 +3879,25 @@ public class MainActivity extends Activity {
             source, alternateEntryCatalogSnapshot, entry, Collections.emptyMap());
         alternateEntryToggleStates.clear();
         alternateEntryToggleStates.putAll(resolution.effectiveToggleStates);
+        if (!resolution.resultPresetPolicies.isEmpty()) {
+            // A result preset owns the complete underlying toggle vector. Carry only one exact,
+            // same-key preset between source profiles; never merge individual old toggle bits into
+            // a new mutually exclusive selection.
+            if (resolution.retainResultPresetUntilExit) {
+                for (AlternateEntryRules.ResultPresetPolicy policy
+                        : resolution.resultPresetPolicies) {
+                    if (Boolean.TRUE.equals(previousStates.get(policy.key))) {
+                        alternateEntryToggleStates.clear();
+                        alternateEntryToggleStates.putAll(policy.effectiveToggleStates);
+                        break;
+                    }
+                }
+            }
+            preflightAlternateEntry(source, alternateEntryCatalogSnapshot, entry,
+                alternateEntryToggleStates);
+            alternateEntryStateProfileId = sourceId;
+            return;
+        }
         // A toggle explicitly marked retainUntilExit follows the old dedicated page across source
         // changes, but only when the newly bound source declares the same key. Unknown keys never
         // cross the boundary.
@@ -3940,6 +3959,73 @@ public class MainActivity extends Activity {
                     alternateEntrySourceProfile, alternateEntryCatalogSnapshot,
                     alternateEntryConfig,
                     alternateEntryToggleStates);
+                if (!resolution.resultPresetPolicies.isEmpty()) {
+                    RadioGroup presets = new RadioGroup(this);
+                    boolean stacked = resolution.resultPresetPolicies.size() > 3;
+                    presets.setOrientation(stacked
+                        ? RadioGroup.VERTICAL : RadioGroup.HORIZONTAL);
+                    // Horizontal RadioGroup inherits LinearLayout's baseline alignment. A longer
+                    // translation can wrap to an extra line and would otherwise be pushed down,
+                    // making equally sized A/B/C buttons appear to have different heights.
+                    presets.setBaselineAligned(false);
+                    for (AlternateEntryRules.ResultPresetPolicy policy
+                            : resolution.resultPresetPolicies) {
+                        RadioButton preset = new RadioButton(this);
+                        preset.setId(View.generateViewId());
+                        preset.setTag(policy.key);
+                        String localizedPresetLabel = policy.localizedLabel(lang);
+                        String displayedPresetLabel = formatResultPresetLabel(
+                            localizedPresetLabel,
+                            resolution.splitResultPresetLabelsOnPlus);
+                        preset.setText(resolution.showResultPresetCodes
+                            ? policy.code + "\n" + displayedPresetLabel
+                            : displayedPresetLabel);
+                        int displayLength = (resolution.showResultPresetCodes
+                            ? policy.code.codePointCount(0, policy.code.length()) : 0)
+                            + localizedPresetLabel.codePointCount(
+                                0, localizedPresetLabel.length());
+                        preset.setTextSize(displayLength > 24 ? 12
+                            : (displayLength > 15 ? 14 : 16));
+                        preset.setMaxLines(3);
+                        preset.setEllipsize(TextUtils.TruncateAt.END);
+                        preset.setIncludeFontPadding(false);
+                        preset.setMinWidth(0);
+                        preset.setGravity(Gravity.CENTER);
+                        preset.setPadding(dp(8), dp(7), dp(8), dp(7));
+                        preset.setButtonDrawable(null);
+                        boolean selected = policy.key.equals(
+                            resolution.selectedResultPresetKey);
+                        preset.setChecked(selected);
+                        styleAlternateEntryResultPreset(preset, policy, selected);
+                        preset.setOnClickListener(view -> {
+                            if (alternateEntryEditingBlocked()) {
+                                refreshAlternateEntryUi();
+                                return;
+                            }
+                            synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+                                if (!alternateEntryExpansionAllowedLocked()) {
+                                    refreshAlternateEntryUi();
+                                    return;
+                                }
+                                alternateEntryToggleStates.clear();
+                                alternateEntryToggleStates.putAll(
+                                    policy.effectiveToggleStates);
+                                persistAlternateEntryDraftBestEffort();
+                            }
+                            refreshAlternateEntryUi();
+                        });
+                        RadioGroup.LayoutParams params = stacked
+                            ? new RadioGroup.LayoutParams(
+                                RadioGroup.LayoutParams.MATCH_PARENT, dp(68))
+                            : new RadioGroup.LayoutParams(0, dp(88), 1f);
+                        presets.addView(preset, params);
+                    }
+                    alternateEntryToggleList.addView(presets,
+                        new LinearLayout.LayoutParams(
+                            LinearLayout.LayoutParams.MATCH_PARENT,
+                            LinearLayout.LayoutParams.WRAP_CONTENT));
+                    return;
+                }
                 for (AlternateEntryRules.TogglePolicy policy : resolution.togglePolicies) {
                     CheckBox toggle = new CheckBox(this);
                     toggle.setText(policy.localizedLabel(lang));
@@ -3970,6 +4056,34 @@ public class MainActivity extends Activity {
                 alternateEntryToggleList.addView(invalid);
             }
         }
+    }
+
+    private void styleAlternateEntryResultPreset(
+            RadioButton button, AlternateEntryRules.ResultPresetPolicy policy,
+            boolean selected) {
+        Integer explicit = parseColor(policy.uiColor);
+        int color = explicit == null ? 0xFF0F766E : explicit;
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.RECTANGLE);
+        background.setCornerRadius(dp(8));
+        background.setColor(selected ? color : lightenColor(color));
+        background.setStroke(dp(2), selected ? color : lightenColor(color));
+        button.setBackground(background);
+        button.setTextColor(selected && !isLightColor(color)
+            ? 0xFFFFFFFF : 0xFF334155);
+    }
+
+    /** Applies the optional Panel presentation rule without changing the submitted preset code. */
+    private static String formatResultPresetLabel(String label, boolean splitOnPlus) {
+        if (!splitOnPlus || label == null) return label == null ? "" : label;
+        int plus = label.indexOf('+');
+        if (plus <= 0 || plus != label.lastIndexOf('+') || plus >= label.length() - 1) {
+            return label;
+        }
+        String before = label.substring(0, plus).trim();
+        String after = label.substring(plus + 1).trim();
+        return before.isEmpty() || after.isEmpty()
+            ? label : before + "\n+\n" + after;
     }
 
     private void exitAlternateEntryPage() {
@@ -4004,11 +4118,20 @@ public class MainActivity extends Activity {
                 return;
             }
             boolean keepBoundPendingData = hasAlternateEntryPendingData();
+            // The selected result/toggle vector is part of an unfinished record, just like its SN
+            // and photos. Persist that exact vector durably before leaving the page so a later
+            // logout or process restart cannot silently reinterpret the draft with defaults.
+            if (keepBoundPendingData && !saveAlternateEntryDraft(true)) {
+                alert(t("draft_save_failed"), t("alternate_entry_storage_locked_detail"));
+                return;
+            }
             alternateEntryPageOpen = false;
-            alternateEntryToggleStates.clear();
-            alternateEntryStateProfileId = "";
-            persistAlternateEntryDraftBestEffort();
-            if (!keepBoundPendingData) clearAlternateEntrySession(false);
+            if (!keepBoundPendingData) {
+                alternateEntryToggleStates.clear();
+                alternateEntryStateProfileId = "";
+                persistAlternateEntryDraftBestEffort();
+                clearAlternateEntrySession(false);
+            }
         }
         selectVisibleProfile(returnProfileId);
         saveLastProfile();
@@ -4991,11 +5114,32 @@ public class MainActivity extends Activity {
                     return;
                 }
                 if (finalResolution != null) {
-                    for (AlternateEntryRules.TogglePolicy policy
-                            : finalResolution.togglePolicies) {
-                        if (!policy.retainUntilExit) {
-                            alternateEntryToggleStates.put(policy.key,
-                                policy.defaultValue);
+                    if (!finalResolution.resultPresetPolicies.isEmpty()) {
+                        if (!finalResolution.retainResultPresetUntilExit
+                                && alternateEntrySourceProfile != null
+                                && alternateEntryConfig != null) {
+                            try {
+                                AlternateEntryRules.Resolution defaults =
+                                    preflightAlternateEntry(
+                                        alternateEntrySourceProfile,
+                                        alternateEntryCatalogSnapshot,
+                                        alternateEntryConfig,
+                                        Collections.emptyMap());
+                                alternateEntryToggleStates.clear();
+                                alternateEntryToggleStates.putAll(
+                                    defaults.effectiveToggleStates);
+                            } catch (RuntimeException invalid) {
+                                // The bound snapshot is immutable for this page. A failure here is
+                                // surfaced by the ordinary invalid-entry UI without inventing state.
+                            }
+                        }
+                    } else {
+                        for (AlternateEntryRules.TogglePolicy policy
+                                : finalResolution.togglePolicies) {
+                            if (!policy.retainUntilExit) {
+                                alternateEntryToggleStates.put(policy.key,
+                                    policy.defaultValue);
+                            }
                         }
                     }
                 }
@@ -14180,23 +14324,34 @@ public class MainActivity extends Activity {
         return RollbackMirrorRules.validJsonObject(raw);
     }
 
-    private boolean legacyRollbackPreferenceOwnedByActiveCatalog(
-            String logicalKey, String raw) {
+    private boolean legacyRollbackPreferenceOwnedByCatalog(
+            String logicalKey, String raw, JSONArray ownershipProfiles) {
         if (ROUND_LEDGER_KEY.equals(logicalKey)) {
-            return LegacyPanelStateMigrationRules.validRoundLedger(raw, allProfiles);
+            return LegacyPanelStateMigrationRules.validRoundLedger(raw, ownershipProfiles);
         }
         if (logicalKey.startsWith("prevRoundMissing_")) {
             return LegacyPanelStateMigrationRules.validPreviousRoundKey(
-                logicalKey, allProfiles);
+                logicalKey, ownershipProfiles);
         }
         if (logicalKey.startsWith(DAILY_STATS_PREFIX)) {
-            return LegacyPanelStateMigrationRules.validDailyStats(raw, allProfiles);
+            return LegacyPanelStateMigrationRules.validDailyStats(raw, ownershipProfiles);
         }
         return false;
     }
 
     /** Adopt only an exact receipt-proven signed-v1 change for this active Panel. */
     private String readAndMirrorRollbackPreference(String legacyKey, String fallback) {
+        return readAndMirrorRollbackPreference(legacyKey, fallback, null);
+    }
+
+    /**
+     * A catalog-matched candidate is accepted only for ledger/stat ownership. It never authorizes
+     * a draft, queue, session, remote operation, or the candidate itself; normal pair promotion
+     * still performs every config/key/revision/publication-proof check.
+     */
+    private String readAndMirrorRollbackPreference(
+            String legacyKey, String fallback,
+            PanelPairCacheCoordinator.ActivePair catalogMatchedCandidate) {
         String scopedKey = panelStatePreferenceKey(legacyKey);
         boolean hasScoped = prefs.contains(scopedKey);
         boolean hasLegacy = prefs.contains(legacyKey);
@@ -14210,13 +14365,17 @@ public class MainActivity extends Activity {
             || legacyKey.startsWith("prevRoundMissing_")
             || legacyKey.startsWith(DAILY_STATS_PREFIX);
         boolean legacyValid = validRollbackPreference(legacyKey, legacyRaw);
+        JSONArray ownershipProfiles = catalogMatchedCandidate == null
+            ? allProfiles : catalogMatchedCandidate.catalog.profiles;
         boolean legacyOwnedByActiveCatalog = initialLegacyKey && legacyValid
-            && legacyRollbackPreferenceOwnedByActiveCatalog(legacyKey, legacyRaw);
+            && legacyRollbackPreferenceOwnedByCatalog(
+                legacyKey, legacyRaw, ownershipProfiles);
         boolean exactPairReceipt = initialLegacyKey
-            && MainDraftSnapshotRules.verifiedLegacyMigrationReceipt(
-                legacyMainDraftMigrationReceipt(), currentConnectionNamespace(),
-                activeCatalogVersion, BuildConfig.VERSION_CODE,
-                currentPanelPairSha256());
+            && (catalogMatchedCandidate != null
+                || MainDraftSnapshotRules.verifiedLegacyMigrationReceipt(
+                    legacyMainDraftMigrationReceipt(), currentConnectionNamespace(),
+                    activeCatalogVersion, BuildConfig.VERSION_CODE,
+                    currentPanelPairSha256()));
         JSONObject adoptionReceipt = initialLegacyKey
             ? RollbackMirrorRules.initialLegacyAdoptionReceipt(
                 hasScoped, hasLegacy, legacyRaw, legacyOwnedByActiveCatalog,
@@ -14284,8 +14443,15 @@ public class MainActivity extends Activity {
 
     /** Bind legacy global state to the old/current Panel before cache or connection ownership moves. */
     private boolean reconcileLegacyPanelBoundState(boolean retireLegacyQueueFile) {
+        return reconcileLegacyPanelBoundState(retireLegacyQueueFile, null);
+    }
+
+    private boolean reconcileLegacyPanelBoundState(
+            boolean retireLegacyQueueFile,
+            PanelPairCacheCoordinator.ActivePair catalogMatchedCandidate) {
         loadDraftStore();
-        readAndMirrorRollbackPreference(ROUND_LEDGER_KEY, "[]");
+        readAndMirrorRollbackPreference(
+            ROUND_LEDGER_KEY, "[]", catalogMatchedCandidate);
         if (!migrateLegacyQueueBackupFile()) return false;
         List<String> dynamicKeys = new ArrayList<>();
         String scopedSuffix = "_" + currentConnectionNamespace();
@@ -14300,7 +14466,10 @@ public class MainActivity extends Activity {
                 if (!dynamicKeys.contains(logicalKey)) dynamicKeys.add(logicalKey);
             }
         }
-        for (String prefKey : dynamicKeys) readAndMirrorRollbackPreference(prefKey, "");
+        for (String prefKey : dynamicKeys) {
+            readAndMirrorRollbackPreference(
+                prefKey, "", catalogMatchedCandidate);
+        }
         if (!blockedRollbackMirrors.isEmpty()) return false;
         if (!rollbackPreferenceMirrored(DRAFT_STORE_KEY, "")
                 || !rollbackPreferenceMirrored(MANUAL_QUEUE_KEY, "")
@@ -14337,27 +14506,26 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Promotion is destructive to an unbound active cache: once overwritten, its legacy state can
-     * no longer acquire the exact prewarm receipt. Resolve every old mirror first and preserve all
-     * copies; an unsupported signed-v1 camera continuation also pins the old cache unchanged.
+     * Best-effort legacy-state migration before activating a newer Panel snapshot.
+     *
+     * <p>Old App releases stored statistics and round ledgers without a Panel namespace. Those
+     * values are useful when they can be attributed, but they must not make a valid Panel
+     * permanently unusable. Keep all recoverable copies and diagnostics, then allow promotion even
+     * when an old mirror cannot be attributed to the current catalog. Active drafts, submissions,
+     * camera results and remote side effects are still blocked by the surrounding safe-boundary
+     * checks.</p>
      */
     private boolean legacyPanelStateReadyForCachePromotion() {
-        boolean resolved = reconcileLegacyPanelBoundState(false);
-        Map<String, ?> settings;
-        try {
-            settings = prefs.getAll();
-        } catch (RuntimeException unreadable) {
-            Diagnostics.append(this, "Legacy upgrade state unreadable; cache promotion blocked");
-            return false;
-        }
-        boolean allowed = LegacyUpgradeSafetyRules.cachePromotionAllowed(resolved, settings);
-        if (!allowed) {
+        PanelPairCacheCoordinator.ActivePair catalogMatchedCandidate =
+            PanelPairCacheCoordinator.loadCandidatePairMatchingLegacyActiveCatalog(
+                this, currentConnectionNamespace());
+        boolean resolved = reconcileLegacyPanelBoundState(
+            false, catalogMatchedCandidate);
+        if (!resolved) {
             Diagnostics.append(this,
-                LegacyUpgradeSafetyRules.pendingAStepEvidence(settings)
-                    ? "Legacy A-step continuation retained; cache promotion blocked"
-                    : "Unbound legacy Panel state retained; cache promotion blocked");
+                "Unbound legacy Panel state retained; cache promotion allowed");
         }
-        return allowed;
+        return true;
     }
 
     private boolean legacyAStepContinuationPresent() {
@@ -14723,8 +14891,24 @@ public class MainActivity extends Activity {
 
     private String inputPlaceholder(boolean secondary) {
         JSONObject plugin = snPlugin(secondary ? "secondary" : "primary");
-        String value = plugin == null ? "" : plugin.optString("placeholder", "").trim();
-        return value.isEmpty() ? inputLabel(secondary) : value;
+        return inputPlaceholder(plugin, inputLabel(secondary));
+    }
+
+    private String inputPlaceholder(JSONObject plugin, String fallback) {
+        if (plugin == null) return fallback;
+        String value = localized(plugin, "placeholder", "placeholderI18n").trim();
+        if (value.isEmpty()) return fallback;
+
+        // Template conversion historically emitted the generic Chinese placeholder below without
+        // translations. Keep those already-published profiles readable in English and Spanish,
+        // while still letting a Panel-authored custom placeholder (and placeholderI18n) win.
+        JSONObject translations = plugin.optJSONObject("placeholderI18n");
+        boolean hasCurrentTranslation = translations != null
+            && !translations.optString(lang, "").trim().isEmpty();
+        if (!"zh".equals(lang) && !hasCurrentTranslation && "请输入".equals(value)) {
+            return t("input_placeholder");
+        }
+        return value;
     }
 
     private String requiredInputMessage(boolean secondary) {
@@ -15585,9 +15769,7 @@ public class MainActivity extends Activity {
                 || hasPendingAlternateEntryAsyncReservationEvidence()) {
             return false;
         }
-        // This check must precede candidate promotion. Without an exact prewarm receipt, replacing
-        // the old unbound cache would make its draft/queue/ledger permanently impossible to bind.
-        // It also leaves every signed-v1 A-step continuation key/path byte-for-byte untouched.
+        // Legacy, unscoped statistics are migrated when possible but never block a valid Panel.
         if (!legacyPanelStateReadyForCachePromotion()) return false;
         if (manualQueueRecoveryEvidencePresent()) return false;
         return totalUnsubmittedDraftUnitCount(loadDraftStore()) == 0;
@@ -17864,6 +18046,7 @@ public class MainActivity extends Activity {
             case "scan_sn": return "\u626b\u7801/\u8bc6\u522b SN";
             case "ocr_sn": return "拍照识别";
             case "add": return "加入";
+            case "input_placeholder": return "请输入";
             case "scan_base": return "\u626b\u7801/\u8bc6\u522b\u6b21\u8981\u6807\u8bc6";
             case "ocr_base": return "拍照识别";
             case "match": return "匹配";
@@ -18279,6 +18462,7 @@ public class MainActivity extends Activity {
             case "scan_sn": return "Scan/read SN";
             case "ocr_sn": return "Photo OCR";
             case "add": return "Add";
+            case "input_placeholder": return "Enter";
             case "scan_base": return "Scan/read secondary identifier";
             case "ocr_base": return "Photo OCR";
             case "match": return "Match";
@@ -18694,6 +18878,7 @@ public class MainActivity extends Activity {
             case "scan_sn": return "Escanear/leer SN";
             case "ocr_sn": return "OCR foto";
             case "add": return "Agregar";
+            case "input_placeholder": return "Introduzca";
             case "scan_base": return "Escanear/leer identificador secundario";
             case "ocr_base": return "OCR foto";
             case "match": return "Asignar";

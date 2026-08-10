@@ -1054,6 +1054,22 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
       }catch(error){ alert("实时模板 provider 必须是合法且封闭的 JSON："+error.message); render(); } };
       dynamicBox.appendChild(dynamicEditor); card.appendChild(dynamicBox);
 
+      const presetBox=document.createElement("div"); presetBox.style.cssText="border:1px dashed var(--line);border-radius:7px;padding:8px;margin-top:8px";
+      const presetLabel=document.createElement("label"); presetLabel.textContent="互斥结果预设（可选，等宽按钮）"; presetBox.appendChild(presetLabel);
+      const presetHint=document.createElement("div"); presetHint.className="muted"; presetHint.style.cssText="font-size:12px;margin:4px 0 7px";
+      presetHint.textContent="配置后 App 只显示这些互斥按钮，普通 toggle 作为每个预设的底层动作。showCodes 控制短代码是否显示；splitLabelsOnPlus 可把唯一加号单独排成一行（两项不能同时为 true）。按钮文案/翻译、颜色、结果、底层 toggle 与字段覆盖全部由 Panel 决定；留空保持原有复选框界面。"; presetBox.appendChild(presetHint);
+      const presetEditor=document.createElement("textarea"); presetEditor.rows=14; presetEditor.style.width="100%"; presetEditor.spellcheck=false;
+      presetEditor.placeholder='{"defaultKey":"appearance","retainUntilExit":true,"showCodes":false,"splitLabelsOnPlus":true,"items":[{"key":"appearance","code":"A","label":"外观","uiColor":"#16A34A","resultKey":"A","activeToggleKeys":[],"dataOverrides":{}},{"key":"function","code":"C","label":"功能","uiColor":"#DC2626","resultKey":"A","activeToggleKeys":["functional"],"dataOverrides":{}}]}';
+      presetEditor.value=entry.resultPresets?JSON.stringify(entry.resultPresets,null,2):"";
+      presetEditor.onchange=()=>{ try{
+        const raw=presetEditor.value.trim(); const next=entries();
+        if(!raw){ delete next[index].resultPresets; save(next,true); return; }
+        const parsed=JSON.parse(raw);
+        if(!parsed||typeof parsed!=="object"||Array.isArray(parsed)) throw new Error("必须是 JSON 对象");
+        next[index].resultPresets=parsed; save(next,true);
+      }catch(error){ alert("互斥结果预设必须是合法 JSON："+error.message); render(); } };
+      presetBox.appendChild(presetEditor); card.appendChild(presetBox);
+
       const flags=document.createElement("div"); flags.className="row"; flags.style.marginTop="8px";
       flags.appendChild(fixedFlag("独立入口：重复检查",entry.flags?.duplicateCheck));
       flags.appendChild(fixedFlag("独立入口：前置步骤",entry.flags?.previousSteps));
@@ -1195,6 +1211,13 @@ function snPluginsEditor(p){
   rows.forEach(({pl,shown})=>{
     const r=document.createElement("div"); r.className="slot"; if(!shown) r.style.opacity="0.55";
     r.appendChild(field("框名称"+(shown?"":"（已隐藏）"), inputCtl(pl.label||"", v=>{ pl.label=v; sync(); }), "g"));
+    const placeholder=inputCtl(pl.placeholder||"",v=>{
+      if(v) pl.placeholder=v; else delete pl.placeholder;
+      delete pl.placeholderI18n;
+      sync();
+    });
+    placeholder.placeholder="留空=沿用框名称；发布时自动补英语/西班牙语";
+    r.appendChild(field("输入框提示",placeholder,"g"));
     const toggles=document.createElement("div"); toggles.className="row"; toggles.style.cssText="flex-basis:100%;gap:14px;margin-top:2px";
     if(pl.key==="primary"){ const b=document.createElement("span"); b.className="muted"; b.style.fontSize="12px"; b.textContent="（主要标识·常驻）"; toggles.appendChild(b); }
     else toggles.appendChild(swField("显示", shown, on=>{

@@ -70,6 +70,24 @@ test("complete fictional primary and secondary scanner policies validate", () =>
   assert.deepEqual(validateFormProfile(profileWithScanner()), []);
 });
 
+test("identifier placeholders accept Panel-owned en/es translations", () => {
+  const profile = profileWithScanner();
+  profile.snPlugins[0].placeholder = "请输入";
+  profile.snPlugins[0].placeholderI18n = { en: "Enter", es: "Introduzca" };
+  assert.deepEqual(validateFormProfile(profile), []);
+
+  profile.snPlugins[0].placeholder = "";
+  profile.snPlugins[0].placeholderI18n = { en: "", es: "" };
+  assert.deepEqual(validateFormProfile(profile), []);
+
+  profile.snPlugins[0].placeholder = false;
+  profile.snPlugins[0].placeholderI18n = { fr: "Saisir" };
+  const errors = validateFormProfile(profile);
+  assert.ok(errors.includes("snPlugins[0].placeholder must be a string"));
+  assert.ok(errors.includes(
+    "snPlugins[0].placeholderI18n.fr is not a supported language (only en/es)"));
+});
+
 test("new explicit scan routes fail closed when their scanner policy is missing", () => {
   const profile = profileWithScanner();
   delete profile.snPlugins[0].scanner;

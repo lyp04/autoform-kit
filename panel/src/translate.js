@@ -12,6 +12,8 @@ const TRANSLATE = [
   { container: (p) => p.materials, srcKey: "name", i18nKey: "nameI18n" },
   { container: (p) => p.snPlugins, srcKey: "label", i18nKey: "labelI18n" },
   { container: (p) => p.snPluginsHidden, srcKey: "label", i18nKey: "labelI18n" },
+  { container: (p) => p.snPlugins, srcKey: "placeholder", i18nKey: "placeholderI18n" },
+  { container: (p) => p.snPluginsHidden, srcKey: "placeholder", i18nKey: "placeholderI18n" },
   { container: (p) => p.choiceFields, srcKey: "title", i18nKey: "titleI18n" },
   { container: (p) => p.operationFields, srcKey: "title", i18nKey: "titleI18n" },
   { container: (p) => p.conditionalFields, srcKey: "title", i18nKey: "titleI18n" },
@@ -32,6 +34,13 @@ const TRANSLATE = [
   {
     container: (p) => (p.workflow?.alternateEntries?.entries || [])
       .flatMap((entry) => Array.isArray(entry?.toggles) ? entry.toggles : []),
+    srcKey: "label",
+    i18nKey: "labelI18n"
+  },
+  {
+    container: (p) => (p.workflow?.alternateEntries?.entries || [])
+      .flatMap((entry) => Array.isArray(entry?.resultPresets?.items)
+        ? entry.resultPresets.items : []),
     srcKey: "label",
     i18nKey: "labelI18n"
   }
