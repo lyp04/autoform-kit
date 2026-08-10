@@ -170,7 +170,7 @@ public class LegacyPanelStateMigrationWiringTest {
             "List<JSONObject> rounds = loadRecentRounds(3, context.binding.profileId)");
         int blockedCheck = method.indexOf(
             "blockedRollbackMirrors.contains(ROUND_LEDGER_KEY)");
-        int printerGet = method.indexOf("context.api.printerState()");
+        int printerGet = method.indexOf("BackendAdapter.ENDPOINT_PRINTER_STATE");
         int serialWalk = method.indexOf("verifyRoundAgainstCloud(");
         assertTrue(localRead >= 0);
         assertTrue(blockedCheck > localRead);

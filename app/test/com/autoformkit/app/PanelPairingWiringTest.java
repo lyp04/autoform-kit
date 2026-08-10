@@ -241,6 +241,12 @@ public class PanelPairingWiringTest {
         assertTrue(redeemer.contains("HttpsURLConnection"));
         assertTrue(redeemer.contains("new URL(request.redeemUrl())"));
         assertTrue(redeemer.contains("\"https\".equalsIgnoreCase(endpoint.getProtocol())"));
+        // Android's ICU regex engine does not accept Java's \\z anchor on every supported API.
+        // Matcher.matches() already anchors the whole response, so platform-specific anchors must
+        // never be reintroduced into the static initializer (which would crash before redemption).
+        assertFalse(redeemer.contains("\\\\A"));
+        assertFalse(redeemer.contains("\\\\z"));
+        assertEquals(2, count(redeemer, "\\\\}"));
         assertTrue(redeemer.contains("setInstanceFollowRedirects(false)"));
         assertTrue(redeemer.contains("setConnectTimeout(CONNECT_TIMEOUT_MS)"));
         assertTrue(redeemer.contains("setReadTimeout(READ_TIMEOUT_MS)"));

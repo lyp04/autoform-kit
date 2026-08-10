@@ -26,7 +26,7 @@ public class HttpRedirectWiringTest {
             "conn.setRequestProperty(\"Authorization\"");
 
         for (String method : new String[]{"AuthState checkAuth(",
-                "JSONObject getJson(String path, String query, boolean webLoginClient, int connectTimeoutMs, int readTimeoutMs)",
+                "private JSONObject getJson(String path, String query, boolean webLoginClient,",
                 "JSONObject postJson(", "JSONObject postEndpointJsonExact(",
                 "JSONObject postForm(String path, JSONObject form, boolean webLoginClient)",
                 "String uploadImage("}) {
@@ -67,7 +67,7 @@ public class HttpRedirectWiringTest {
     private static String firstIoMarker(String body) {
         int output = body.indexOf("conn.getOutputStream()");
         int response = body.indexOf("conn.getResponseCode()");
-        int readJson = body.indexOf("readJson(conn)");
+        int readJson = body.indexOf("readJson(conn");
         int best = Integer.MAX_VALUE;
         String marker = null;
         if (output >= 0 && output < best) {
@@ -79,7 +79,7 @@ public class HttpRedirectWiringTest {
             marker = "conn.getResponseCode()";
         }
         if (readJson >= 0 && readJson < best) {
-            marker = "readJson(conn)";
+            marker = "readJson(conn";
         }
         if (marker == null) throw new AssertionError("network I/O marker missing");
         return marker;

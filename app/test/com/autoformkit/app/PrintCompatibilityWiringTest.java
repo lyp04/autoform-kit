@@ -84,4 +84,35 @@ public class PrintCompatibilityWiringTest {
         assertFalse(retry.contains("PRINT_BATCH_END_INLINE_ONLY"));
         assertFalse(retry.contains("PRINT_UNKNOWN_PRESENTATION_AS_ONGOING"));
     }
+
+    @Test
+    public void lookupFailuresAreNeverReportedAsMissingPrintJobs() throws Exception {
+        String source = mainActivitySource();
+        String inline = section(source,
+            "private PrintConfirmationRules.Result confirmPrintInline(",
+            "private void recheckDeferredPrintsAtBatchEnd(");
+        String deferred = section(source,
+            "private PrintConfirmationRules.Result recheckDeferredPrintUnit(",
+            "private void markRoundLedgerPrinted(");
+        String reconcile = section(source,
+            "private void verifyRoundAgainstCloud(",
+            "private void confirmAndRetryPrint(");
+
+        assertTrue(inline.contains("outcomeUncertain = true"));
+        assertTrue(inline.contains(
+            "confirmedPrinted, jobEverSeen, outcomeUncertain"));
+        assertTrue(deferred.contains(
+            "return PrintConfirmationRules.Result.UNCERTAIN;"));
+        assertFalse(deferred.contains(
+            "? PrintConfirmationRules.Result.MISSING"));
+        assertTrue(reconcile.contains("Print-job query failed:"));
+        assertFalse(reconcile.contains("catch (Exception ignored)"));
+
+        String lookup = section(source,
+            "private PrintJobLookup latestPrintJobForSn(",
+            "private boolean resolveConfirmedPrintedReprint(");
+        assertTrue(lookup.contains("api.getPrintJobs("));
+        assertTrue(lookup.contains("isJobsResponseSuccess("));
+        assertTrue(lookup.contains("Print-job response has no configured jobs array"));
+    }
 }

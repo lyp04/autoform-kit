@@ -2065,6 +2065,7 @@ final class BackendAdapter {
 
     static final class Printing {
         final boolean enabled;
+        final boolean allowJobsArrayWhenCodeMissing;
         final String onlineStatusPath;
         final Set<String> onlineValues;
         final String jobsPath;
@@ -2081,12 +2082,14 @@ final class BackendAdapter {
         final Set<String> ongoingValues;
         final String retryIdField;
 
-        private Printing(boolean enabled, String onlineStatusPath, Set<String> onlineValues,
+        private Printing(boolean enabled, boolean allowJobsArrayWhenCodeMissing,
+                         String onlineStatusPath, Set<String> onlineValues,
                          String jobsPath, String serialQueryParam, String pageQueryParam, int firstPage,
                          String idField, String serialField, String typeField, String statusField,
                          Set<String> acceptedTypeValues, Set<String> printedValues,
                          Set<String> failedValues, Set<String> ongoingValues, String retryIdField) {
             this.enabled = enabled;
+            this.allowJobsArrayWhenCodeMissing = allowJobsArrayWhenCodeMissing;
             this.onlineStatusPath = onlineStatusPath;
             this.onlineValues = immutableSet(onlineValues);
             this.jobsPath = jobsPath;
@@ -2105,7 +2108,7 @@ final class BackendAdapter {
         }
 
         static Printing disabled() {
-            return new Printing(false, "", Collections.emptySet(), "", "", "", 1,
+            return new Printing(false, false, "", Collections.emptySet(), "", "", "", 1,
                 "", "", "", "", Collections.emptySet(), Collections.emptySet(),
                 Collections.emptySet(), Collections.emptySet(), "");
         }
@@ -2116,6 +2119,13 @@ final class BackendAdapter {
             JSONObject queryJson = json.optJSONObject("query");
             JSONObject fieldsJson = json.optJSONObject("fields");
             JSONObject valuesJson = json.optJSONObject("values");
+            Object rawCodeMissingJobs = json.opt("allowJobsArrayWhenCodeMissing");
+            boolean allowCodeMissingJobs = rawCodeMissingJobs instanceof Boolean
+                && (Boolean) rawCodeMissingJobs;
+            if (rawCodeMissingJobs != null && rawCodeMissingJobs != JSONObject.NULL
+                    && !(rawCodeMissingJobs instanceof Boolean)) {
+                errors.add("backendAdapter.printing.allowJobsArrayWhenCodeMissing");
+            }
             String onlinePath = text(onlineJson, "statusPath");
             String jobsPath = text(json, "jobsPath");
             String serialParam = text(queryJson, "serialParam");
@@ -2152,7 +2162,8 @@ final class BackendAdapter {
                     }
                 }
             }
-            return new Printing(true, onlinePath, online, jobsPath, serialParam, pageParam,
+            return new Printing(true, allowCodeMissingJobs,
+                onlinePath, online, jobsPath, serialParam, pageParam,
                 Math.max(0, queryJson == null ? 1 : queryJson.optInt("pageStart", 1)),
                 id, serial, type, status,
                 acceptedTypes, printed, failed, ongoing, retryId);
@@ -2165,6 +2176,21 @@ final class BackendAdapter {
         JSONArray jobs(JSONObject response) {
             Object value = valueAt(response, jobsPath);
             return value instanceof JSONArray ? (JSONArray) value : null;
+        }
+
+        /**
+         * Optional legacy compatibility for this read-only endpoint only. An explicit response
+         * code always wins; a code-less response is accepted only when the Panel opted in, the
+         * configured jobs path is an array, and no configured error-message path is populated.
+         */
+        boolean isJobsResponseSuccess(JSONObject body, Response response) {
+            if (response == null) return false;
+            if (response.isSuccess(body)) return true;
+            if (!allowJobsArrayWhenCodeMissing || body == null) return false;
+            Object code = response.code(body);
+            return (code == null || code == JSONObject.NULL)
+                && !response.hasConfiguredMessage(body)
+                && jobs(body) != null;
         }
 
         boolean accepts(JSONObject job) {

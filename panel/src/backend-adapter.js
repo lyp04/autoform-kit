@@ -1670,8 +1670,12 @@ function validatePrinting(adapter, errors) {
     return;
   }
   allowOnly(errors, printing,
-    ["enabled", "online", "jobsPath", "query", "fields", "values", "retryIdField"], "printing");
+    ["enabled", "allowJobsArrayWhenCodeMissing", "online", "jobsPath", "query", "fields", "values", "retryIdField"], "printing");
   if (typeof printing.enabled !== "boolean") errors.push("printing.enabled must be a boolean");
+  if (printing.allowJobsArrayWhenCodeMissing !== undefined
+      && typeof printing.allowJobsArrayWhenCodeMissing !== "boolean") {
+    errors.push("printing.allowJobsArrayWhenCodeMissing must be a boolean");
+  }
   if (printing.enabled !== true) {
     if (isPlainObject(printing.online)) {
       allowOnly(errors, printing.online, ["statusPath", "values"], "printing.online");

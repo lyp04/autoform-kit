@@ -8376,6 +8376,10 @@ public class MainActivity extends Activity {
     private static final int PRINT_STATUS_FAILED = 2;
     private static final int PRINT_STATUS_ONGOING = 3;
     private static final int PRINT_STATUS_UNKNOWN = 4;
+    // A print-status screen must fail visibly and release its worker promptly when the backend is
+    // unavailable. The generic API timeout is intentionally much longer for uploads/submissions.
+    private static final int PRINT_LOOKUP_CONNECT_TIMEOUT_MS = 10_000;
+    private static final int PRINT_LOOKUP_READ_TIMEOUT_MS = 20_000;
     private static final String REMOTE_PRINT_STATUS_KEY = "remotePrintStatus";
     private static final String REMOTE_PRINT_ID_KEY = "remotePrintId";
     // Read-only compatibility for ledgers written by v1.0.6; new writes use neutral names above.
@@ -8522,11 +8526,12 @@ public class MainActivity extends Activity {
         try {
             context = capturePrintRemoteContext(0L, "ledger");
         } catch (Exception error) {
-            toast(t("print_reconcile_binding_changed"));
+            toast(t("print_reconcile_failed") + conciseError(error));
             return;
         }
         if (!beginPrintRemoteWorker(context)) {
-            toast(t("print_reconcile_binding_changed"));
+            toast(submitting || profileOwnedRemoteWorkerActive()
+                ? t("print_reconcile_loading") : t("print_reconcile_binding_changed"));
             return;
         }
         runOnUiThread(() -> {
@@ -8551,7 +8556,9 @@ public class MainActivity extends Activity {
                 boolean online = false;
                 String note = "";
                 try {
-                    JSONObject st = context.api.printerState();
+                    JSONObject st = context.api.getEndpointJson(
+                        BackendAdapter.ENDPOINT_PRINTER_STATE, "", true,
+                        PRINT_LOOKUP_CONNECT_TIMEOUT_MS, PRINT_LOOKUP_READ_TIMEOUT_MS);
                     requirePrintRemoteBinding(context, context.binding, 0L, "ledger",
                         "printer-state response");
                     JSONObject d = context.api.apiDataObject(st);
@@ -8599,9 +8606,16 @@ public class MainActivity extends Activity {
             } catch (Exception error) {
                 Diagnostics.append(this, "Print reconciliation stopped: "
                     + conciseError(error));
+                final String failure = t("print_reconcile_failed") + conciseError(error);
                 runOnUiThread(() -> {
-                    if (!activityAlive() || !printRemoteBindingStillCurrent(context)) return;
-                    toast(t("print_reconcile_binding_changed"));
+                    if (!activityAlive()) return;
+                    if (!printRemoteBindingStillCurrent(context)) {
+                        toast(t("print_reconcile_binding_changed"));
+                        return;
+                    }
+                    header.setText(failure);
+                    list.removeAllViews();
+                    toast(failure);
                 });
             } finally {
                 endPrintRemoteWorker();
@@ -9209,9 +9223,11 @@ public class MainActivity extends Activity {
                     u.put(REMOTE_PRINT_STATUS_KEY, canonicalPrintStatus(context.api, job));
                     u.put(REMOTE_PRINT_ID_KEY, returnedJobId);
                 }
-            } catch (IOException bindingChanged) {
-                throw bindingChanged;
-            } catch (Exception ignored) {
+            } catch (Exception error) {
+                if (!printRemoteBindingStillCurrent(context)) {
+                    throw new IOException("Print binding changed during remote verification", error);
+                }
+                throw new IOException("Print-job query failed: " + conciseError(error), error);
             }
             final int d = ++progress[0];
             runOnUiThread(() -> {
@@ -9327,14 +9343,14 @@ public class MainActivity extends Activity {
             PrintRemoteContext context, UnitRecord unit, boolean deferMissingJob)
             throws BackendSessionErrors.SessionInvalidException {
         if (context == null || unit == null || unit.sn == null || unit.sn.isEmpty()) {
-            return PrintConfirmationRules.Result.MISSING;
+            return PrintConfirmationRules.Result.UNCERTAIN;
         }
         String sn = unit.sn;
         ProfileWorkflow workflow = context.workflow;
         Api api = context.api;
         boolean confirmedPrinted = false; // only a real status==1 clears this — everything else is a potential lost unit
         boolean jobEverSeen = false;      // distinguishes "printer offline, job never created" from "job exists but failed"
-        boolean reprintOutcomeUncertain = false;
+        boolean outcomeUncertain = false;
         int reprints = 0;
         try {
             for (int poll = 1; poll <= workflow.printingConfirmationPolls; poll++) {
@@ -9363,14 +9379,16 @@ public class MainActivity extends Activity {
                                 "inline reprint response");
                         } catch (ReprintOutcomeUncertainException
                                  | ReprintJournalLockedException uncertain) {
-                            reprintOutcomeUncertain = true;
+                            outcomeUncertain = true;
                             appendUnitLog(unit, t("inline_reprint_uncertain"));
                             break;
                         } catch (Exception error) {
                             BackendSessionErrors.SessionInvalidException invalid =
                                     BackendSessionErrors.find(error);
                             if (invalid != null) throw invalid;
-                            appendUnitLog(unit, t("print_reconcile_binding_changed"));
+                            outcomeUncertain = true;
+                            appendUnitLog(unit,
+                                t("print_reconcile_failed") + conciseError(error));
                             break;
                         }
                     }
@@ -9379,18 +9397,21 @@ public class MainActivity extends Activity {
             }
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
+            outcomeUncertain = true;
         } catch (Exception error) {
             BackendSessionErrors.SessionInvalidException invalid = BackendSessionErrors.find(error);
             if (invalid != null) throw invalid;
-            appendUnitLog(unit, t("print_reconcile_binding_changed"));
+            outcomeUncertain = true;
+            appendUnitLog(unit, t("print_reconcile_failed") + conciseError(error));
         }
         if (confirmedPrinted && !printRemoteBindingStillCurrent(context)) {
             // A stale callback cannot turn the durable ledger green.
             confirmedPrinted = false;
             jobEverSeen = true;
+            outcomeUncertain = true;
         }
         PrintConfirmationRules.Result result = PrintConfirmationRules.classify(
-            confirmedPrinted, jobEverSeen, reprintOutcomeUncertain);
+            confirmedPrinted, jobEverSeen, outcomeUncertain);
         if (result == PrintConfirmationRules.Result.FAILED) {
             appendUnitLog(unit, String.format(java.util.Locale.ROOT,
                 t("inline_reprint_gaveup"), workflow.printingMaxAutoReprints));
@@ -9477,7 +9498,7 @@ public class MainActivity extends Activity {
                 Thread.sleep(delay);
             } catch (InterruptedException interrupted) {
                 Thread.currentThread().interrupt();
-                return PrintConfirmationRules.Result.MISSING;
+                return PrintConfirmationRules.Result.UNCERTAIN;
             }
         }
         if (!printRemoteBindingStillCurrent(context)) {
@@ -9514,9 +9535,7 @@ public class MainActivity extends Activity {
             if (finalAttempt) {
                 appendUnitLog(unit, t("print_reconcile_failed") + conciseError(error));
             }
-            return printRemoteBindingStillCurrent(context)
-                ? PrintConfirmationRules.Result.MISSING
-                : PrintConfirmationRules.Result.UNCERTAIN;
+            return PrintConfirmationRules.Result.UNCERTAIN;
         }
     }
 
@@ -9587,13 +9606,17 @@ public class MainActivity extends Activity {
     }
 
     private PrintJobLookup latestPrintJobForSn(Api api, String sn) throws Exception {
-        JSONObject body = api.getEndpointJson(BackendAdapter.ENDPOINT_MESSAGE_LIST,
-            api.endpoints.printing.jobQuery(enc(sn)));
-        if (!api.isSuccess(body)) {
+        JSONObject body = api.getPrintJobs(
+            api.endpoints.printing.jobQuery(enc(sn)),
+            PRINT_LOOKUP_CONNECT_TIMEOUT_MS, PRINT_LOOKUP_READ_TIMEOUT_MS);
+        if (!api.endpoints.printing.isJobsResponseSuccess(
+                body, api.endpoints.response)) {
             throw new IOException(api.apiErrorMessage(body));
         }
         JSONArray data = api.endpoints.printing.jobs(body);
-        if (data == null) return new PrintJobLookup(body, null);
+        if (data == null) {
+            throw new IOException("Print-job response has no configured jobs array");
+        }
         JSONObject best = null;
         for (int i = 0; i < data.length(); i++) {
             JSONObject it = data.optJSONObject(i);
@@ -18894,6 +18917,10 @@ public class MainActivity extends Activity {
             void require(String phase) throws Exception;
         }
 
+        private interface ResponseSuccessRule {
+            boolean isSuccess(JSONObject body);
+        }
+
         private static void requireStage(OperationStageGuard guard, String phase)
                 throws Exception {
             if (guard != null) guard.require(phase);
@@ -19053,17 +19080,31 @@ public class MainActivity extends Activity {
                 connectTimeoutMs, readTimeoutMs);
         }
 
+        JSONObject getPrintJobs(String query, int connectTimeoutMs, int readTimeoutMs)
+                throws Exception {
+            return getJson(endpoints.requireEndpoint(BackendAdapter.ENDPOINT_MESSAGE_LIST),
+                query, true, connectTimeoutMs, readTimeoutMs,
+                body -> endpoints.printing.isJobsResponseSuccess(body, endpoints.response));
+        }
+
         JSONObject getJson(String path, String query, boolean webLoginClient) throws Exception {
             return getJson(path, query, webLoginClient, 30000, 120000);
         }
 
         JSONObject getJson(String path, String query, boolean webLoginClient, int connectTimeoutMs, int readTimeoutMs) throws Exception {
+            return getJson(path, query, webLoginClient, connectTimeoutMs, readTimeoutMs,
+                this::isSuccess);
+        }
+
+        private JSONObject getJson(String path, String query, boolean webLoginClient,
+                                   int connectTimeoutMs, int readTimeoutMs,
+                                   ResponseSuccessRule successRule) throws Exception {
             return executeReadOnlyWithTransientRetry(() -> {
                 URL url = absoluteUrl(path, query);
                 HttpURLConnection conn = (HttpURLConnection) url.openConnection();
                 conn.setRequestMethod("GET");
                 addHeaders(conn, webLoginClient, connectTimeoutMs, readTimeoutMs);
-                return readJson(conn);
+                return readJson(conn, successRule);
             });
         }
 
@@ -19358,6 +19399,11 @@ public class MainActivity extends Activity {
         }
 
         JSONObject readJson(HttpURLConnection conn) throws Exception {
+            return readJson(conn, this::isSuccess);
+        }
+
+        JSONObject readJson(HttpURLConnection conn, ResponseSuccessRule successRule)
+                throws Exception {
             int status = conn.getResponseCode();
             InputStream input = status >= 400 ? conn.getErrorStream() : conn.getInputStream();
             HttpResponseStatusRules.Action statusAction = HttpResponseStatusRules.beforeJson(
@@ -19401,15 +19447,17 @@ public class MainActivity extends Activity {
             }
             try {
                 JSONObject body = new JSONObject(text);
+                boolean configuredSuccess = successRule != null
+                    && successRule.isSuccess(body);
                 if (!HttpResponseStatusRules.allowsConfiguredSuccess(status)
-                        && isSuccess(body)) {
+                        && configuredSuccess) {
                     // Keep the status/body contradiction fail-closed. Structured HTTP errors are
                     // still returned below when they are non-success so Panel-owned rejection
                     // classifiers can distinguish a definite business rejection from uncertainty.
                     throw new IOException("HTTP " + status
                         + " conflicts with the configured success response");
                 }
-                if (!isSuccess(body) && BackendSessionErrors.isInvalidStructuredResponse(
+                if (!configuredSuccess && BackendSessionErrors.isInvalidStructuredResponse(
                         body, endpoints.response, endpoints.sessionInvalidPolicy)) {
                     throw new BackendSessionErrors.SessionInvalidException(apiErrorMessage(body));
                 }

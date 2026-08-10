@@ -447,6 +447,7 @@ App 只对文本日期按顺序应用 `dateTransforms`，纯整数不经过文�
 - 三个 printing endpoint；
 - `online.statusPath` 与非空 `online.values`；
 - `jobsPath`；
+- 可选布尔值 `allowJobsArrayWhenCodeMissing`；
 - `query.serialParam`、`pageParam`、非负整数 `pageStart`；
 - `fields.id/serial/type/status`；
 - `values.acceptedTypes/printed/failed/ongoing`；
@@ -454,6 +455,11 @@ App 只对文本日期按顺序应用 `dateTransforms`，纯整数不经过文�
 
 打印 v1 还有以下运行前提：
 
+- `allowJobsArrayWhenCodeMissing` 默认 `false`。只有私有 replay 证明 `messageList` 的 HTTP 2xx
+  成功响应会省略 `response.codeField` 时才能设为 `true`；此时 App 仍要求 code 确实缺失、
+  `jobsPath` 精确指向数组且所有 `response.messageFields` 为空。显式 code、HTTP 非 2xx、
+  非数组或错误消息都不能由该开关转成成功。该兼容只作用于只读 `messageList`，不影响提交、
+  上传或 `labelRetry` POST。
 - `online.values`、`acceptedTypes`、`printed`、`failed`、`ongoing` 都必须非空；三个状态集合必须互不重叠，未知状态保持“未确认”，不能同时归入成功与失败。
 - `fields.serial` 必须能与当前 profile 的主标识进行**精确字符串匹配**。公共 App 不做模糊匹配、前缀匹配或部署特有规范化。
 - `fields.id` 必须是正数值或可无损解析为正整数的字符串，并在同一标识的任务中单调递增；App 以最大 ID 选择最新的已接受任务，补打也按这个 ID 发送。

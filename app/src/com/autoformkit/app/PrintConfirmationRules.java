@@ -6,7 +6,7 @@ final class PrintConfirmationRules {
         PRINTED,
         FAILED,
         MISSING,
-        /** A reprint POST may have reached the server; do not issue another automatic POST. */
+        /** A status lookup failed, or a reprint POST may have reached the server. */
         UNCERTAIN
     }
 
@@ -18,9 +18,9 @@ final class PrintConfirmationRules {
     }
 
     static Result classify(boolean confirmedPrinted, boolean jobEverSeen,
-                           boolean reprintOutcomeUncertain) {
+                           boolean outcomeUncertain) {
         if (confirmedPrinted) return Result.PRINTED;
-        if (reprintOutcomeUncertain) return Result.UNCERTAIN;
+        if (outcomeUncertain) return Result.UNCERTAIN;
         return jobEverSeen ? Result.FAILED : Result.MISSING;
     }
 

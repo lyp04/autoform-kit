@@ -34,17 +34,20 @@ final class PanelPairingRedeemer {
     private static final int MAX_ACCESS_KEY_LENGTH = 4096;
     // Strict two-field JSON object. Bearer credentials use RFC 6750's b64token alphabet, so no
     // JSON escaping is needed and duplicate/trailing fields cannot hide behind lenient parsers.
+    // Matcher.matches() supplies whole-input anchoring. Keep both JSON braces explicitly escaped:
+    // Android's ICU regex parser is stricter than the desktop JDK about Java-only anchors and a
+    // bare closing brace, and a static-pattern failure would crash the first pairing attempt.
     private static final String KEY_CAPTURE = "([A-Za-z0-9._~+/-]+={0,2})";
     private static final Pattern VERSION_FIRST_RESPONSE = Pattern.compile(
-        "\\A[ \\t\\r\\n]*\\{[ \\t\\r\\n]*\"version\"[ \\t\\r\\n]*"
+        "[ \\t\\r\\n]*\\{[ \\t\\r\\n]*\"version\"[ \\t\\r\\n]*"
             + ":[ \\t\\r\\n]*1[ \\t\\r\\n]*,[ \\t\\r\\n]*\"accessKey\""
             + "[ \\t\\r\\n]*:[ \\t\\r\\n]*\"" + KEY_CAPTURE
-            + "\"[ \\t\\r\\n]*}[ \\t\\r\\n]*\\z");
+            + "\"[ \\t\\r\\n]*\\}[ \\t\\r\\n]*");
     private static final Pattern KEY_FIRST_RESPONSE = Pattern.compile(
-        "\\A[ \\t\\r\\n]*\\{[ \\t\\r\\n]*\"accessKey\"[ \\t\\r\\n]*"
+        "[ \\t\\r\\n]*\\{[ \\t\\r\\n]*\"accessKey\"[ \\t\\r\\n]*"
             + ":[ \\t\\r\\n]*\"" + KEY_CAPTURE + "\"[ \\t\\r\\n]*,"
             + "[ \\t\\r\\n]*\"version\"[ \\t\\r\\n]*:[ \\t\\r\\n]*1"
-            + "[ \\t\\r\\n]*}[ \\t\\r\\n]*\\z");
+            + "[ \\t\\r\\n]*\\}[ \\t\\r\\n]*");
     private static final ScheduledExecutorService WATCHDOG =
         Executors.newSingleThreadScheduledExecutor(runnable -> {
             Thread thread = new Thread(runnable, "panel-pairing-watchdog");

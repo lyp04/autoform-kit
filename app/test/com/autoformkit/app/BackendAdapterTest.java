@@ -1140,6 +1140,46 @@ public class BackendAdapterTest {
     }
 
     @Test
+    public void codeMissingPrintJobsRequireThePanelOwnedReadOnlyCompatibilitySwitch()
+            throws Exception {
+        JSONObject fixture = sharedFixture();
+        JSONObject printing = fixture.getJSONObject("printing");
+        printing.put("enabled", true)
+            .put("allowJobsArrayWhenCodeMissing", true);
+        printing.getJSONObject("online").put("values", new JSONArray().put("online"));
+        printing.getJSONObject("values")
+            .put("acceptedTypes", new JSONArray().put("label"))
+            .put("printed", new JSONArray().put("done"))
+            .put("failed", new JSONArray().put("failed"))
+            .put("ongoing", new JSONArray().put("running"));
+        BackendAdapter enabled = BackendAdapter.from(
+            new JSONObject().put("backendAdapter", fixture));
+
+        JSONObject codeMissingJobs = new JSONObject().put("items", new JSONArray());
+        assertTrue(enabled.printing.isJobsResponseSuccess(
+            codeMissingJobs, enabled.response));
+        assertFalse(enabled.printing.isJobsResponseSuccess(
+            new JSONObject(codeMissingJobs.toString()).put(
+                "message", "example rejection"),
+            enabled.response));
+        assertFalse(enabled.printing.isJobsResponseSuccess(
+            new JSONObject(codeMissingJobs.toString()).put("status", "rejected"),
+            enabled.response));
+
+        printing.put("allowJobsArrayWhenCodeMissing", false);
+        BackendAdapter strict = BackendAdapter.from(
+            new JSONObject().put("backendAdapter", fixture));
+        assertFalse(strict.printing.isJobsResponseSuccess(
+            codeMissingJobs, strict.response));
+
+        printing.put("allowJobsArrayWhenCodeMissing", "yes");
+        BackendAdapter invalid = BackendAdapter.from(
+            new JSONObject().put("backendAdapter", fixture));
+        assertTrue(invalid.missingForSubmit(false, false, false, true)
+            .contains("backendAdapter.printing.allowJobsArrayWhenCodeMissing"));
+    }
+
+    @Test
     public void bindsPanelDynamicCapabilityAndCompilesWithoutNetworkOrUi() throws Exception {
         BackendAdapter adapter = fixtureAdapter();
         ProfileWorkflow workflow = dynamicWorkflow("sample-template-detail-v1");

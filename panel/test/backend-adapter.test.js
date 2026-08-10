@@ -842,6 +842,17 @@ test("enabled printing requires a non-negative first page", () => {
     "printing.query.pageStart must be a non-negative integer"));
 });
 
+test("printing code-missing jobs compatibility is explicit and boolean", () => {
+  const adapter = validBackendAdapter();
+  adapter.printing.allowJobsArrayWhenCodeMissing = "yes";
+  assert.ok(validateBackendAdapter(adapter).includes(
+    "printing.allowJobsArrayWhenCodeMissing must be a boolean"));
+
+  adapter.printing.allowJobsArrayWhenCodeMissing = true;
+  assert.equal(validateBackendAdapter(adapter).some((error) =>
+    error.includes("allowJobsArrayWhenCodeMissing")), false);
+});
+
 test("field mappings canonicalize list and nested form fields", () => {
   const adapter = validBackendAdapter();
   const raw = {
