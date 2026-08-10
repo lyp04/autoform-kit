@@ -79,6 +79,10 @@ test("configured input labels survive template conversion and App catalog delive
   assert.deepEqual(served.profiles[0].snPlugins, profile.snPlugins);
   assert.deepEqual(served.profiles[0].snPlugins[0].labelI18n,
     profile.snPlugins[0].labelI18n);
+  assert.deepEqual(profile.snPlugins[0].placeholderI18n,
+    { en: "Enter", es: "Introduzca" });
+  assert.deepEqual(served.profiles[0].snPlugins[0].placeholderI18n,
+    profile.snPlugins[0].placeholderI18n);
 });
 
 test("a template with only ordinary inputs remains unbound instead of inventing an identifier", () => {

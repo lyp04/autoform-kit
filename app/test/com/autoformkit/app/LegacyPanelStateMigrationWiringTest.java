@@ -45,11 +45,11 @@ public class LegacyPanelStateMigrationWiringTest {
         assertTrue(validation.contains(
             "LegacyPanelStateMigrationRules.validDailyStats(raw)"));
         assertTrue(validation.contains(
-            "LegacyPanelStateMigrationRules.validRoundLedger(raw, allProfiles)"));
+            "LegacyPanelStateMigrationRules.validRoundLedger(raw, ownershipProfiles)"));
         assertTrue(validation.contains(
             "LegacyPanelStateMigrationRules.validPreviousRoundKey("));
         assertTrue(validation.contains(
-            "LegacyPanelStateMigrationRules.validDailyStats(raw, allProfiles)"));
+            "LegacyPanelStateMigrationRules.validDailyStats(raw, ownershipProfiles)"));
     }
 
     @Test
@@ -113,7 +113,7 @@ public class LegacyPanelStateMigrationWiringTest {
     }
 
     @Test
-    public void candidatePromotionReconcilesLegacyStateAndRetainsRecoveryFile()
+    public void candidatePromotionBestEffortReconcilesLegacyStateAndRetainsRecoveryFile()
             throws Exception {
         String source = mainActivitySource();
         String readiness = section(source,
@@ -129,9 +129,15 @@ public class LegacyPanelStateMigrationWiringTest {
             "private boolean reconcileLegacyPanelBoundState(boolean retireLegacyQueueFile)",
             "/** Bind and retire cross-Panel legacy mirrors immediately before changing Panel/key. */");
 
-        assertTrue(readiness.contains("reconcileLegacyPanelBoundState(false)"));
         assertTrue(readiness.contains(
-            "LegacyUpgradeSafetyRules.cachePromotionAllowed(resolved, settings)"));
+            "loadCandidatePairMatchingLegacyActiveCatalog("));
+        assertTrue(readiness.contains(
+            "false, catalogMatchedCandidate"));
+        assertTrue(readiness.contains(
+            "Unbound legacy Panel state retained; cache promotion allowed"));
+        assertTrue(readiness.contains("return true;"));
+        assertFalse(readiness.contains(
+            "LegacyUpgradeSafetyRules.cachePromotionAllowed("));
         assertTrue(safeBoundary.contains(
             "if (!legacyPanelStateReadyForCachePromotion()) return false;"));
         assertTrue(promotion.contains("if (!safeToInstallBoundPanelSnapshot())"));
@@ -197,7 +203,7 @@ public class LegacyPanelStateMigrationWiringTest {
         assertTrue(validation.contains(
             "LegacyPanelStateMigrationRules.validDailyStats(raw)"));
         assertTrue(validation.contains(
-            "legacyRollbackPreferenceOwnedByActiveCatalog("));
+            "legacyRollbackPreferenceOwnedByCatalog("));
         assertTrue(recent.contains(
             "profileId.equals(r.optString(\"profileId\", \"\"))"));
         assertTrue(reconcile.contains(

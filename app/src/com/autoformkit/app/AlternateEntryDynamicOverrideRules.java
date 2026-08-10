@@ -251,6 +251,20 @@ final class AlternateEntryDynamicOverrideRules {
                 throw invalid("duplicate toggle key " + key);
             }
         }
+        JSONObject presets = entryConfig.optJSONObject("resultPresets");
+        JSONArray presetItems = presets == null ? null : presets.optJSONArray("items");
+        for (int index = 0; presetItems != null && index < presetItems.length(); index++) {
+            JSONObject preset = presetItems.optJSONObject(index);
+            if (preset == null) {
+                throw invalid("entry config.resultPresets.items[" + index
+                    + "] must be an object");
+            }
+            String key = safeId(preset.opt("key"),
+                "entry config.resultPresets.items[" + index + "].key");
+            if (effective.put(key, false) != null) {
+                throw invalid("duplicate toggle or result preset key " + key);
+            }
+        }
         Map<String, Boolean> requested = requestedStates == null
             ? Collections.emptyMap() : requestedStates;
         for (Map.Entry<String, Boolean> state : requested.entrySet()) {
@@ -297,7 +311,21 @@ final class AlternateEntryDynamicOverrideRules {
             collectObjectKeys(toggle.opt("dataOverrides"), out,
                 "entry config.toggles[" + index + "].dataOverrides");
         }
+        JSONObject presets = entryConfig.optJSONObject("resultPresets");
+        JSONArray presetItems = presets == null ? null : presets.optJSONArray("items");
+        for (int index = 0; presetItems != null && index < presetItems.length(); index++) {
+            JSONObject preset = presetItems.optJSONObject(index);
+            if (preset == null) continue;
+            collectObjectKeysAllowingPresetOverlap(preset.opt("dataOverrides"), out,
+                "entry config.resultPresets.items[" + index + "].dataOverrides");
+        }
         return out;
+    }
+
+    private static void collectObjectKeysAllowingPresetOverlap(
+            Object raw, Set<String> out, String path) {
+        if (!(raw instanceof JSONObject)) throw invalid(path + " must be an object");
+        for (String field : keys((JSONObject) raw)) out.add(field);
     }
 
     private static void collectIdentifierFields(JSONObject value, Set<String> out,

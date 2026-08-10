@@ -78,6 +78,58 @@ test("a fully closed fictional alternate entry passes local and catalog validati
   assert.deepEqual(validateProfilesForPublish([source], [source, target]), []);
 });
 
+test("Panel-owned result presets provide strict mutually exclusive A/B/C choices", () => {
+  const { source, target } = configuredCatalog();
+  const entry = source.workflow.alternateEntries.entries[0];
+  target.gradeMap["sample-hold"] = {
+    ...clone(target.gradeMap["sample-ready"]),
+    value: "HOLD"
+  };
+  entry.resultPresets = {
+    defaultKey: "appearance",
+    retainUntilExit: true,
+    showCodes: false,
+    splitLabelsOnPlus: true,
+    items: [
+      {
+        key: "appearance", code: "A", label: "外观", uiColor: "#16A34A",
+        resultKey: "sample-ready", activeToggleKeys: [],
+        dataOverrides: { example_dynamic_field: "APPEARANCE" }
+      },
+      {
+        key: "combined", code: "B", label: "外观+功能", uiColor: "#D97706",
+        resultKey: "sample-ready", activeToggleKeys: ["sample-option"],
+        dataOverrides: { example_dynamic_field: "COMBINED" }
+      },
+      {
+        key: "function", code: "C", label: "功能", uiColor: "#DC2626",
+        resultKey: "sample-hold", activeToggleKeys: ["sample-option"],
+        dataOverrides: { example_dynamic_field: "FUNCTION" }
+      }
+    ]
+  };
+
+  assert.deepEqual(validateFormProfile(source), []);
+  assert.deepEqual(validateAlternateEntryReferences([source], [source, target]), []);
+  assert.deepEqual(validateProfilesForPublish([source, target]), []);
+
+  entry.resultPresets.showCodes = true;
+  entry.resultPresets.items[0].uiColor = "green";
+  entry.resultPresets.items[1].activeToggleKeys = ["missing-toggle"];
+  entry.resultPresets.items[2].dataOverrides = {
+    example_reference_id: "conflicts-with-entry"
+  };
+  const localErrors = validateFormProfile(source);
+  assert(localErrors.includes(
+    "workflow.alternateEntries.entries[0].resultPresets cannot show codes while splitting labels on plus"));
+  assert(localErrors.includes(
+    "workflow.alternateEntries.entries[0].resultPresets.items[0].uiColor must be #RRGGBB"));
+  assert(localErrors.includes(
+    "workflow.alternateEntries.entries[0].resultPresets.items[1].activeToggleKeys[0] must reference a toggle in the same entry"));
+  assert(errorsFor(source, [source, target]).some((error) =>
+    error.includes("resultPresets.items[2].dataOverrides.example_reference_id duplicates override ownership")));
+});
+
 test("an alternate entry may inherit a discrete allowed-length policy without a single exact length", () => {
   const { source, target } = configuredCatalog();
   const scanner = source.snPlugins.find((plugin) => plugin.key === "primary").scanner;
@@ -341,7 +393,7 @@ test("override ownership is unique and live-provider output declarations fail cl
   assert.ok(errors.some((error) => error.includes(
     "toggles[0].dataOverrides.example_toggle_field duplicates override ownership")));
   assert.ok(validateFormProfile(source).includes(
-    "workflow.alternateEntries.entries[0].dynamicOverrideProviders[0].outputField must not overlap dataOverrides or toggle dataOverrides"));
+    "workflow.alternateEntries.entries[0].dynamicOverrideProviders[0].outputField must not overlap static, toggle, or result preset overrides"));
   assert.ok(errors.some((error) => error.includes(
     "dynamicOverrideFields[0] duplicates override ownership")));
 });
@@ -407,6 +459,9 @@ test("Panel exposes structured alternate-entry, target, toggle, label and flag c
     "固定字段覆盖（值为明确 JSON）",
     "实时模板覆盖 provider（高级配置）",
     "字段 allow-list 与 provider 输出必须完全一致",
+    "互斥结果预设（可选，等宽按钮）",
+    "showCodes 控制短代码是否显示",
+    "splitLabelsOnPlus 可把唯一加号单独排成一行",
     "入口开关（显示文案由 profile 提供）",
     "开关文案",
     "英文文案（可选）",

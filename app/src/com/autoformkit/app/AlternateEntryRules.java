@@ -27,13 +27,18 @@ final class AlternateEntryRules {
         "id", "title", "titleI18n", "targetProfileId", "identifierRole", "resultKey",
         "photoTargetFields", "joinWith", "minPhotos", "maxPhotos", "uploadNameTemplate",
         "scanner", "submissionRetry", "toggles", "flags", "dataOverrides", "dynamicOverrideFields",
-        "dynamicOverrideProviders");
+        "dynamicOverrideProviders", "resultPresets");
     private static final Set<String> ENTRY_SCANNER_KEYS = setOf(
         "applyExpectedLengthTo", "applyAllowedLengthsTo");
     private static final Set<String> SUBMISSION_RETRY_KEYS = setOf(
         "maxAttempts", "retryDelayMs");
     private static final Set<String> TOGGLE_KEYS = setOf(
         "key", "label", "labelI18n", "default", "retainUntilExit", "dataOverrides");
+    private static final Set<String> RESULT_PRESET_KEYS = setOf(
+        "defaultKey", "retainUntilExit", "showCodes", "splitLabelsOnPlus", "items");
+    private static final Set<String> RESULT_PRESET_ITEM_KEYS = setOf(
+        "key", "code", "label", "labelI18n", "uiColor", "resultKey",
+        "activeToggleKeys", "dataOverrides");
     private static final Set<String> FLAG_KEYS = setOf(
         "duplicateCheck", "previousSteps", "printing");
     private static final Set<String> IDENTITY_OVERRIDE_KEYS = setOf(
@@ -119,6 +124,42 @@ final class AlternateEntryRules {
         }
     }
 
+    /** Panel-owned mutually exclusive submission preset rendered like the main A/B/C choices. */
+    static final class ResultPresetPolicy {
+        final String key;
+        final String code;
+        final String label;
+        final JSONObject labelI18n;
+        final String uiColor;
+        final String resultKey;
+        final Map<String, Boolean> effectiveToggleStates;
+        private final JSONObject dataOverrides;
+
+        private ResultPresetPolicy(String key, String code, String label,
+                                   JSONObject labelI18n, String uiColor,
+                                   String resultKey,
+                                   Map<String, Boolean> effectiveToggleStates,
+                                   JSONObject dataOverrides) {
+            this.key = key;
+            this.code = code;
+            this.label = label;
+            this.labelI18n = copyObject(labelI18n);
+            this.uiColor = uiColor;
+            this.resultKey = resultKey;
+            this.effectiveToggleStates = Collections.unmodifiableMap(
+                new LinkedHashMap<>(effectiveToggleStates));
+            this.dataOverrides = copyObject(dataOverrides);
+        }
+
+        String localizedLabel(String locale) {
+            if (locale != null && !locale.isEmpty() && labelI18n != null) {
+                String translated = text(labelI18n.opt(locale));
+                if (!translated.isEmpty()) return translated;
+            }
+            return label;
+        }
+    }
+
     static final class ExecutionFlags {
         final boolean duplicateCheck;
         final boolean previousSteps;
@@ -150,6 +191,11 @@ final class AlternateEntryRules {
         final JSONObject data;
         final List<TogglePolicy> togglePolicies;
         final Map<String, Boolean> effectiveToggleStates;
+        final List<ResultPresetPolicy> resultPresetPolicies;
+        final String selectedResultPresetKey;
+        final boolean retainResultPresetUntilExit;
+        final boolean showResultPresetCodes;
+        final boolean splitResultPresetLabelsOnPlus;
         final ExecutionFlags flags;
         final SubmissionRetryPolicy submissionRetry;
 
@@ -157,6 +203,11 @@ final class AlternateEntryRules {
                            SubmitIdentity identity, JSONObject data,
                            List<TogglePolicy> togglePolicies,
                            Map<String, Boolean> effectiveToggleStates,
+                           List<ResultPresetPolicy> resultPresetPolicies,
+                           String selectedResultPresetKey,
+                           boolean retainResultPresetUntilExit,
+                           boolean showResultPresetCodes,
+                           boolean splitResultPresetLabelsOnPlus,
                            ExecutionFlags flags,
                            SubmissionRetryPolicy submissionRetry) {
             this.entryId = entryId;
@@ -168,6 +219,12 @@ final class AlternateEntryRules {
                 new ArrayList<>(togglePolicies));
             this.effectiveToggleStates = Collections.unmodifiableMap(
                 new LinkedHashMap<>(effectiveToggleStates));
+            this.resultPresetPolicies = Collections.unmodifiableList(
+                new ArrayList<>(resultPresetPolicies));
+            this.selectedResultPresetKey = selectedResultPresetKey;
+            this.retainResultPresetUntilExit = retainResultPresetUntilExit;
+            this.showResultPresetCodes = showResultPresetCodes;
+            this.splitResultPresetLabelsOnPlus = splitResultPresetLabelsOnPlus;
             this.flags = flags;
             this.submissionRetry = submissionRetry;
         }
@@ -195,14 +252,8 @@ final class AlternateEntryRules {
             JSONObject sourceProfile, JSONArray catalogProfiles,
             JSONObject entryConfig, String serial, List<String> uploadedUrls,
             Map<String, Boolean> toggleStates) {
-        JSONObject target = targetProfile(catalogProfiles, entryConfig);
-        JSONObject dynamicPlaceholders = new JSONObject();
-        for (String field : AlternateEntryDynamicOverrideRules.expectedActiveFields(
-                entryConfig, target, toggleStates)) {
-            putJson(dynamicPlaceholders, field, "__autoform_ui_preflight__");
-        }
-        return resolve(sourceProfile, catalogProfiles, entryConfig, serial,
-            uploadedUrls, toggleStates, dynamicPlaceholders);
+        return resolveInternal(sourceProfile, catalogProfiles, entryConfig, serial,
+            uploadedUrls, toggleStates, null, true);
     }
 
     /** Resolves the exact hidden target and builds its canonical submission data. */
@@ -210,6 +261,15 @@ final class AlternateEntryRules {
                               JSONObject entryConfig, String serial,
                               List<String> uploadedUrls, Map<String, Boolean> toggleStates,
                               JSONObject dynamicOverrideData) {
+        return resolveInternal(sourceProfile, catalogProfiles, entryConfig, serial,
+            uploadedUrls, toggleStates, dynamicOverrideData, false);
+    }
+
+    private static Resolution resolveInternal(
+                              JSONObject sourceProfile, JSONArray catalogProfiles,
+                              JSONObject entryConfig, String serial,
+                              List<String> uploadedUrls, Map<String, Boolean> toggleStates,
+                              JSONObject dynamicOverrideData, boolean uiPreflight) {
         if (sourceProfile == null) throw invalid("source profile is required");
         if (catalogProfiles == null) throw invalid("catalog profiles are required");
         if (entryConfig == null) throw invalid("entry config is required");
@@ -330,13 +390,32 @@ final class AlternateEntryRules {
             toggleOverrides.put(key, overrides);
         }
 
-        Map<String, Boolean> states = effectiveToggleStates(
-            policies, toggleKeys, toggleStates);
+        ResultPresetSelection presetSelection = resultPresetSelection(
+            entryConfig, policies, toggleKeys, toggleStates, gradeMap, resultField,
+            knownFields, serialField, overrideOwners);
+        Map<String, Boolean> states = presetSelection == null
+            ? effectiveToggleStates(policies, toggleKeys, toggleStates)
+            : presetSelection.selected.effectiveToggleStates;
+        if (presetSelection != null) {
+            JSONObject presetResult = gradeMap.optJSONObject(
+                presetSelection.selected.resultKey);
+            Object presetResultValue = requiredJsonValue(
+                presetResult, "value", "target preset result value");
+            putJson(data, resultField, presetResultValue);
+        }
         Set<String> activeDynamicFields =
             AlternateEntryDynamicOverrideRules.expectedActiveFields(
                 entryConfig, target, states);
-        JSONObject dynamicOverrides = dynamicOverrideData == null
-            ? new JSONObject() : dynamicOverrideData;
+        JSONObject dynamicOverrides;
+        if (uiPreflight) {
+            dynamicOverrides = new JSONObject();
+            for (String field : activeDynamicFields) {
+                putJson(dynamicOverrides, field, "__autoform_ui_preflight__");
+            }
+        } else {
+            dynamicOverrides = dynamicOverrideData == null
+                ? new JSONObject() : dynamicOverrideData;
+        }
         validateDynamicOverrideData(dynamicOverrides, activeDynamicFields);
         applyOverrides(data, configuredOverrides);
         for (TogglePolicy policy : policies) {
@@ -344,9 +423,17 @@ final class AlternateEntryRules {
                 applyOverrides(data, toggleOverrides.get(policy.key));
             }
         }
+        if (presetSelection != null) {
+            applyOverrides(data, presetSelection.selected.dataOverrides);
+        }
         applyOverrides(data, dynamicOverrides);
-        return new Resolution(entryId, title, target, identity, data, policies, states, flags,
-            submissionRetry);
+        return new Resolution(entryId, title, target, identity, data, policies, states,
+            presetSelection == null ? Collections.emptyList() : presetSelection.policies,
+            presetSelection == null ? "" : presetSelection.selected.key,
+            presetSelection != null && presetSelection.retainUntilExit,
+            presetSelection == null || presetSelection.showCodes,
+            presetSelection != null && presetSelection.splitLabelsOnPlus,
+            flags, submissionRetry);
     }
 
     /**
@@ -734,6 +821,202 @@ final class AlternateEntryRules {
         }
     }
 
+    private static final class PendingResultPreset {
+        final String key;
+        final String code;
+        final String label;
+        final JSONObject labelI18n;
+        final String uiColor;
+        final String resultKey;
+        final Set<String> activeToggleKeys;
+        final JSONObject dataOverrides;
+
+        PendingResultPreset(String key, String code, String label, JSONObject labelI18n,
+                            String uiColor, String resultKey,
+                            Set<String> activeToggleKeys, JSONObject dataOverrides) {
+            this.key = key;
+            this.code = code;
+            this.label = label;
+            this.labelI18n = copyObject(labelI18n);
+            this.uiColor = uiColor;
+            this.resultKey = resultKey;
+            this.activeToggleKeys = new LinkedHashSet<>(activeToggleKeys);
+            this.dataOverrides = copyObject(dataOverrides);
+        }
+    }
+
+    private static final class ResultPresetSelection {
+        final List<ResultPresetPolicy> policies;
+        final ResultPresetPolicy selected;
+        final boolean retainUntilExit;
+        final boolean showCodes;
+        final boolean splitLabelsOnPlus;
+
+        ResultPresetSelection(List<ResultPresetPolicy> policies,
+                              ResultPresetPolicy selected,
+                              boolean retainUntilExit,
+                              boolean showCodes,
+                              boolean splitLabelsOnPlus) {
+            this.policies = Collections.unmodifiableList(new ArrayList<>(policies));
+            this.selected = selected;
+            this.retainUntilExit = retainUntilExit;
+            this.showCodes = showCodes;
+            this.splitLabelsOnPlus = splitLabelsOnPlus;
+        }
+    }
+
+    /**
+     * Parses an optional Panel-owned mutually exclusive preset group. Preset selector keys are
+     * persisted in the existing toggle-state map, so drafts from a crash retain the exact A/B/C
+     * choice without introducing a second storage format.
+     */
+    private static ResultPresetSelection resultPresetSelection(
+            JSONObject entryConfig, List<TogglePolicy> togglePolicies,
+            Set<String> toggleKeys, Map<String, Boolean> requestedStates,
+            JSONObject gradeMap, String canonicalResultField,
+            Set<String> knownFields, String serialField,
+            Set<String> existingOverrideOwners) {
+        if (!entryConfig.has("resultPresets") || entryConfig.isNull("resultPresets")) {
+            return null;
+        }
+        JSONObject group = requiredObject(entryConfig, "resultPresets",
+            "entry config.resultPresets");
+        rejectUnknownKeys(group, RESULT_PRESET_KEYS, "entry config.resultPresets");
+        String defaultKey = safePresetId(requiredText(group, "defaultKey",
+            "entry config.resultPresets.defaultKey"),
+            "entry config.resultPresets.defaultKey");
+        boolean retainUntilExit = requiredBoolean(group, "retainUntilExit",
+            "entry config.resultPresets.retainUntilExit");
+        boolean showCodes = optionalBoolean(group, "showCodes", true,
+            "entry config.resultPresets.showCodes");
+        boolean splitLabelsOnPlus = optionalBoolean(group, "splitLabelsOnPlus", false,
+            "entry config.resultPresets.splitLabelsOnPlus");
+        if (showCodes && splitLabelsOnPlus) {
+            throw invalid("entry config.resultPresets cannot show codes while splitting labels on plus");
+        }
+        JSONArray items = requiredArray(group, "items", "entry config.resultPresets.items");
+        if (items.length() < 2 || items.length() > 8) {
+            throw invalid("entry config.resultPresets.items must contain 2 to 8 items");
+        }
+
+        List<PendingResultPreset> pending = new ArrayList<>();
+        Set<String> presetKeys = new LinkedHashSet<>();
+        Set<String> codes = new LinkedHashSet<>();
+        for (int index = 0; index < items.length(); index++) {
+            JSONObject item = items.optJSONObject(index);
+            String path = "entry config.resultPresets.items[" + index + "]";
+            if (item == null) throw invalid(path + " must be an object");
+            rejectUnknownKeys(item, RESULT_PRESET_ITEM_KEYS, path);
+            String key = safePresetId(requiredText(item, "key", path + ".key"),
+                path + ".key");
+            if (toggleKeys.contains(key) || !presetKeys.add(key)) {
+                throw invalid(path + ".key must be unique and distinct from toggle keys");
+            }
+            String code = requiredText(item, "code", path + ".code");
+            if (code.length() > 12 || !codes.add(code)) {
+                throw invalid(path + ".code must be unique and at most 12 characters");
+            }
+            String label = requiredText(item, "label", path + ".label");
+            JSONObject labelI18n = optionalLocalizedText(item, "labelI18n",
+                path + ".labelI18n");
+            String uiColor = requiredText(item, "uiColor", path + ".uiColor");
+            if (!uiColor.matches("#[0-9A-Fa-f]{6}")) {
+                throw invalid(path + ".uiColor must be #RRGGBB");
+            }
+            String resultKey = requiredText(item, "resultKey", path + ".resultKey");
+            JSONObject result = gradeMap == null ? null : gradeMap.optJSONObject(resultKey);
+            if (result == null) throw invalid(path + ".resultKey is not declared");
+            String resultField = requiredText(result, "field", path + " result field");
+            requiredJsonValue(result, "value", path + " result value");
+            if (!canonicalResultField.equals(resultField)) {
+                throw invalid(path + ".resultKey must use the canonical result field");
+            }
+            JSONArray active = requiredArray(item, "activeToggleKeys",
+                path + ".activeToggleKeys");
+            if (active.length() > togglePolicies.size()) {
+                throw invalid(path + ".activeToggleKeys is too large");
+            }
+            Set<String> activeKeys = new LinkedHashSet<>();
+            for (int activeIndex = 0; activeIndex < active.length(); activeIndex++) {
+                String activeKey = arrayText(active, activeIndex,
+                    path + ".activeToggleKeys[" + activeIndex + "]");
+                if (!toggleKeys.contains(activeKey)) {
+                    throw invalid(path + ".activeToggleKeys references an unknown toggle");
+                }
+                if (!activeKeys.add(activeKey)) {
+                    throw invalid(path + ".activeToggleKeys contains a duplicate");
+                }
+            }
+            JSONObject overrides = requiredObject(item, "dataOverrides",
+                path + ".dataOverrides");
+            Set<String> itemOwners = new LinkedHashSet<>(existingOverrideOwners);
+            validateOverrideObject(overrides, path + ".dataOverrides", knownFields,
+                serialField, itemOwners);
+            pending.add(new PendingResultPreset(key, code, label, labelI18n,
+                uiColor, resultKey, activeKeys, overrides));
+        }
+        if (!presetKeys.contains(defaultKey)) {
+            throw invalid("entry config.resultPresets.defaultKey must reference an item");
+        }
+
+        List<ResultPresetPolicy> policies = new ArrayList<>();
+        for (PendingResultPreset item : pending) {
+            Map<String, Boolean> states = new LinkedHashMap<>();
+            for (TogglePolicy toggle : togglePolicies) states.put(toggle.key, false);
+            for (String presetKey : presetKeys) states.put(presetKey, false);
+            states.put(item.key, true);
+            for (String activeKey : item.activeToggleKeys) states.put(activeKey, true);
+            policies.add(new ResultPresetPolicy(item.key, item.code, item.label,
+                item.labelI18n, item.uiColor, item.resultKey, states, item.dataOverrides));
+        }
+
+        Map<String, Boolean> requested = requestedStates == null
+            ? Collections.emptyMap() : requestedStates;
+        Set<String> knownStateKeys = new LinkedHashSet<>(toggleKeys);
+        knownStateKeys.addAll(presetKeys);
+        for (Map.Entry<String, Boolean> state : requested.entrySet()) {
+            if (state.getKey() == null || !knownStateKeys.contains(state.getKey())) {
+                throw invalid("unknown toggle state " + state.getKey());
+            }
+            if (state.getValue() == null) {
+                throw invalid("toggle state must be boolean for " + state.getKey());
+            }
+        }
+        ResultPresetPolicy selected = null;
+        if (requested.isEmpty()) {
+            for (ResultPresetPolicy policy : policies) {
+                if (defaultKey.equals(policy.key)) selected = policy;
+            }
+        } else {
+            Map<String, Boolean> normalized = new LinkedHashMap<>();
+            for (String key : knownStateKeys) {
+                normalized.put(key, Boolean.TRUE.equals(requested.get(key)));
+            }
+            for (ResultPresetPolicy policy : policies) {
+                if (policy.effectiveToggleStates.equals(normalized)) {
+                    if (selected != null) {
+                        throw invalid("result preset state is ambiguous");
+                    }
+                    selected = policy;
+                }
+            }
+        }
+        if (selected == null) {
+            throw invalid("toggle state must exactly match one result preset");
+        }
+        return new ResultPresetSelection(policies, selected, retainUntilExit,
+            showCodes, splitLabelsOnPlus);
+    }
+
+    private static String safePresetId(String value, String path) {
+        if (value.length() > 128 || !value.matches("[A-Za-z][A-Za-z0-9_.-]*")
+                || "__proto__".equals(value) || "prototype".equals(value)
+                || "constructor".equals(value)) {
+            throw invalid(path + " must be a safe bounded identifier");
+        }
+        return value;
+    }
+
     private static Map<String, Boolean> effectiveToggleStates(
             List<TogglePolicy> policies, Set<String> knownKeys,
             Map<String, Boolean> requestedStates) {
@@ -875,6 +1158,11 @@ final class AlternateEntryRules {
         Object value = owner.opt(key);
         if (!(value instanceof Boolean)) throw invalid(path + " must be a boolean");
         return (Boolean) value;
+    }
+
+    private static boolean optionalBoolean(JSONObject owner, String key,
+                                           boolean fallback, String path) {
+        return owner.has(key) ? requiredBoolean(owner, key, path) : fallback;
     }
 
     private static int requiredNonNegativeInt(JSONObject owner, String key, String path) {

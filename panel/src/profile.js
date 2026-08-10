@@ -519,11 +519,18 @@ const ALTERNATE_ENTRY_KEYS = Object.freeze([
   "id", "title", "titleI18n", "targetProfileId", "identifierRole", "resultKey",
   "photoTargetFields", "joinWith", "minPhotos", "maxPhotos", "uploadNameTemplate",
   "scanner", "submissionRetry", "toggles", "flags", "dataOverrides", "dynamicOverrideFields",
-  "dynamicOverrideProviders"
+  "dynamicOverrideProviders", "resultPresets"
 ]);
 const ALTERNATE_SUBMISSION_RETRY_KEYS = Object.freeze(["maxAttempts", "retryDelayMs"]);
 const ALTERNATE_TOGGLE_KEYS = Object.freeze([
   "key", "label", "labelI18n", "default", "retainUntilExit", "dataOverrides"
+]);
+const ALTERNATE_RESULT_PRESET_KEYS = Object.freeze([
+  "defaultKey", "retainUntilExit", "showCodes", "splitLabelsOnPlus", "items"
+]);
+const ALTERNATE_RESULT_PRESET_ITEM_KEYS = Object.freeze([
+  "key", "code", "label", "labelI18n", "uiColor", "resultKey",
+  "activeToggleKeys", "dataOverrides"
 ]);
 const ALTERNATE_FLAG_KEYS = Object.freeze(["duplicateCheck", "previousSteps", "printing"]);
 const ALTERNATE_DYNAMIC_PROVIDER_KEYS = Object.freeze([
@@ -607,6 +614,7 @@ function validateAlternateEntries(profile, value, errors) {
     validateAlternateSubmissionRetry(entry.submissionRetry,
       `${path}.submissionRetry`, errors);
     validateAlternateToggles(entry.toggles, `${path}.toggles`, errors);
+    validateAlternateResultPresets(entry, `${path}.resultPresets`, errors);
     validateAlternateFlags(entry.flags, `${path}.flags`, errors);
     validateOverrideObject(entry.dataOverrides, `${path}.dataOverrides`, errors);
     validateUniqueTrimmedStringArray(entry.dynamicOverrideFields,
@@ -652,7 +660,10 @@ function validateAlternateDynamicProviders(entry, path, errors) {
   const staticFields = new Set([
     ...Object.keys(isPlainObject(entry.dataOverrides) ? entry.dataOverrides : {}),
     ...(Array.isArray(entry.toggles) ? entry.toggles : []).flatMap((toggle) =>
-      Object.keys(isPlainObject(toggle?.dataOverrides) ? toggle.dataOverrides : {}))
+      Object.keys(isPlainObject(toggle?.dataOverrides) ? toggle.dataOverrides : {})),
+    ...(Array.isArray(entry.resultPresets?.items) ? entry.resultPresets.items : [])
+      .flatMap((preset) => Object.keys(
+        isPlainObject(preset?.dataOverrides) ? preset.dataOverrides : {}))
   ]);
   const ids = new Set();
   const outputs = new Set();
@@ -687,7 +698,7 @@ function validateAlternateDynamicProviders(entry, path, errors) {
       }
       if (outputs.has(field)) errors.push(`${itemPath}.outputField must be unique`);
       if (staticFields.has(field)) {
-        errors.push(`${itemPath}.outputField must not overlap dataOverrides or toggle dataOverrides`);
+        errors.push(`${itemPath}.outputField must not overlap static, toggle, or result preset overrides`);
       }
       outputs.add(field);
     }
@@ -783,6 +794,92 @@ function validateAlternateToggles(value, path, errors) {
       keys.add(key);
     }
   });
+}
+
+function validateAlternateResultPresets(entry, path, errors) {
+  const value = entry?.resultPresets;
+  if (value === undefined) return;
+  if (!isPlainObject(value)) {
+    errors.push(`${path} must be an object`);
+    return;
+  }
+  allowOnly(value, ALTERNATE_RESULT_PRESET_KEYS, path, errors);
+  validateSafeAlternateProviderId(value.defaultKey, `${path}.defaultKey`, errors);
+  if (typeof value.retainUntilExit !== "boolean") {
+    errors.push(`${path}.retainUntilExit must be a boolean`);
+  }
+  if (value.showCodes !== undefined && typeof value.showCodes !== "boolean") {
+    errors.push(`${path}.showCodes must be a boolean`);
+  }
+  if (value.splitLabelsOnPlus !== undefined
+      && typeof value.splitLabelsOnPlus !== "boolean") {
+    errors.push(`${path}.splitLabelsOnPlus must be a boolean`);
+  }
+  const showCodes = value.showCodes === undefined ? true : value.showCodes;
+  const splitLabelsOnPlus = value.splitLabelsOnPlus === undefined
+    ? false : value.splitLabelsOnPlus;
+  if (showCodes === true && splitLabelsOnPlus === true) {
+    errors.push(`${path} cannot show codes while splitting labels on plus`);
+  }
+  if (!Array.isArray(value.items)) {
+    errors.push(`${path}.items must be an array`);
+    return;
+  }
+  if (value.items.length < 2 || value.items.length > 8) {
+    errors.push(`${path}.items must contain from 2 to 8 items`);
+  }
+  const toggleKeys = new Set((Array.isArray(entry?.toggles) ? entry.toggles : [])
+    .map((toggle) => typeof toggle?.key === "string" ? toggle.key.trim() : "")
+    .filter(Boolean));
+  const presetKeys = new Set();
+  const codes = new Set();
+  value.items.forEach((item, index) => {
+    const itemPath = `${path}.items[${index}]`;
+    if (!isPlainObject(item)) {
+      errors.push(`${itemPath} must be an object`);
+      return;
+    }
+    allowOnly(item, ALTERNATE_RESULT_PRESET_ITEM_KEYS, itemPath, errors);
+    validateSafeAlternateProviderId(item.key, `${itemPath}.key`, errors);
+    validateTrimmedText(item.code, `${itemPath}.code`, errors);
+    if (typeof item.code === "string" && item.code.length > 12) {
+      errors.push(`${itemPath}.code must contain at most 12 characters`);
+    }
+    validateTrimmedText(item.label, `${itemPath}.label`, errors);
+    validateStrictI18n(item.labelI18n, `${itemPath}.labelI18n`, errors);
+    if (typeof item.uiColor !== "string" || !/^#[0-9A-Fa-f]{6}$/.test(item.uiColor)) {
+      errors.push(`${itemPath}.uiColor must be #RRGGBB`);
+    }
+    validateTrimmedText(item.resultKey, `${itemPath}.resultKey`, errors);
+    validateUniqueTrimmedStringArray(item.activeToggleKeys,
+      `${itemPath}.activeToggleKeys`, errors, { maxItems: 16 });
+    validateOverrideObject(item.dataOverrides, `${itemPath}.dataOverrides`, errors);
+    if (typeof item.key === "string" && item.key.trim()) {
+      const key = item.key.trim();
+      if (toggleKeys.has(key)) {
+        errors.push(`${itemPath}.key must be distinct from toggle keys`);
+      }
+      if (presetKeys.has(key)) {
+        errors.push(`${itemPath}.key must be unique within resultPresets`);
+      }
+      presetKeys.add(key);
+    }
+    if (typeof item.code === "string" && item.code.trim()) {
+      const code = item.code.trim();
+      if (codes.has(code)) errors.push(`${itemPath}.code must be unique within resultPresets`);
+      codes.add(code);
+    }
+    (Array.isArray(item.activeToggleKeys) ? item.activeToggleKeys : [])
+      .forEach((key, activeIndex) => {
+        if (typeof key === "string" && key.trim() && !toggleKeys.has(key.trim())) {
+          errors.push(`${itemPath}.activeToggleKeys[${activeIndex}] must reference a toggle in the same entry`);
+        }
+      });
+  });
+  if (typeof value.defaultKey === "string" && value.defaultKey.trim()
+      && !presetKeys.has(value.defaultKey.trim())) {
+    errors.push(`${path}.defaultKey must reference an item`);
+  }
 }
 
 function validateAlternateFlags(value, path, errors) {
@@ -959,6 +1056,29 @@ function validateAlternateEntryTarget(entry, target, path, errors) {
       errors.push(`${path}.resultKey target value is required`);
     }
   }
+  const canonicalResultField = typeof result?.field === "string"
+    ? result.field.trim() : "";
+  (Array.isArray(entry.resultPresets?.items) ? entry.resultPresets.items : [])
+    .forEach((preset, index) => {
+      const presetPath = `${path}.resultPresets.items[${index}]`;
+      const presetKey = typeof preset?.resultKey === "string"
+        ? preset.resultKey.trim() : "";
+      const presetResult = alternateTargetResult(target, presetKey);
+      if (!isPlainObject(presetResult)) {
+        errors.push(`${presetPath}.resultKey must reference the target profile gradeMap`);
+        return;
+      }
+      const presetField = typeof presetResult.field === "string"
+        ? presetResult.field.trim() : "";
+      if (!presetField) {
+        errors.push(`${presetPath}.resultKey target field is required`);
+      } else if (canonicalResultField && presetField !== canonicalResultField) {
+        errors.push(`${presetPath}.resultKey must use the canonical result field`);
+      }
+      if (!Object.prototype.hasOwnProperty.call(presetResult, "value")) {
+        errors.push(`${presetPath}.resultKey target value is required`);
+      }
+    });
 
   const photoFields = declaredAlternatePhotoFields(target, path, errors);
   (Array.isArray(entry.photoTargetFields) ? entry.photoTargetFields : [])
@@ -977,8 +1097,21 @@ function validateAlternateEntryTarget(entry, target, path, errors) {
       `${path}.toggles[${index}].dataOverrides`, knownFields, serialField,
       overrideOwners, errors);
   });
+  const dynamicOverrideOwners = new Map(overrideOwners);
+  (Array.isArray(entry.resultPresets?.items) ? entry.resultPresets.items : [])
+    .forEach((preset, index) => {
+      const presetPath = `${path}.resultPresets.items[${index}].dataOverrides`;
+      const presetOwners = new Map(overrideOwners);
+      validateAlternateOverrideReferences(preset?.dataOverrides,
+        presetPath, knownFields, serialField, presetOwners, errors);
+      if (isPlainObject(preset?.dataOverrides)) {
+        Object.keys(preset.dataOverrides).forEach((field) => {
+          if (!dynamicOverrideOwners.has(field)) dynamicOverrideOwners.set(field, presetPath);
+        });
+      }
+    });
   validateAlternateDynamicOverrideReferences(entry, target, path, knownFields,
-    overrideOwners, errors);
+    dynamicOverrideOwners, errors);
 }
 
 function validateAlternateDynamicOverrideReferences(entry, target, path, knownFields,
@@ -1416,6 +1549,20 @@ function validateSnPlugins(value, errors, rootPath = "snPlugins") {
       keys.add(normalizedKey);
     }
     validateI18n(plugin, "labelI18n", `${path}.labelI18n`, errors);
+    if (plugin.placeholder !== undefined && typeof plugin.placeholder !== "string") {
+      errors.push(`${path}.placeholder must be a string`);
+    } else if (typeof plugin.placeholder === "string" && plugin.placeholder.length > 160) {
+      errors.push(`${path}.placeholder must contain at most 160 characters`);
+    }
+    validateI18n(plugin, "placeholderI18n", `${path}.placeholderI18n`, errors);
+    if (isPlainObject(plugin.placeholderI18n)) {
+      for (const [locale, value] of Object.entries(plugin.placeholderI18n)) {
+        if (["en", "es"].includes(locale) && typeof value === "string"
+            && value.length > 160) {
+          errors.push(`${path}.placeholderI18n.${locale} must contain at most 160 characters`);
+        }
+      }
+    }
     for (const key of ["required", "search", "scan"]) {
       if (plugin[key] !== undefined && typeof plugin[key] !== "boolean") {
         errors.push(`${path}.${key} must be a boolean`);

@@ -79,4 +79,64 @@ public class AlternateEntrySelectionWiringTest {
         assertFalse(logout.contains("AlternateEntrySelectionState.PREFERENCE_PREFIX"));
         assertFalse(logout.contains("last_alternate_entry_source"));
     }
+
+    @Test
+    public void leavingPageKeepsExactResultChoiceWithAnUnfinishedDraft() throws Exception {
+        String exit = section(mainActivitySource(),
+            "private void exitAlternateEntryPage()",
+            "private void applyTypedAlternateEntrySerial()");
+        int pending = exit.indexOf(
+            "boolean keepBoundPendingData = hasAlternateEntryPendingData()");
+        int durableSave = exit.indexOf(
+            "keepBoundPendingData && !saveAlternateEntryDraft(true)", pending);
+        int clearBranch = exit.indexOf("if (!keepBoundPendingData) {", durableSave);
+        int clearToggles = exit.indexOf("alternateEntryToggleStates.clear()", clearBranch);
+
+        assertTrue("pending draft state must be classified before exit", pending >= 0);
+        assertTrue("SN/photos and their exact result choice must be durably saved",
+            durableSave > pending);
+        assertTrue("only an empty entry may clear the in-memory result choice",
+            clearBranch > durableSave && clearToggles > clearBranch);
+    }
+
+    @Test
+    public void resultPresetButtonsUseLocalizedBoundedResponsiveText() throws Exception {
+        String ui = section(mainActivitySource(),
+            "private void refreshAlternateEntryUi()",
+            "private void exitAlternateEntryPage()");
+        assertTrue(ui.contains("policy.localizedLabel(lang)"));
+        assertTrue(ui.contains("resolution.showResultPresetCodes"));
+        assertTrue(ui.contains("resolution.splitResultPresetLabelsOnPlus"));
+        assertTrue(ui.contains("formatResultPresetLabel("));
+        assertTrue(ui.contains("codePointCount("));
+        assertTrue(ui.contains("preset.setMaxLines(3)"));
+        assertTrue(ui.contains("preset.setEllipsize(TextUtils.TruncateAt.END)"));
+        assertTrue(ui.contains("resolution.resultPresetPolicies.size() > 3"));
+        assertTrue(ui.contains("presets.setBaselineAligned(false)"));
+        assertTrue(ui.contains("RadioGroup.LayoutParams(0, dp(88), 1f)"));
+    }
+
+    @Test
+    public void allIdentifierInputsUsePanelOwnedLocalizedPlaceholders() throws Exception {
+        String source = mainActivitySource();
+        String helper = section(source,
+            "private String inputPlaceholder(boolean secondary)",
+            "private String requiredInputMessage(boolean secondary)");
+        assertTrue(helper.contains(
+            "localized(plugin, \"placeholder\", \"placeholderI18n\")"));
+        assertTrue(helper.contains("hasCurrentTranslation"));
+        assertTrue(helper.contains("t(\"input_placeholder\")"));
+
+        String mainPage = section(source,
+            "private void showFormPage()",
+            "private void showAlternateEntryPage(String entryId)");
+        assertTrue(mainPage.contains("edit(inputPlaceholder(false))"));
+        assertTrue(mainPage.contains("edit(inputPlaceholder(true))"));
+        assertTrue(mainPage.contains("edit(inputPlaceholder(pl, pLabel))"));
+
+        String alternatePage = section(source,
+            "private void showAlternateEntryPage(String entryId)",
+            "private void showLockedAlternateEntryDraftDialog(String requestedEntryId)");
+        assertTrue(alternatePage.contains("edit(inputPlaceholder(false))"));
+    }
 }
