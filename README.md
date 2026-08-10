@@ -73,7 +73,7 @@ These are the current customization entry points, including the deployment-gated
 | Panel administration policy | Accounts allowed to author or publish, plus optional edge/network restrictions for the Panel and pre-login metadata | Deployment backend authorization and edge/network policy |
 | Cloudflare deployment configuration | Default private GitHub catalog repository/branch, optional R2 catalog-authority binding and reviewed cutover, Worker identity/routes and public origin, `CF_VERSION_METADATA`, source-tagged deploy/runtime provenance, bootstrap adapter, catalog credentials, optional AI configuration, and migration-only legacy inputs | Bindings, variables, secrets, and private deployment evidence |
 | One-time App pairing issuer | Download-portal issuance policy, short-lived exact-audience tickets, applicationId allow-list, SQLite Durable Object atomic consumption, and rate limits; the button stays disabled until both Workers are configured and device-tested | Deployment Worker bindings/secrets and private ephemeral state; never the APK or catalog |
-| App Settings | Panel address/read key plus operator-local language, the last independent-entry source selected for each Panel/entry pair, and a device-local stable/beta update channel (toggle by tapping the Chinese language button five times within 2.5 seconds). On a configured device, Panel connection and diagnostic/crash logs are hidden by default; tap the English language button five times within 2.5 seconds to reveal them for the current App process. If the Panel address or read key is absent, the section remains visible by default so setup and recovery stay reachable. This visibility shortcut does not bypass login; backend/form policy is not editable here | Device-local storage |
+| App Settings | Panel address/read key plus operator-local language, the last independent-entry source selected for each Panel/entry pair, and a device-local stable/beta update channel (toggle by tapping the Chinese language button five times within 2.5 seconds). On a configured device, Panel connection, redacted support diagnostics, and diagnostic/crash logs are hidden by default; tap the English language button five times within 2.5 seconds to reveal them for the current App process. The access key remains password-masked. If the Panel address or read key is absent, the section remains visible by default so setup and recovery stay reachable. This visibility shortcut does not bypass login; backend/form policy is not editable here | Device-local storage |
 | Android build/release configuration | Package/launcher name/icon/version/signing, SDK and release feature gates, neutral update-protocol defaults, the cleartext-transport compatibility policy, and the empty-by-default cross-App trust allow-list | Source plus ignored/private signing inputs |
 
 Real profiles, adapters, field/option values, notification settings, deployment update-repository
@@ -86,6 +86,16 @@ or backend behavior. The candidate worktree must contain only generic code and n
 examples. See the [customization inventory](./docs/customization.md) for the field-level list and the
 small set of bootstrap, infrastructure, device-local, and build trust-boundary values that cannot
 come from Panel at runtime.
+
+Formal APKs remain non-debuggable. The hidden support report contains only App/Android versions,
+cache presence/revisions, validation booleans, and anonymous local blocker counts; copyable crash
+and diagnostic text is redacted for credentials, endpoints, accounts, serial identifiers, and
+private paths. When an obsolete, now-invalid cached Panel pair makes its own local unsubmitted draft
+unrestorable while a strictly newer complete pair is already verified, the same hidden section may
+offer a double-confirmed recovery action. That action appears only when no remote-operation,
+submission, upload, print, independent-entry, manual-queue, camera, migration, or storage ambiguity
+exists. It deletes only the counted local unsubmitted drafts, never remote records, and then promotes
+the already-verified pair; it never runs automatically.
 
 The App and Panel implement the one-time pairing protocol, but source availability alone does not
 enable it. Until the Panel Durable Object/secrets, download Worker, exact APK applicationId and
