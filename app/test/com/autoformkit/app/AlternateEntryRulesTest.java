@@ -100,6 +100,51 @@ public class AlternateEntryRulesTest {
                 .put("printing", false));
     }
 
+    private static JSONObject targetWithPresetResult() throws Exception {
+        JSONObject value = target();
+        value.getJSONObject("gradeMap").put("sample-hold", new JSONObject()
+            .put("field", "sample-result")
+            .put("value", "HOLD"));
+        return value;
+    }
+
+    private static JSONObject configWithResultPresets() throws Exception {
+        return config().put("resultPresets", new JSONObject()
+            .put("defaultKey", "appearance")
+            .put("retainUntilExit", true)
+            .put("showCodes", false)
+            .put("splitLabelsOnPlus", true)
+            .put("items", new JSONArray()
+                .put(new JSONObject()
+                    .put("key", "appearance")
+                    .put("code", "A")
+                    .put("label", "Appearance")
+                    .put("labelI18n", new JSONObject().put("es", "Apariencia"))
+                    .put("uiColor", "#16A34A")
+                    .put("resultKey", "sample-ready")
+                    .put("activeToggleKeys", new JSONArray())
+                    .put("dataOverrides", new JSONObject()
+                        .put("sample-choice", "APPEARANCE")))
+                .put(new JSONObject()
+                    .put("key", "combined")
+                    .put("code", "B")
+                    .put("label", "Appearance + function")
+                    .put("uiColor", "#D97706")
+                    .put("resultKey", "sample-ready")
+                    .put("activeToggleKeys", new JSONArray().put("sample-option"))
+                    .put("dataOverrides", new JSONObject()
+                        .put("sample-choice", "COMBINED")))
+                .put(new JSONObject()
+                    .put("key", "function")
+                    .put("code", "C")
+                    .put("label", "Function")
+                    .put("uiColor", "#DC2626")
+                    .put("resultKey", "sample-hold")
+                    .put("activeToggleKeys", new JSONArray().put("sample-option"))
+                    .put("dataOverrides", new JSONObject()
+                        .put("sample-choice", "FUNCTION")))));
+    }
+
     private static JSONArray catalog(JSONObject target) throws Exception {
         return new JSONArray().put(source()).put(target);
     }
@@ -286,6 +331,77 @@ public class AlternateEntryRulesTest {
         assertTrue(policy.retainUntilExit);
         assertTrue(resolved.effectiveToggleStates.get("sample-option"));
         assertEquals("ENABLED", resolved.data.getString("sample-mode"));
+    }
+
+    @Test
+    public void resultPresetsOwnMutuallyExclusiveAbcStatePayloadAndPresentation()
+            throws Exception {
+        JSONObject target = targetWithPresetResult();
+        JSONObject entry = configWithResultPresets();
+
+        AlternateEntryRules.Resolution defaults = AlternateEntryRules.resolveForUiPreflight(
+            source(), catalog(target), entry, "SN-PRESET-A", onePhoto(),
+            Collections.emptyMap());
+        assertEquals(3, defaults.resultPresetPolicies.size());
+        assertEquals("appearance", defaults.selectedResultPresetKey);
+        assertTrue(defaults.retainResultPresetUntilExit);
+        assertFalse(defaults.showResultPresetCodes);
+        assertTrue(defaults.splitResultPresetLabelsOnPlus);
+        assertEquals("A", defaults.resultPresetPolicies.get(0).code);
+        assertEquals("Apariencia",
+            defaults.resultPresetPolicies.get(0).localizedLabel("es"));
+        assertEquals("#16A34A", defaults.resultPresetPolicies.get(0).uiColor);
+        assertTrue(defaults.effectiveToggleStates.get("appearance"));
+        assertFalse(defaults.effectiveToggleStates.get("sample-option"));
+        assertEquals("READY", defaults.data.getString("sample-result"));
+        assertEquals("APPEARANCE", defaults.data.getString("sample-choice"));
+
+        Map<String, Boolean> function = new LinkedHashMap<>();
+        function.put("appearance", false);
+        function.put("combined", false);
+        function.put("function", true);
+        function.put("sample-option", true);
+        AlternateEntryRules.Resolution selected = AlternateEntryRules.resolve(
+            source(), catalog(target), entry, "SN-PRESET-C", onePhoto(),
+            function, new JSONObject());
+        assertEquals("function", selected.selectedResultPresetKey);
+        assertEquals("HOLD", selected.data.getString("sample-result"));
+        assertEquals("ENABLED", selected.data.getString("sample-mode"));
+        assertEquals("FUNCTION", selected.data.getString("sample-choice"));
+    }
+
+    @Test
+    public void resultPresetsRejectUnknownPartialAndConflictingPanelState()
+            throws Exception {
+        JSONObject target = targetWithPresetResult();
+        JSONObject entry = configWithResultPresets();
+        Map<String, Boolean> partial = new LinkedHashMap<>();
+        partial.put("sample-option", true);
+        assertRejected("must exactly match one result preset", () ->
+            AlternateEntryRules.resolveForUiPreflight(source(), catalog(target), entry,
+                "SN-PRESET-BAD", onePhoto(), partial));
+
+        JSONObject badKey = configWithResultPresets();
+        badKey.getJSONObject("resultPresets").getJSONArray("items")
+            .getJSONObject(0).put("activeToggleKeys", new JSONArray().put("missing"));
+        assertRejected("references an unknown toggle", () ->
+            AlternateEntryRules.resolveForUiPreflight(source(), catalog(target), badKey,
+                "SN-PRESET-BAD-KEY", onePhoto(), Collections.emptyMap()));
+
+        JSONObject conflicting = configWithResultPresets();
+        conflicting.getJSONObject("resultPresets").getJSONArray("items")
+            .getJSONObject(0).put("dataOverrides", new JSONObject()
+                .put("sample-note", "conflicts-with-entry"));
+        assertRejected("duplicate override field sample-note", () ->
+            AlternateEntryRules.resolveForUiPreflight(source(), catalog(target), conflicting,
+                "SN-PRESET-CONFLICT", onePhoto(), Collections.emptyMap()));
+
+        JSONObject impossiblePresentation = configWithResultPresets();
+        impossiblePresentation.getJSONObject("resultPresets").put("showCodes", true);
+        assertRejected("cannot show codes while splitting labels on plus", () ->
+            AlternateEntryRules.resolveForUiPreflight(source(), catalog(target),
+                impossiblePresentation, "SN-PRESET-PRESENTATION", onePhoto(),
+                Collections.emptyMap()));
     }
 
     @Test

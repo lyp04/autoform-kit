@@ -179,7 +179,7 @@ cross-App profile provider 暴露，`color` / `discovery` 不驱动当前主表�
 }
 ```
 
-额外输入必须放在 `snPlugins`，不能在 `snFields` 中发明第三种角色。`snPlugins` 的每项可包含 `key`、`field`、`label`、`labelI18n`、`required`、`search`、`scan` 和 `placeholder`。`snPluginsHidden` 保存从模板导入但默认不显示的项。`key:"primary"` 与 `key:"secondary"` 对应 App 的两个专用扫码入口；其他 key 是普通 profile-owned 文本输入，`scan:true` 和 `scanner` 都不允许用于额外 key，Panel 预览也不会为它们显示不存在的扫码按钮。
+额外输入必须放在 `snPlugins`，不能在 `snFields` 中发明第三种角色。`snPlugins` 的每项可包含 `key`、`field`、`label`、`labelI18n`、`required`、`search`、`scan`、`placeholder` 和 `placeholderI18n`。`placeholder` 及每个翻译最长 160 字符，空字符串表示回退到当前语言的框名；`placeholderI18n` 与其他多语言字段一样只允许可选的 `en` / `es`。Panel 编辑器可直接修改中文输入提示，发布翻译会填充这个 sibling map。旧模板自动生成的通用“请输入”即使没有 map，新 App 也会在英语/西班牙语下显示内置通用翻译。`snPluginsHidden` 保存从模板导入但默认不显示的项。`key:"primary"` 与 `key:"secondary"` 对应 App 的两个专用扫码入口；其他 key 是普通 profile-owned 文本输入，`scan:true` 和 `scanner` 都不允许用于额外 key，Panel 预览也不会为它们显示不存在的扫码按钮。
 
 扫描策略优先由两个专用 `snPlugins` 分别提供：
 
@@ -665,6 +665,34 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
             }
           }
         ],
+        "resultPresets": {
+          "defaultKey": "appearance",
+          "retainUntilExit": true,
+          "showCodes": false,
+          "splitLabelsOnPlus": true,
+          "items": [
+            {
+              "key": "appearance",
+              "code": "A",
+              "label": "外观",
+              "uiColor": "#16A34A",
+              "resultKey": "sample-ready",
+              "activeToggleKeys": [],
+              "dataOverrides": {}
+            },
+            {
+              "key": "function",
+              "code": "C",
+              "label": "功能",
+              "uiColor": "#DC2626",
+              "resultKey": "sample-ready",
+              "activeToggleKeys": ["sample-option"],
+              "dataOverrides": {
+                "sample-appearance-field": "SAMPLE_PASS"
+              }
+            }
+          ]
+        },
         "flags": {
           "duplicateCheck": false,
           "previousSteps": false,
@@ -702,11 +730,12 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
 - 当同一 source 同时命中 allowed-length 与为旧 App 保留的 exact-length fallback 时，新 App 优先使用 `allowedLengths`；`expectedLength` / `expectedSnLength` 必须是该列表成员，不会把列表压回单一长度。Panel 结构化独立入口控件可显示继承的 allowed scope、写入显式 override 或“恢复继承”；同样的字段可在 Advanced JSON 的 `workflow.alternateEntries.entries[].scanner` 精确编辑；
 - `submissionRetry` 只控制“后端已经返回且 Panel 分类器明确证明未写入”的最终 POST：`maxAttempts` 为包含首次请求在内的 `1..10`，`retryDelayMs` 为 `0..60000`。每次重试复用同一份不可变 payload 和本次已经取得的上传 URL，绝不重新上传照片；超时、断线、网关错误、非 JSON 或未分类响应立即进入结果不明锁，不消耗此重试额度。旧 catalog 缺少该对象或结构化编辑器新建入口时都使用安全值 `1/0`，即不自动重试；
 - `dataOverrides` 与每个 toggle 的 `dataOverrides` 只能引用目标已声明 field，field ownership 互不重复，不能替换目标主标识或 `template` identity；
+- 可选 `resultPresets` 把独立入口显示为 2..8 个互斥结果按钮；缺失时保持原有 toggle 复选框界面。`defaultKey` 必须引用唯一 item，`retainUntilExit` 决定成功提交及来源切换后是否保留选择。可选 `showCodes`（默认 `true`）控制是否显示 item 的短代码；可选 `splitLabelsOnPlus`（默认 `false`）把文案中唯一的 `+` 排成独立一行，适合“外观 / + / 功能”这类三行按钮。为保证固定高度内不溢出，这两个选项不能同时为 `true`。每个 item 必须有与普通 toggle key 不冲突的安全 `key`、最长 12 字符且组内唯一的底层 `code`、Panel-owned `label` / 可选 `labelI18n`、`#RRGGBB` `uiColor`、目标 `gradeMap` 中的 `resultKey`、无重复且只引用本入口 toggle 的 `activeToggleKeys`，以及 `dataOverrides`。隐藏代码只改变显示，不改变 preset 身份或提交数据。所有 preset 的 result 必须写入同一个 canonical result field；App 将 preset key 和完整底层 toggle vector 一起写入既有草稿，因此 SN/照片恢复后仍是原选择。不同 preset 可以覆盖同一个目标 field，因为它们互斥；但每个 preset 都不能与入口固定/toggle override 或 dynamic output 抢占字段；
 - `dynamicOverrideFields` 与 `dynamicOverrideProviders` 都必须显式为数组；不使用实时覆盖时两者都写 `[]`。每个 provider 必须引用同入口的 `triggerToggleKey`、隐藏目标的精确 `templateId`、正整数 `expectedStep`、adapter 中存在的 `resolverId` 和唯一 `outputField`。allow-list 必须与全部 provider 输出字段完全相等；输出不得与固定/toggle override 重叠，也不得替换 serial、result、照片或 template identity；
 - provider 开启时，运行时必须在任何照片 upload 或 submit POST 前拉取每个 active provider 的 live template，验证 template/step/warehouse/SKU identity，并要求 field selector 与 option selector 各恰好命中一项。响应缺失、多余、0/多命中、未知 key、空 builder 结果或 identity 不符都必须停止，不得回退到静态值；
 - 每个 toggle 必须有唯一 `key`、显式 `label`、可选 `labelI18n`、boolean `default` / `retainUntilExit` 及一个 `dataOverrides` 对象。App 显示 `labelI18n` 或 `label`，不按 key 写死现场文案；
 - `flags` 只允许 `duplicateCheck`、`previousSteps`、`printing`，且三项必须全部为 `false`，确保独立入口不意外继承标准提交链的可选副作用；
-- alternate object、entry、scanner、`submissionRetry`、toggle 与 flags 都拒绝未知 key；`enabled:false` 时 `entries` 必须为空，`enabled:true` 时至少一个 entry；entries / toggles 分别最多 16 项，照片 field 最多 32 项，覆盖来源必须唯一。
+- alternate object、entry、scanner、`submissionRetry`、toggle、`resultPresets` 与 flags 都拒绝未知 key；`enabled:false` 时 `entries` 必须为空，`enabled:true` 时至少一个 entry；entries / toggles 分别最多 16 项，preset 最多 8 项，照片 field 最多 32 项，非互斥覆盖来源必须唯一。
 
 缺少整个 `alternateEntries` 时旧 catalog 仍可在 Panel 打开，但视为关闭且不能按新 schema 发布；结构化编辑器会写入显式安全默认。发布仍要求 `workflow.compatibilityReviewed:true`。Panel 不会自动勾选兼容性核对，也不会把可见 profile 自动改为隐藏目标。上线前应以受控私有、最小化但机器值保真的 replay 逐项核对入口文案、toggle 生命周期、照片数量与拼接、上传文件名、最终 identity/payload，以及三个关闭 flags。Provider schema 与纯规则测试不等于 Android 主流程已经接线；尚未验证“compile → fetch → resolve → payload”全部发生在 upload 前的 build 必须保持 provider 数组为空。
 

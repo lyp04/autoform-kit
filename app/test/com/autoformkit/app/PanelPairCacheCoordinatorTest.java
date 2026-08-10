@@ -137,6 +137,31 @@ public class PanelPairCacheCoordinatorTest {
     }
 
     @Test
+    public void legacyUnversionedConfigUpgradeUsesOnlyAnExactCatalogMatch()
+            throws Exception {
+        JSONObject legacyCatalog = rawCatalog(7);
+
+        PanelPairCacheCoordinator.ActivePair matched =
+            PanelPairCacheCoordinator.candidatePairMatchingLegacyCatalog(
+                legacyCatalog.toString(), config(7).toString(),
+                catalog(7).toString(), PANEL, KEY);
+        assertEquals(7, matched.version);
+
+        JSONObject changedSameRevision = rawCatalog(7);
+        changedSameRevision.getJSONArray("profiles").getJSONObject(0)
+            .put("displayName", "Different fictional publish");
+        assertEquals(null,
+            PanelPairCacheCoordinator.candidatePairMatchingLegacyCatalog(
+                legacyCatalog.toString(), config(7).toString(),
+                boundCatalog(changedSameRevision).toString(), PANEL, KEY));
+
+        assertEquals(null,
+            PanelPairCacheCoordinator.candidatePairMatchingLegacyCatalog(
+                legacyCatalog.toString(), config(8).toString(),
+                catalog(8).toString(), PANEL, KEY));
+    }
+
+    @Test
     public void strictlyNewerValidCandidateHalvesPermitExactOldActiveFallback()
             throws Exception {
         PanelPairCacheCoordinator.ActivePair active =
@@ -242,7 +267,11 @@ public class PanelPairCacheCoordinatorTest {
     }
 
     private static JSONObject catalog(int version) throws Exception {
-        JSONObject value = rawCatalog(version);
+        return boundCatalog(rawCatalog(version));
+    }
+
+    private static JSONObject boundCatalog(JSONObject raw) throws Exception {
+        JSONObject value = new JSONObject(raw.toString());
         String sourceSha = LegacyPanelCacheMigrationRules.sha256(value.toString());
         AppConfig.stampConnection(value, PANEL, KEY);
         AppConfig.stampCatalogSource(value, sourceSha);

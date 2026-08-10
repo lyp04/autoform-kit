@@ -484,6 +484,20 @@ function readWorkerAuthorityBinding(
     authority, workerVersionId, versionBytes, defaultBranch);
 }
 
+export function validWranglerPackageBinding(installed, locked) {
+  const normalizeBin = (value) => typeof value === "string"
+    ? value.replace(/^\.\//u, "")
+    : "";
+  return installed.name === "wrangler"
+    && typeof installed.version === "string"
+    && isObject(locked)
+    && locked.version === installed.version
+    && typeof locked.integrity === "string"
+    && locked.integrity.startsWith("sha512-")
+    && normalizeBin(installed.bin?.wrangler) === "bin/wrangler.js"
+    && normalizeBin(locked.bin?.wrangler) === "bin/wrangler.js";
+}
+
 async function wranglerToolchainSha256() {
   const installedPackagePath = resolve(
     REPOSITORY_ROOT, "panel/node_modules/wrangler/package.json");
@@ -500,13 +514,7 @@ async function wranglerToolchainSha256() {
     const installed = strictJsonObject(installedBytes, "installed Wrangler package");
     const lock = strictJsonObject(lockBytes, "Panel dependency lock");
     const locked = lock.packages?.["node_modules/wrangler"];
-    if (installed.name !== "wrangler"
-        || typeof installed.version !== "string"
-        || !isObject(locked)
-        || locked.version !== installed.version
-        || typeof locked.integrity !== "string"
-        || !locked.integrity.startsWith("sha512-")
-        || installed.bin?.wrangler !== "bin/wrangler.js") {
+    if (!validWranglerPackageBinding(installed, locked)) {
       throw new Error("version mismatch");
     }
     const reported = runBytes(process.execPath, [WRANGLER_BIN, "--version"],
@@ -772,6 +780,45 @@ function migrationReportPass(report) {
     && zeroFields.every((field) => report[field] === 0);
 }
 
+/**
+ * A narrowly scoped maintenance release may use the exact currently published APK as its only
+ * signed upgrade predecessor.  This evidence contract is intentionally much smaller than the
+ * historical migration contract above, but it is not a boolean escape hatch: every public and
+ * private byte binding is supplied by the publisher/verifier at run time, and every named check
+ * must be present as an exact boolean true.  The separately pinned private gate additionally
+ * restricts which concrete version pair may use this mode.
+ */
+export function currentUpgradeReportPass(report, expected) {
+  const checkKeys = [
+    "automaticUpdateProtocolVerified",
+    "currentPanelCatalogSmokeVerified",
+    "freshInstallVerified",
+    "legacyMatrixWaiverApproved",
+    "productionMutationAvoided",
+    "signedCurrentUpgradeVerified"
+  ];
+  return exactKeys(report, [
+    "bindings", "checks", "kind", "releaseReady", "schemaVersion"
+  ])
+    && report.schemaVersion === 1
+    && report.kind === "autoform-current-upgrade-release-evidence-v1"
+    && report.releaseReady === true
+    && exactKeys(report.bindings, [
+      "apkSha256", "candidateManifestSha256", "catalogVersion",
+      "panelCatalogSha256", "panelConfigSha256", "previousApkSha256",
+      "sourceCommit"
+    ])
+    && report.bindings.sourceCommit === expected.sourceCommit
+    && report.bindings.candidateManifestSha256 === expected.candidateManifestSha256
+    && report.bindings.apkSha256 === expected.apkSha256
+    && report.bindings.previousApkSha256 === expected.previousApkSha256
+    && report.bindings.panelConfigSha256 === expected.panelConfigSha256
+    && report.bindings.panelCatalogSha256 === expected.panelCatalogSha256
+    && report.bindings.catalogVersion === expected.catalogVersion
+    && exactKeys(report.checks, checkKeys)
+    && checkKeys.every((key) => report.checks[key] === true);
+}
+
 function expectedPairSha256(configSha256, catalogSha256, catalogVersion) {
   return sha256(Buffer.from([
     "AUTOFORM_KIT_PRIVATE_PANEL_PAIR_V1",
@@ -812,8 +859,20 @@ const migration = parseJson(migrationFile.bytes, "private migration report");
 const config = parseJson(configFile.bytes, "Panel config evidence");
 const catalog = parseJson(catalogFile.bytes, "Panel catalog evidence");
 const deployment = parseJson(deploymentFile.bytes, "private deployment evidence");
-if (!migrationReportPass(migration)) fail("private migration report is not release-ready");
-if (migration.publicHistoryRemoteRefsInputSha256
+const historicalMigrationEvidence = migrationReportPass(migration);
+const currentUpgradeEvidence = currentUpgradeReportPass(migration, {
+  sourceCommit: args["source-commit"],
+  candidateManifestSha256: args["candidate-manifest-sha256"],
+  apkSha256: args["apk-sha256"],
+  previousApkSha256: args["previous-apk-sha256"],
+  panelConfigSha256: configFile.sha256,
+  panelCatalogSha256: catalogFile.sha256,
+  catalogVersion: catalog.version
+});
+if (!historicalMigrationEvidence && !currentUpgradeEvidence) {
+  fail("private migration/current-upgrade report is not release-ready");
+}
+if (historicalMigrationEvidence && (migration.publicHistoryRemoteRefsInputSha256
       !== args["public-history-remote-refs-input-sha256"]
     || migration.publicHistoryRefApiInputSha256
       !== args["public-history-ref-api-input-sha256"]
@@ -832,7 +891,7 @@ if (migration.publicHistoryRemoteRefsInputSha256
     || migration.publicHistoryRepositoryBindingSha256
       !== args["public-history-repository-binding-sha256"]
     || migration.publicHistoryMetadataBindingSha256
-      !== args["public-history-metadata-binding-sha256"]) {
+      !== args["public-history-metadata-binding-sha256"])) {
   fail("private full-history audit does not match the publisher metadata capture");
 }
 
@@ -848,12 +907,13 @@ if (!exactKeys(proof, ["version", "panelBase", "keySha256", "catalogSha256", "ca
 }
 const pairSha256 = expectedPairSha256(
   configFile.sha256, catalogFile.sha256, proof.catalogVersion);
-if (migration.candidateApkSignedDeviceSourceCommit !== args["source-commit"]
+if (historicalMigrationEvidence
+    && (migration.candidateApkSignedDeviceSourceCommit !== args["source-commit"]
     || migration.candidateApkSignedDeviceCandidateManifestSha256
       !== args["candidate-manifest-sha256"]
     || migration.candidateApkSignedDeviceCandidateApkSha256 !== args["apk-sha256"]
     || migration.candidateApkSignedDevicePanelPairSha256 !== pairSha256
-    || migration.candidateApkSignedDevicePanelCatalogSha256 !== catalogFile.sha256) {
+    || migration.candidateApkSignedDevicePanelCatalogSha256 !== catalogFile.sha256)) {
   fail("signed-device matrix does not match the final source/candidate/Panel pair");
 }
 

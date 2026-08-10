@@ -222,6 +222,7 @@ final class CatalogPromotionValidator {
             if (plugin.has("scan") && !(plugin.opt("scan") instanceof Boolean)) {
                 reject(itemPath + ".scan");
             }
+            validateOptionalInputPlaceholder(plugin, itemPath);
             if (("primary".equals(pluginKey) || "secondary".equals(pluginKey))) {
                 String roleField = optionalText(snFields.opt(pluginKey),
                     itemPath + ".field.binding");
@@ -690,6 +691,28 @@ final class CatalogPromotionValidator {
         for (String locale : objectKeys(values)) {
             boundedText(values.opt(locale), path + "." + locale,
                 MAX_DAILY_STATS_LABEL_LENGTH);
+        }
+    }
+
+    /** Presentation-only input hints may be empty to request the App's field-label fallback. */
+    private static void validateOptionalInputPlaceholder(JSONObject plugin, String path) {
+        if (plugin.has("placeholder")) {
+            Object raw = plugin.opt("placeholder");
+            if (!(raw instanceof String)
+                    || ((String) raw).length() > MAX_DAILY_STATS_LABEL_LENGTH) {
+                reject(path + ".placeholder");
+            }
+        }
+        if (!plugin.has("placeholderI18n")) return;
+        JSONObject values = requiredObject(
+            plugin.opt("placeholderI18n"), path + ".placeholderI18n");
+        requireOnlyKeys(values, setOf("en", "es"), path + ".placeholderI18n");
+        for (String locale : objectKeys(values)) {
+            Object raw = values.opt(locale);
+            if (!(raw instanceof String)
+                    || ((String) raw).length() > MAX_DAILY_STATS_LABEL_LENGTH) {
+                reject(path + ".placeholderI18n." + locale);
+            }
         }
     }
 
@@ -1338,16 +1361,9 @@ final class CatalogPromotionValidator {
                     placeholderUrls.add("https://example.invalid/catalog-validation/"
                         + (photo + 1));
                 }
-                Set<String> dynamicFields =
-                    AlternateEntryDynamicOverrideRules.expectedActiveFields(
-                        entry, targetProfile, Collections.emptyMap());
-                JSONObject dynamicValues = new JSONObject();
-                for (String field : dynamicFields) {
-                    dynamicValues.put(field, "catalog-validation");
-                }
-                AlternateEntryRules.resolve(source.profile, profiles, entry,
-                    "CATALOG-VALIDATION", placeholderUrls,
-                    Collections.emptyMap(), dynamicValues);
+                AlternateEntryRules.resolveForUiPreflight(
+                    source.profile, profiles, entry, "CATALOG-VALIDATION",
+                    placeholderUrls, Collections.emptyMap());
                 JSONObject alternateScanner = AlternateEntryRules.applyScannerScopeOverrides(
                     effectiveScannerForProfile(source.profile, false, source.path), entry);
                 if (!SnScanRules.Policy.from(alternateScanner).valid) {

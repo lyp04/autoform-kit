@@ -152,6 +152,57 @@ final class PanelPairCacheCoordinator {
     }
 
     /**
+     * Returns the complete current-connection candidate only when the legacy active catalog is
+     * the exact same logical catalog. Older Apps could cache a versioned catalog beside an
+     * unversioned config; that leaves an otherwise valid online refresh unable to promote. The
+     * catalog equality check lets callers bind local ledger/stat mirrors without trusting the
+     * unversioned config or weakening normal pair validation.
+     */
+    static ActivePair loadCandidatePairMatchingLegacyActiveCatalog(
+            Context context, String expectedConnection) {
+        final Context app;
+        try {
+            app = requireContext(context);
+        } catch (Exception invalid) {
+            return null;
+        }
+        synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+            try {
+                recoverLocked(app);
+                if (!currentConnection(app).equals(clean(expectedConnection))) return null;
+                if (!AtomicCacheFile.hasRecoverableCopy(FormCatalog.cacheFile(app))
+                        || !AtomicCacheFile.hasRecoverableCopy(
+                            AppConfig.candidateCacheFile(app))
+                        || !AtomicCacheFile.hasRecoverableCopy(
+                            FormCatalog.candidateCacheFile(app))) return null;
+                return candidatePairMatchingLegacyCatalog(
+                    AtomicCacheFile.readUtf8(FormCatalog.cacheFile(app)),
+                    AtomicCacheFile.readUtf8(AppConfig.candidateCacheFile(app)),
+                    AtomicCacheFile.readUtf8(FormCatalog.candidateCacheFile(app)),
+                    AppConfig.panelBase(app), AppConfig.catalogKey(app));
+            } catch (Exception invalidOrUnmatched) {
+                return null;
+            }
+        }
+    }
+
+    /** Pure seam for the legacy unversioned-config upgrade path. */
+    static ActivePair candidatePairMatchingLegacyCatalog(
+            String legacyCatalogText, String candidateConfigText,
+            String candidateCatalogText, String panelBase, String key) {
+        try {
+            ActivePair candidate = parsePair(
+                candidateConfigText, candidateCatalogText, panelBase, key);
+            JSONObject legacyCatalog = new JSONObject(legacyCatalogText);
+            if (FormCatalog.catalogVersion(legacyCatalog) != candidate.version
+                    || !sameSemanticJson(legacyCatalog, candidate.catalogRoot)) return null;
+            return candidate;
+        } catch (Exception invalidOrUnmatched) {
+            return null;
+        }
+    }
+
+    /**
      * One-lock active-use view for form/catalog/notification consumers.
      *
      * <p>The exact current connection, coherent active pair, and both candidate slots are observed

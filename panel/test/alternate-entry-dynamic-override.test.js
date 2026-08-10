@@ -149,7 +149,7 @@ test("serial, result, photo, identity and static owners cannot be dynamic output
     if (outputField === "sample-live-choice") {
       entry.dataOverrides[outputField] = "SAMPLE_STATIC";
       assert.ok(validateFormProfile(source).some((error) =>
-        error.includes("must not overlap dataOverrides or toggle dataOverrides")));
+        error.includes("must not overlap static, toggle, or result preset overrides")));
     }
     const problems = validateAlternateEntryReferences([source], [source, target]);
     assert.ok(problems[0].errors.some((error) => error.includes(expected)),

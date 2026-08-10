@@ -287,11 +287,12 @@ tools/publish-release.sh \
   --private-wordlist /secure/example/private-publication-wordlist.json
 ```
 
-**当前发布策略有意保持 fail closed。** `tools/private-release-gate-policy.json` 的
-`enabled` 仍为 `false`，因为仓库中尚无经审查并固定 SHA-256 的真实私有 gate。即使任意
-external/ignored gate 抄写全部环境 hash 并把全部检查写成 `true`，发布脚本也会在调用它和
-`gh release create` 之前停止。只有审查真实 gate 后，把其 exact SHA-256 写入该 source-commit-bound
-policy 并显式启用，才能继续后续现场验证；不得为了发布临时关闭或绕过此检查。
+**当前发布策略继续 fail closed。** `tools/private-release-gate-policy.json` 只启用一份经审查并固定
+SHA-256 的外部 gate。该 gate 是一次性的 v1.0.14 maintenance gate：它只接受公开 v1.0.13
+（versionCode 17）到 v1.0.14（versionCode 18）的同 package/同 signer 升级、精确审阅过的 source
+diff、catalog v55 的 private R2 authority，以及下述 schema-v5 当前升级证据。v1.0.14 tag/Release
+存在后不可复用；任何其他版本、基线、changed-path 集合、catalog revision 或 authority 都会停止。
+后续版本必须重新审查真实 gate、更新其 exact SHA-256 并提交 policy，不能沿用、临时关闭或绕过。
 
 原 gate 必须是可执行、非符号链接且 group/other 不可写的普通文件。发布脚本不会从该可变路径直接
 执行：它把已匹配 policy SHA-256 的字节复制到 owner-only `0700` 临时目录，将 snapshot 固定为
@@ -494,10 +495,10 @@ provenance，要求原始响应字节完全不变，并重新确认 public repos
 
 上述 GitHub/R2 discriminator、private-bucket checks、pointer byte recheck、optional settings 与 live
 manifest exact binding 已由 `verify-private-release-evidence.mjs` 的 schema v2 report 实现，并由
-`publish-release.sh` 传入 schema v4 attestation 的 generic authority fields。当前
-`release-workflow-selftest.sh` 覆盖 verifier 的纯函数合同、trusted-gate-disabled 的 fail-closed 路径，
+`publish-release.sh` 传入 schema v5 attestation 的 generic authority fields。当前
+`release-workflow-selftest.sh` 覆盖 verifier 的纯函数合同、trusted-gate-identity mismatch 的 fail-closed 路径，
 并强制运行 `private-release-chain-selftest.sh`。后者在临时真实 Git repository 中跑通
-verifier → gate environment → schema-v4 attestation → 第二次 exact verifier → Release 创建前边界 →
+verifier → gate environment → schema-v5 attestation → 第二次 exact verifier → Release 创建前边界 →
 发布后资产下载复核的隔离成功链，也验证篡改 attestation 会在 Release 创建前停止。它对预期的
 GitHub、Git remote、Panel fetch、Wrangler 和 Android metadata tool 边界使用严格 fixture；这不是
 OS 层网络隔离，也不能代替真实部署证据。当前全链成功 fixture 只覆盖 GitHub authority 且
@@ -509,19 +510,18 @@ Runtime provenance 是 private-evidence verifier 的强制输入：它通过 rea
 它仍只证明受控部署流程提供的 version metadata/source tag，不是上传 bundle 的 byte attestation；受审
 private gate 在生成 `privateDeployment:true` 前还必须绑定独立的 exact bundle/build 证据。
 
-> **当前发布结论仍为 NO-GO。** 尚未为实际 deployment 生成本次 candidate 绑定的 mode-`0600`
-> config/catalog/deployment inputs、authenticated live authority/manifest 结果和 release-ready migration
-> report；真实 private gate 也尚未审阅固定，source policy 仍为 disabled。实现和 selftest 通过不等于
-> 这些现场证据已经存在。
+> **v1.0.14 只有在现场证据通过时才是 GO。** Source policy 已固定一次性 v1.0.14 gate；发布现场仍须
+> 提供 candidate 绑定的 mode-`0600` config/catalog/deployment inputs、authenticated live
+> authority/manifest 结果与 current-upgrade release-ready report。缺少任一输入或 live recheck 不一致，
+> publisher 都会在 GitHub 写入前停止。
 
 ### 私有 gate 与 attestation 契约
 
-在 policy 尚未启用时，本节是启用 gate 前必须满足并审查的合同，不表示当前已可发布。
+本节是每次启用 gate 前必须满足并审查的合同；policy enabled 不等于现场证据已经通过。
 仓库中的 `verify-private-release-evidence.mjs` 已实现 mode-`0600` migration report、Panel
 config/catalog pair、GitHub/R2 authority、optional settings、authenticated live manifest 与 runtime
-provenance 的 schema v2 检查。它只在取得真实 deployment inputs 时才有现场意义；当前没有这些输入。
-在真实 gate 完成独立审查、固定身份和完整 live 验证前，policy 保持
-fail closed。手填 status/hash/boolean 不构成启用依据。
+provenance 的 schema v2 检查。它只在取得真实 deployment inputs 时才有现场意义。一次性 v1.0.14
+gate 已固定身份，但仍必须在每次发布调用中完成完整 live 验证；手填 status/hash/boolean 不构成依据。
 
 `--gate` 必须是可执行的普通文件。它可以位于仓库外；若位于仓库内，则必须未被跟踪且被 `.gitignore` 覆盖。发布脚本不接受预先写好的证明，而是为每次调用创建一个新的私有临时输出路径，再执行 gate。以下环境变量提供给 gate：
 
@@ -555,7 +555,7 @@ Gate 可在私有工作区运行迁移、worktree/full-history/Release asset 扫
 
 ```json
 {
-  "schemaVersion": 4,
+  "schemaVersion": 5,
   "releaseReady": true,
   "bindings": {
     "candidateManifestSha256": "<64-hex>",
@@ -664,15 +664,16 @@ Gate 可在私有工作区运行迁移、worktree/full-history/Release asset 扫
     }
   },
   "checks": {
-    "privateMigration": true,
+    "privateUpgradeEvidence": true,
     "privateDeployment": true,
     "publicWorktree": true,
     "publicHistory": true,
     "candidateApk": true,
-    "signedUpgrade": true,
-    "rollback": true,
-    "flowParity": true,
-    "controlledRecovery": true
+    "signedCurrentUpgrade": true,
+    "freshInstall": true,
+    "liveCatalogCompatibility": true,
+    "automaticUpdateProtocol": true,
+    "productionMutationFree": true
   }
 }
 ```
@@ -699,7 +700,7 @@ branch 或 tag 字段一律失败。Release raw snapshot 只排除会自然变�
 custom properties。若这些功能已公开启用，必须另做逐面审计并把结果纳入私有 gate；在此之前不能
 声称“GitHub 全部公开面已审完”。本发布流程同时把 Release tag 限制为无斜杠的安全单段名称。
 
-上面的 schema v4 已使用 generic authority fields 接收 verifier schema v2 的 GitHub/R2 结果。
+上面的 schema v5 使用 generic authority fields 接收 verifier schema v2 的 GitHub/R2 结果。
 `catalogAuthorityRevision` 对 GitHub 是 exact commit，对 R2 是 current pointer 绑定的 `stateSha256`；
 `panelSettingsPresent:false` 时，`panelSettingsSha256` 是固定 domain-separated absent digest，不是假空文件。
 旧 deployment-evidence schema v1 只会被识别并拒绝；正式证据必须使用 schema v2 discriminator。
@@ -715,7 +716,13 @@ route 都返回 `401`。公开源码无法替代这些部署证据，因为 Work
 “未设置 key 时开放”的兼容行为。任一证据缺失、过期或不匹配时，gate 必须输出
 `releaseReady:false`，不得发布。
 
-`controlledRecovery:true` 只能在私有 gate 已对精确 backend adapter、Panel/catalog pair、reconciliation contract、脱敏 replay 输入/结果及 signed-upgrade 设备证据运行 `tools/controlled-recovery-attestation.mjs` 并通过后写入；一个手填布尔值、可编辑结果 JSON 或普通操作员按钮都不是核销证据。只要任一 hash 不同、`releaseReady` 不是布尔值 `true`、任一检查缺失/为假，或 gate 没有现场生成普通 JSON 文件，发布就会停止。这里的 public audit binding 来自脚本自己的 fresh scan，并由 gate 再确认；它不替代 private migration、历史/Releases 和真机流程证据。私有原始输入、词表、设备证据和 attestation 不上传到公开 Release；需要留档时由 gate 在受控私有存储中另存。
+Schema-v5 当前升级证据必须精确绑定 source commit、candidate/APK/previous APK、生产
+config/catalog 原始字节与 revision，并明确记录：当前正式前驱签名覆盖升级、fresh install、当前
+catalog UI smoke、自动更新协议、无生产提交，以及部署方对更早历史矩阵的显式豁免。它只适用于
+一次性 gate 固定的 maintenance change set；若提交/上传/recovery 路径发生变化，不能使用该豁免，
+仍须完成下面的 controlled-recovery 私有证据。只要任一 hash 不同、`releaseReady` 不是布尔值
+`true`、任一检查缺失/为假，或 gate 没有现场生成普通 JSON 文件，发布就会停止。私有原始输入、
+词表、设备证据和 attestation 不上传到公开 Release。
 
 #### Controlled-recovery 私有证据契约
 
@@ -730,7 +737,7 @@ Replay input 是 exact JSON object，绑定 `sourceCommit`、`catalogVersion`、
 
 逐操作检查必须覆盖：authority/server correlation、remote receipt、journal/pair cross-proof、持久 challenge 重放、evidence id 重放、本地可编辑 JSON/按钮不能解锁、原子持久化返回 false、持久化后进程退出、该类 legacy uncertainty，以及该操作自己的 written/not-written/partial/complete 与错 connection/catalog/pair/profile/draft/operation/payload/recipe/upload identity。顶层还必须有真实 signed-upgrade operator-device test、runtime wiring、challenge consumption 与 atomic persistence 证据。
 
-当前仓库中的 `ControlledRecoveryRules` 与 adapter schema 只是纯验证/状态转换合同；`MainActivity` 尚未接入持久 challenge、evidence-id consumption、operator transport 或原子 write-back/清锁。当前 App 的原 POST 也未把 recovery subject/operation id 送到 reconciliation authority。因此在部署方实现服务器相关性来源和运行时 wiring，并在签名覆盖升级设备上生成上述材料之前，真实 gate 必须失败，不能把公共 selftest 或手填 attestation 写成 `controlledRecovery:true`。
+当前仓库中的 `ControlledRecoveryRules` 与 adapter schema 只是纯验证/状态转换合同；`MainActivity` 尚未接入持久 challenge、evidence-id consumption、operator transport 或原子 write-back/清锁。当前 App 的原 POST 也未把 recovery subject/operation id 送到 reconciliation authority。因此，任何修改这些路径的版本在部署方实现服务器相关性来源和运行时 wiring，并在签名覆盖升级设备上生成上述材料之前，真实 gate 必须失败。一次性 v1.0.14 maintenance gate 通过精确 baseline/diff allowlist 证明这些路径未变化，而不是把缺失能力伪装成 `controlledRecovery:true`。
 
 仓库自带纯临时 fixture 自测，用 stub 替代 GitHub、Git 与 Android 元数据工具，不构建也不联网。`release-workflow-selftest.sh` 会先强制运行 controlled-recovery attestation 自测，任一权限、竞态、绑定或输出保护回归都会让整个离线发布自测失败：
 
@@ -838,6 +845,6 @@ Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布
 - [ ] 主流程/独立入口最终提交、上一工序 recipe 与补打 journal 已完成编译、单元测试和设备逐态故障注入；不确定业务 POST 不会重放，图片上传允许有限重传且不创建最终表单，旧 upload-only key 可自动清理；主/独立入口与上一工序有受控后端核对/恢复 runbook，且补打只在同一远端上下文、同一 job/SN 的成功 configured-printed 查询后自动收敛。
 - [ ] 高 `versionCode` 旧代码回滚前已在设备证明四类业务 POST slot 全部不存在/可读、遗留 upload-only key 已清理且无远程 worker；存在或无法读取时已验证回滚门禁 fail closed。
 - [ ] Private migration 报告为 `releaseReady:true`，不是仅 `ok:true` / `structuralOk:true`；validation、missing、unresolved 与 compatibility review 均已清零/完成。
-- [ ] 私有 gate 现场生成的 attestation 精确绑定本候选，且 worktree/history/APK/signed-upgrade/rollback/flow-parity/controlled-recovery checks 全为布尔值 `true`；controlled-recovery 由精确 adapter/Panel pair/contract/replay/device 证据生成，不是手填结论。
+- [ ] 私有 gate 现场生成的 schema-v5 attestation 精确绑定本候选，且 current-upgrade、fresh-install、live-catalog、automatic-update 与 production-mutation-free checks 全为布尔值 `true`；maintenance gate 还绑定精确发布基线和 changed-path allowlist。任何触及提交/上传/recovery 的版本仍须使用完整 controlled-recovery 证据，不能手填豁免。
 - [ ] 全部 branch/tag/pull refs、commit/tag/ref metadata、Releases/assets、Actions、PR attachments、Packages、Pages、Wiki 与 forks 已在 authenticated 与匿名视角复核；任何无法删除的 pull ref/cache 已由 GitHub Support 处理并重新验证。
 - [ ] 更新、失败回退和高 versionCode 回滚方案已验证。

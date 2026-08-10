@@ -66,7 +66,8 @@ function toInputPlugin(field, index, primaryField) {
   const candidateKey = String(field.field || "").trim();
   const extraKey = candidateKey && !["primary", "secondary"].includes(candidateKey)
     ? candidateKey : `input-${index + 1}`;
-  return {
+  const placeholder = field.placeholder || "请输入";
+  const plugin = {
     key: primary ? "primary" : extraKey,
     label: field.title || field.en_title || field.field,
     field: field.field,
@@ -77,8 +78,14 @@ function toInputPlugin(field, index, primaryField) {
     // identifier. Additional identifier-looking fields stay non-scanning until the Panel assigns
     // a reviewed secondary role and scanner policy.
     scan: primary,
-    placeholder: field.placeholder || "请输入"
+    placeholder
   };
+  if (field.placeholderI18n && typeof field.placeholderI18n === "object") {
+    plugin.placeholderI18n = JSON.parse(JSON.stringify(field.placeholderI18n));
+  } else if (placeholder === "请输入") {
+    plugin.placeholderI18n = { en: "Enter", es: "Introduzca" };
+  }
+  return plugin;
 }
 
 function toChoiceField(field) {

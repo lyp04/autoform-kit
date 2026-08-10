@@ -127,6 +127,34 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void identifierPlaceholderTranslationsAreValidatedButRemainOptional()
+            throws Exception {
+        JSONObject valid = catalog();
+        JSONObject plugin = firstProfile(valid).getJSONArray("snPlugins").getJSONObject(0);
+        plugin.put("placeholder", "请输入")
+            .put("placeholderI18n", new JSONObject()
+                .put("en", "Enter")
+                .put("es", "Introduzca"));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(valid));
+
+        JSONObject legacy = copy(valid);
+        firstProfile(legacy).getJSONArray("snPlugins").getJSONObject(0)
+            .put("placeholder", "")
+            .put("placeholderI18n", new JSONObject().put("en", "").put("es", ""));
+        assertTrue(CatalogPromotionValidator.isStructurallyValid(legacy));
+
+        JSONObject unsupportedLocale = copy(valid);
+        firstProfile(unsupportedLocale).getJSONArray("snPlugins").getJSONObject(0)
+            .getJSONObject("placeholderI18n").put("fr", "Saisir");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(unsupportedLocale));
+
+        JSONObject wrongType = copy(valid);
+        firstProfile(wrongType).getJSONArray("snPlugins").getJSONObject(0)
+            .put("placeholderI18n", "Enter");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(wrongType));
+    }
+
+    @Test
     public void rejectsConfiguredPhotoMutationsButAllowsInactiveLegacyOverlap()
             throws Exception {
         JSONObject invalidOrder = catalog();
