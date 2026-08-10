@@ -1871,7 +1871,7 @@ run_private_gate() {
     --argjson privateCatalogVersion "${PRIVATE_CATALOG_VERSION}" \
     'length == 1
       and (.[0] | keys == ["bindings", "checks", "releaseReady", "schemaVersion"])
-      and .[0].schemaVersion == 4
+      and .[0].schemaVersion == 5
       and .[0].releaseReady == true
       and .[0].bindings == {
         candidateManifestSha256: $manifest,
@@ -1980,15 +1980,16 @@ run_private_gate() {
         }
       }
       and .[0].checks == {
-        privateMigration: true,
+        privateUpgradeEvidence: true,
         privateDeployment: true,
         publicWorktree: true,
         publicHistory: true,
         candidateApk: true,
-        signedUpgrade: true,
-        rollback: true,
-        flowParity: true,
-        controlledRecovery: true
+        signedCurrentUpgrade: true,
+        freshInstall: true,
+        liveCatalogCompatibility: true,
+        automaticUpdateProtocol: true,
+        productionMutationFree: true
       }' "${attestation}" >/dev/null || \
     die "private gate attestation is missing an exact binding or required true check"
   assert_private_evidence_unchanged

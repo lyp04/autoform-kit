@@ -149,7 +149,7 @@ fs.writeFileSync(required("AUTOFORM_CHAIN_GATE_ENV_CAPTURE"),
   `${JSON.stringify(privateEnvironment)}\n`, { mode: 0o600 });
 
 const attestation = {
-  schemaVersion: 4,
+  schemaVersion: 5,
   releaseReady: true,
   bindings: {
     candidateManifestSha256: required("AUTOFORM_RELEASE_CANDIDATE_MANIFEST_SHA256"),
@@ -276,15 +276,16 @@ const attestation = {
     }
   },
   checks: {
-    privateMigration: true,
+    privateUpgradeEvidence: true,
     privateDeployment: true,
     publicWorktree: true,
     publicHistory: true,
     candidateApk: true,
-    signedUpgrade: true,
-    rollback: true,
-    flowParity: true,
-    controlledRecovery: true
+    signedCurrentUpgrade: true,
+    freshInstall: true,
+    liveCatalogCompatibility: true,
+    automaticUpdateProtocol: true,
+    productionMutationFree: true
   }
 };
 

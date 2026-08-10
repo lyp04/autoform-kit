@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  currentUpgradeReportPass,
   parseDeploymentAuthority,
   parseGitHubCatalogTree,
   parseR2AuthoritySnapshot,
@@ -23,6 +24,42 @@ const WORKER_VERSION_ID = "11111111-2222-3333-4444-555555555555";
 function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
 }
+
+test("current-upgrade evidence is exact, byte-bound, and fail closed", () => {
+  const expected = {
+    sourceCommit: "a".repeat(40),
+    candidateManifestSha256: "b".repeat(64),
+    apkSha256: "c".repeat(64),
+    previousApkSha256: "d".repeat(64),
+    panelConfigSha256: "e".repeat(64),
+    panelCatalogSha256: "f".repeat(64),
+    catalogVersion: 55
+  };
+  const report = {
+    schemaVersion: 1,
+    kind: "autoform-current-upgrade-release-evidence-v1",
+    releaseReady: true,
+    bindings: { ...expected },
+    checks: {
+      automaticUpdateProtocolVerified: true,
+      currentPanelCatalogSmokeVerified: true,
+      freshInstallVerified: true,
+      legacyMatrixWaiverApproved: true,
+      productionMutationAvoided: true,
+      signedCurrentUpgradeVerified: true
+    }
+  };
+  assert.equal(currentUpgradeReportPass(report, expected), true);
+  assert.equal(currentUpgradeReportPass({
+    ...report,
+    checks: { ...report.checks, signedCurrentUpgradeVerified: false }
+  }, expected), false);
+  assert.equal(currentUpgradeReportPass({
+    ...report,
+    bindings: { ...report.bindings, apkSha256: "0".repeat(64) }
+  }, expected), false);
+  assert.equal(currentUpgradeReportPass({ ...report, extra: true }, expected), false);
+});
 
 async function privateFile(path, bytes) {
   await writeFile(path, bytes, { mode: 0o600 });
