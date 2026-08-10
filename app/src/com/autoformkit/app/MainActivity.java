@@ -8,6 +8,8 @@ import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.content.ActivityNotFoundException;
 import android.content.BroadcastReceiver;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
@@ -816,7 +818,9 @@ public class MainActivity extends Activity {
 
             panelPanel.addView(compactLabel(t("catalog_key")));
             final EditText catalogKeyEdit = edit(t("catalog_key_hint"));
-            catalogKeyEdit.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+            catalogKeyEdit.setInputType(InputType.TYPE_CLASS_TEXT
+                | InputType.TYPE_TEXT_VARIATION_PASSWORD
+                | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
             catalogKeyEdit.setText(AppConfig.catalogKey(this));
             panelPanel.addView(catalogKeyEdit);
 
@@ -834,6 +838,32 @@ public class MainActivity extends Activity {
             panelCurrent.setPadding(0, dp(6), 0, 0);
             panelPanel.addView(panelCurrent);
             root.addView(panelPanel);
+
+            LinearLayout supportPanel = panel();
+            supportPanel.addView(compactLabel(t("support_diagnostics")));
+            TextView supportReport = text(panelSupportReport(), 12, false);
+            supportReport.setTextColor(0xFF475569);
+            supportReport.setTextIsSelectable(true);
+            supportPanel.addView(supportReport);
+            LinearLayout supportActions = row();
+            supportActions.addView(button(t("copy_support_report"), v -> {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(
+                    Context.CLIPBOARD_SERVICE);
+                if (clipboard == null) {
+                    toast(t("copy_support_report_failed"));
+                    return;
+                }
+                clipboard.setPrimaryClip(ClipData.newPlainText(
+                    "AutoForm Kit support report", panelSupportReport()));
+                toast(t("copy_support_report_done"));
+            }));
+            int recoverableDraftCount = recoverableObsoletePanelDraftCount();
+            if (recoverableDraftCount > 0) {
+                supportActions.addView(button(t("panel_sync_recovery_action"),
+                    v -> promptObsoletePanelDraftRecovery()));
+            }
+            supportPanel.addView(supportActions);
+            root.addView(supportPanel);
 
             logText = text("", 12, false);
             logText.setTextColor(0xFF475569);
@@ -13895,18 +13925,19 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void clearAllDrafts() {
+    private boolean clearAllDrafts() {
         if (hasStoredUploadReplayBarrier()
                 || hasStoredPreviousStepSubmissionAttempt()) {
             Diagnostics.append(this,
                 "All-draft clear blocked by remote safety journal");
-            return;
+            return false;
         }
         boolean cleared = prefs.edit().remove(DRAFT_KEY).remove(DRAFT_STORE_KEY)
             .remove(draftStorePreferenceKey())
             .remove(rollbackMirrorReceiptPreferenceKey(DRAFT_STORE_KEY)).commit();
         if (cleared) blockedRollbackMirrors.remove(DRAFT_STORE_KEY);
         else blockedRollbackMirrors.add(DRAFT_STORE_KEY);
+        return cleared;
     }
 
     private JSONObject loadDraftStore() {
@@ -15536,7 +15567,6 @@ public class MainActivity extends Activity {
     private boolean safeToInstallBoundPanelSnapshot() {
         if (panelBoundaryCleanupBlocked || panelConnectionTupleIncomplete()
                 || !settingsPageOpen || submitting || profileOwnedRemoteWorkerActive()
-                || RemoteSideEffectGate.blockingStatePresent(this)
                 || UpdateManager.installerHandoffActive(this)
                 || mainFormBoundWorkerActive() || hasPendingMainFormOperation()
                 || hasStoredOrUnreadableReprintAttempt()
@@ -15544,9 +15574,13 @@ public class MainActivity extends Activity {
                 || alternateEntrySubmitting
                 || alternateEntryPageOpen || !units.isEmpty()
                 || hasAlternateEntryPendingData() || hasStoredAlternateEntryDraft()
-                || prefs.contains(mainSubmissionAttemptPreferenceKey())
+                || blockingMainSubmissionAttempt() != null
                 || prefs.contains(previousStepSubmissionAttemptPreferenceKey())
-                || prefs.contains(alternateSubmissionAttemptPreferenceKey())
+                || blockingAlternateSubmissionAttempt() != null
+                // Resolve current-realm journals above before the app-wide gate observes their
+                // raw slots. A completed/no-local-copy tombstone is semantically non-blocking and
+                // is retired there; unresolved and other-realm slots still fail closed here.
+                || RemoteSideEffectGate.blockingStatePresent(this)
                 || !pendingOutputPhotoPath.isEmpty() || !pendingOcrPhotoPath.isEmpty()
                 || hasPendingAlternateEntryAsyncReservationEvidence()) {
             return false;
@@ -16479,10 +16513,206 @@ public class MainActivity extends Activity {
     private String lastCrashText() {
         String crash = Diagnostics.readCrash(this);
         String recent = Diagnostics.readLog(this);
-        if (crash.isEmpty() && recent.isEmpty()) return t("no_last_crash");
-        if (crash.isEmpty()) return t("no_last_crash") + "\n\n" + t("diagnostic_log_title") + "\n" + recent;
-        if (recent.isEmpty()) return crash;
-        return crash + "\n\n" + t("diagnostic_log_title") + "\n" + recent;
+        String report;
+        if (crash.isEmpty() && recent.isEmpty()) report = t("no_last_crash");
+        else if (crash.isEmpty()) report = t("no_last_crash") + "\n\n"
+            + t("diagnostic_log_title") + "\n" + recent;
+        else if (recent.isEmpty()) report = crash;
+        else report = crash + "\n\n" + t("diagnostic_log_title") + "\n" + recent;
+        return Diagnostics.sanitizeForSupport(report);
+    }
+
+    private static final class PanelSyncRecoveryStatus {
+        final PanelPairCacheCoordinator.DiagnosticSnapshot cache;
+        final int draftCount;
+        final String safetyBlockerCodes;
+        final boolean otherSafetyBlocker;
+        final boolean eligible;
+
+        PanelSyncRecoveryStatus(PanelPairCacheCoordinator.DiagnosticSnapshot cache,
+                                int draftCount, String safetyBlockerCodes,
+                                boolean otherSafetyBlocker,
+                                boolean eligible) {
+            this.cache = cache;
+            this.draftCount = draftCount;
+            this.safetyBlockerCodes = safetyBlockerCodes;
+            this.otherSafetyBlocker = otherSafetyBlocker;
+            this.eligible = eligible;
+        }
+    }
+
+    /** Never includes Panel URL/key, account, profile identifiers, SNs, paths or payload bytes. */
+    private String panelSupportReport() {
+        PanelSyncRecoveryStatus status = panelSyncRecoveryStatus();
+        PanelPairCacheCoordinator.DiagnosticSnapshot cache = status.cache;
+        boolean debuggable = (getApplicationInfo().flags
+            & android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+        StringBuilder report = new StringBuilder();
+        report.append("AutoForm Kit ").append(BuildConfig.VERSION_NAME)
+            .append(" (").append(BuildConfig.VERSION_CODE).append(")\n")
+            .append("androidSdk=").append(Build.VERSION.SDK_INT).append('\n')
+            .append("debuggable=").append(debuggable).append('\n')
+            .append("panelTupleComplete=").append(!panelConnectionTupleIncomplete())
+            .append('\n')
+            .append("connectionMatches=").append(cache.connectionMatches).append('\n')
+            .append("cacheRecoveryBlocked=").append(cache.recoveryBlocked).append('\n')
+            .append("activeConfig=").append(cache.activeConfigPresent)
+            .append('/').append(cache.activeConfigVersion).append('\n')
+            .append("activeCatalog=").append(cache.activeCatalogPresent)
+            .append('/').append(cache.activeCatalogVersion).append('\n')
+            .append("activePairValid=").append(cache.activeValid).append('\n')
+            .append("candidateConfig=").append(cache.configCandidatePresent)
+            .append('/').append(cache.candidateConfigVersion).append('\n')
+            .append("candidateCatalog=").append(cache.catalogCandidatePresent)
+            .append('/').append(cache.candidateCatalogVersion).append('\n')
+            .append("candidatePairValid=").append(cache.candidatePairValid).append('\n')
+            .append("unsubmittedLocalDrafts=").append(status.draftCount).append('\n')
+            .append("otherSafetyBlocker=").append(status.otherSafetyBlocker).append('\n')
+            .append("safetyBlockerCodes=").append(status.safetyBlockerCodes).append('\n')
+            .append("obsoleteDraftRecoveryEligible=").append(status.eligible);
+        String recent = lastCrashText();
+        if (!recent.isEmpty() && !recent.equals(t("no_last_crash"))) {
+            report.append("\n\n").append(t("diagnostic_log_title")).append("\n")
+                .append(recent);
+        }
+        return Diagnostics.sanitizeForSupport(report.toString());
+    }
+
+    private PanelSyncRecoveryStatus panelSyncRecoveryStatus() {
+        PanelPairCacheCoordinator.DiagnosticSnapshot cache =
+            PanelPairCacheCoordinator.diagnosticSnapshot(
+                this, currentConnectionNamespace());
+        int draftCount = totalUnsubmittedDraftUnitCount(loadDraftStore());
+        String safetyBlockerCodes = panelSyncRecoverySafetyBlockerCodes();
+        boolean otherSafetyBlocker = !safetyBlockerCodes.isEmpty();
+        boolean eligible = PanelSyncRecoveryRules.canDiscardObsoleteLocalDraft(
+            settingsPageOpen, cache.connectionMatches, cache.recoveryBlocked,
+            cache.hasCompleteActivePairBytes(), cache.activeValid,
+            cache.activeConfigVersion, cache.activeCatalogVersion,
+            cache.hasCompleteValidCandidatePair(), cache.candidateConfigVersion,
+            cache.candidateCatalogVersion, draftCount, otherSafetyBlocker);
+        return new PanelSyncRecoveryStatus(
+            cache, draftCount, safetyBlockerCodes, otherSafetyBlocker, eligible);
+    }
+
+    /** Every blocker except the obsolete main-form draft that the explicit action may discard. */
+    private String panelSyncRecoverySafetyBlockerCodes() {
+        List<String> codes = new ArrayList<>();
+        if (panelBoundaryCleanupBlocked) codes.add("panel_boundary");
+        if (panelConnectionTupleIncomplete()) codes.add("connection_tuple");
+        if (submitting || profileOwnedRemoteWorkerActive()
+                || mainFormBoundWorkerActive()) codes.add("active_worker");
+        if (UpdateManager.installerHandoffActive(this)) codes.add("installer");
+        if (hasPendingMainFormOperation()) codes.add("main_operation");
+        if (hasStoredOrUnreadableReprintAttempt()) codes.add("reprint_journal");
+        if (hasStoredUploadReplayBarrier()) codes.add("upload_journal");
+        if (alternateEntrySubmitting || alternateEntryPageOpen || !units.isEmpty()
+                || hasAlternateEntryPendingData() || hasStoredAlternateEntryDraft()) {
+            codes.add("active_local_work");
+        }
+        if (blockingMainSubmissionAttempt() != null) codes.add("main_submit_journal");
+        if (hasStoredPreviousStepSubmissionAttempt()) codes.add("previous_step_journal");
+        if (blockingAlternateSubmissionAttempt() != null) {
+            codes.add("alternate_submit_journal");
+        }
+        // Run after the semantic current-realm resolvers above. Any remaining durable slot is an
+        // unresolved or other-realm remote side effect and must keep recovery unavailable.
+        if (RemoteSideEffectGate.blockingStatePresent(this)) codes.add("remote_gate");
+        if (!pendingOutputPhotoPath.isEmpty() || !pendingOcrPhotoPath.isEmpty()) {
+            codes.add("camera_result");
+        }
+        if (hasPendingAlternateEntryAsyncReservationEvidence()) {
+            codes.add("alternate_reservation");
+        }
+        if (!legacyPanelStateReadyForCachePromotion()) codes.add("legacy_state");
+        if (manualQueueRecoveryEvidencePresent()) codes.add("manual_queue");
+        return join(codes, ",");
+    }
+
+    private int recoverableObsoletePanelDraftCount() {
+        PanelSyncRecoveryStatus status = panelSyncRecoveryStatus();
+        return status.eligible ? status.draftCount : 0;
+    }
+
+    private void promptObsoletePanelDraftRecovery() {
+        int count = recoverableObsoletePanelDraftCount();
+        if (count <= 0) {
+            alert(t("panel_sync_recovery_title"),
+                t("panel_sync_recovery_unavailable"));
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(t("panel_sync_recovery_title"))
+            .setMessage(t("panel_sync_recovery_first") + count)
+            .setNegativeButton(t("cancel"), null)
+            .setPositiveButton(t("panel_sync_recovery_continue"),
+                (dialog, which) -> confirmObsoletePanelDraftRecovery(count))
+            .show();
+    }
+
+    private void confirmObsoletePanelDraftRecovery(int expectedCount) {
+        int currentCount = recoverableObsoletePanelDraftCount();
+        if (currentCount <= 0 || currentCount != expectedCount) {
+            alert(t("panel_sync_recovery_title"),
+                t("panel_sync_recovery_unavailable"));
+            return;
+        }
+        new AlertDialog.Builder(this)
+            .setTitle(t("panel_sync_recovery_final_title"))
+            .setMessage(t("panel_sync_recovery_final") + currentCount)
+            .setNegativeButton(t("cancel"), null)
+            .setPositiveButton(t("panel_sync_recovery_confirm"),
+                (dialog, which) -> performObsoletePanelDraftRecovery(currentCount))
+            .show();
+    }
+
+    private void performObsoletePanelDraftRecovery(int expectedCount) {
+        PanelPairCacheCoordinator.Promotion promotion;
+        PanelPairCacheCoordinator.ActivePair pair;
+        synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+            PanelSyncRecoveryStatus status = panelSyncRecoveryStatus();
+            if (!status.eligible || status.draftCount != expectedCount) {
+                alert(t("panel_sync_recovery_title"),
+                    t("panel_sync_recovery_unavailable"));
+                return;
+            }
+            if (!clearAllDrafts()
+                    || totalUnsubmittedDraftUnitCount(loadDraftStore()) != 0) {
+                alert(t("panel_sync_recovery_title"),
+                    t("panel_sync_recovery_failed"));
+                return;
+            }
+            try {
+                promotion = PanelPairCacheCoordinator.promoteCandidates(
+                    this, currentConnectionNamespace());
+                pair = PanelPairCacheCoordinator.loadActivePairOrNull(this);
+                if (promotion == PanelPairCacheCoordinator.Promotion.PROMOTED
+                        && pair != null) {
+                    activateSessionRealm(pair);
+                }
+            } catch (Exception failure) {
+                Diagnostics.append(this, "Explicit obsolete-draft recovery failed: "
+                    + conciseError(failure));
+                promotion = PanelPairCacheCoordinator.Promotion.INVALID;
+                pair = null;
+            }
+        }
+        if (promotion != PanelPairCacheCoordinator.Promotion.PROMOTED || pair == null) {
+            alert(t("panel_sync_recovery_title"), t("panel_sync_recovery_failed"));
+            synchronizePanelConnection(false);
+            return;
+        }
+        panelBootstrapState = PanelBootstrapRules.begin(
+            currentConnectionNamespace(), true,
+            true, pair.version, true, pair.version);
+        installBoundPanelSnapshot(pair);
+        cancelPanelPairRetry(true);
+        Diagnostics.append(this,
+            "Operator discarded obsolete local drafts and promoted verified Panel pair; count="
+                + expectedCount);
+        showSettingsPage();
+        if (savedToken().isEmpty() && captchaClient.isEmpty()) refreshCaptcha();
+        toastLong(t("panel_sync_recovery_done"));
     }
 
     private void notifyMissing(String sn, List<String> codes, boolean willRetry) {
@@ -17602,6 +17832,20 @@ public class MainActivity extends Activity {
             case "update_channel_beta_toast": return "已切换到 Beta 更新通道，正在检查更新";
             case "update_channel_stable_toast": return "已切换到正式版更新通道，正在检查更新";
             case "advanced_settings_shown": return "面板连接与诊断日志已显示";
+            case "support_diagnostics": return "诊断调试（已脱敏）";
+            case "copy_support_report": return "复制诊断报告";
+            case "copy_support_report_done": return "已复制脱敏诊断报告";
+            case "copy_support_report_failed": return "无法访问剪贴板";
+            case "panel_sync_recovery_action": return "解决同步阻塞";
+            case "panel_sync_recovery_title": return "面板同步恢复";
+            case "panel_sync_recovery_first": return "新版面板已校验完成，但旧版本绑定的本机未提交草稿阻止了切换。继续后还会再次确认。草稿数量：";
+            case "panel_sync_recovery_continue": return "继续确认";
+            case "panel_sync_recovery_final_title": return "最后确认：删除本机草稿";
+            case "panel_sync_recovery_final": return "此操作不可恢复，只删除本机未提交草稿，不修改服务器记录；随后启用已校验的新面板。草稿数量：";
+            case "panel_sync_recovery_confirm": return "删除并同步";
+            case "panel_sync_recovery_unavailable": return "状态已经变化或存在其他安全锁，未执行任何删除。";
+            case "panel_sync_recovery_failed": return "恢复没有完整完成，请复制诊断报告并重试同步。";
+            case "panel_sync_recovery_done": return "新版面板已启用";
             case "login": return "登录";
             case "account": return "公司账号";
             case "password": return "公司密码";
@@ -18003,6 +18247,20 @@ public class MainActivity extends Activity {
             case "update_channel_beta_toast": return "Switched to Beta updates. Checking now.";
             case "update_channel_stable_toast": return "Switched to Stable updates. Checking now.";
             case "advanced_settings_shown": return "Panel connection and diagnostic logs are now visible";
+            case "support_diagnostics": return "Support diagnostics (redacted)";
+            case "copy_support_report": return "Copy support report";
+            case "copy_support_report_done": return "Redacted support report copied";
+            case "copy_support_report_failed": return "Clipboard is unavailable";
+            case "panel_sync_recovery_action": return "Resolve sync block";
+            case "panel_sync_recovery_title": return "Panel sync recovery";
+            case "panel_sync_recovery_first": return "The verified new Panel is blocked by local unsubmitted drafts bound to an obsolete version. A second confirmation follows. Draft count: ";
+            case "panel_sync_recovery_continue": return "Continue to confirm";
+            case "panel_sync_recovery_final_title": return "Final confirmation: delete local drafts";
+            case "panel_sync_recovery_final": return "This cannot be undone. It deletes only local unsubmitted drafts, changes no server records, then activates the verified Panel. Draft count: ";
+            case "panel_sync_recovery_confirm": return "Delete and synchronize";
+            case "panel_sync_recovery_unavailable": return "State changed or another safety lock is present. Nothing was deleted.";
+            case "panel_sync_recovery_failed": return "Recovery did not finish. Copy the support report and retry synchronization.";
+            case "panel_sync_recovery_done": return "The new Panel is active";
             case "login": return "Login";
             case "account": return "Company account";
             case "password": return "Password";
@@ -18404,6 +18662,20 @@ public class MainActivity extends Activity {
             case "update_channel_beta_toast": return "Canal Beta activado. Revisando actualización.";
             case "update_channel_stable_toast": return "Canal estable activado. Revisando actualización.";
             case "advanced_settings_shown": return "La conexión del Panel y los registros de diagnóstico están visibles";
+            case "support_diagnostics": return "Diagnóstico de soporte (censurado)";
+            case "copy_support_report": return "Copiar informe";
+            case "copy_support_report_done": return "Informe censurado copiado";
+            case "copy_support_report_failed": return "El portapapeles no está disponible";
+            case "panel_sync_recovery_action": return "Resolver bloqueo de sincronización";
+            case "panel_sync_recovery_title": return "Recuperación de sincronización";
+            case "panel_sync_recovery_first": return "El Panel nuevo verificado está bloqueado por borradores locales no enviados de una versión anterior. Habrá una segunda confirmación. Borradores: ";
+            case "panel_sync_recovery_continue": return "Continuar para confirmar";
+            case "panel_sync_recovery_final_title": return "Confirmación final: borrar borradores locales";
+            case "panel_sync_recovery_final": return "Esta acción no se puede deshacer. Solo elimina borradores locales no enviados, no cambia registros del servidor y activa el Panel verificado. Borradores: ";
+            case "panel_sync_recovery_confirm": return "Borrar y sincronizar";
+            case "panel_sync_recovery_unavailable": return "El estado cambió o existe otro bloqueo de seguridad. No se eliminó nada.";
+            case "panel_sync_recovery_failed": return "La recuperación no terminó. Copie el informe y reintente la sincronización.";
+            case "panel_sync_recovery_done": return "El Panel nuevo está activo";
             case "login": return "Inicio de sesión";
             case "account": return "Cuenta de la empresa";
             case "password": return "Contraseña";

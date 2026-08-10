@@ -63,6 +63,56 @@ final class PanelPairCacheCoordinator {
         }
     }
 
+    /** Non-sensitive cache state for the hidden on-device support report. */
+    static final class DiagnosticSnapshot {
+        final boolean connectionMatches;
+        final boolean recoveryBlocked;
+        final boolean activeConfigPresent;
+        final boolean activeCatalogPresent;
+        final boolean activeValid;
+        final int activeConfigVersion;
+        final int activeCatalogVersion;
+        final boolean configCandidatePresent;
+        final boolean catalogCandidatePresent;
+        final int candidateConfigVersion;
+        final int candidateCatalogVersion;
+        final boolean candidatePairValid;
+
+        private DiagnosticSnapshot(boolean connectionMatches, boolean recoveryBlocked,
+                                   boolean activeConfigPresent,
+                                   boolean activeCatalogPresent,
+                                   boolean activeValid,
+                                   int activeConfigVersion, int activeCatalogVersion,
+                                   boolean configCandidatePresent,
+                                   boolean catalogCandidatePresent,
+                                   int candidateConfigVersion,
+                                   int candidateCatalogVersion,
+                                   boolean candidatePairValid) {
+            this.connectionMatches = connectionMatches;
+            this.recoveryBlocked = recoveryBlocked;
+            this.activeConfigPresent = activeConfigPresent;
+            this.activeCatalogPresent = activeCatalogPresent;
+            this.activeValid = activeValid;
+            this.activeConfigVersion = activeConfigVersion;
+            this.activeCatalogVersion = activeCatalogVersion;
+            this.configCandidatePresent = configCandidatePresent;
+            this.catalogCandidatePresent = catalogCandidatePresent;
+            this.candidateConfigVersion = candidateConfigVersion;
+            this.candidateCatalogVersion = candidateCatalogVersion;
+            this.candidatePairValid = candidatePairValid;
+        }
+
+        boolean hasCompleteValidCandidatePair() {
+            return connectionMatches && !recoveryBlocked
+                && configCandidatePresent && catalogCandidatePresent
+                && candidatePairValid;
+        }
+
+        boolean hasCompleteActivePairBytes() {
+            return activeConfigPresent && activeCatalogPresent;
+        }
+    }
+
     private static volatile boolean recoveryBlocked;
     private static volatile String recoveryFailure = "";
 
@@ -295,6 +345,82 @@ final class PanelPairCacheCoordinator {
             } catch (Exception blocked) {
                 return true;
             }
+        }
+    }
+
+    /** Reads only versions/presence/validity; never exposes Panel origins, keys, or payloads. */
+    static DiagnosticSnapshot diagnosticSnapshot(
+            Context context, String expectedConnection) {
+        final Context app;
+        try {
+            app = requireContext(context);
+        } catch (Exception invalid) {
+            return unavailableDiagnostic();
+        }
+        synchronized (UpdateInstallRules.HANDOFF_LOCK) {
+            try {
+                recoverLocked(app);
+                boolean connectionMatches = currentConnection(app).equals(
+                    clean(expectedConnection));
+                String panelBase = AppConfig.panelBase(app);
+                String key = AppConfig.catalogKey(app);
+                File activeConfigFile = AppConfig.cacheFile(app);
+                File activeCatalogFile = FormCatalog.cacheFile(app);
+                File candidateConfigFile = AppConfig.candidateCacheFile(app);
+                File candidateCatalogFile = FormCatalog.candidateCacheFile(app);
+                String activeConfigText = candidateTextOrNull(activeConfigFile);
+                String activeCatalogText = candidateTextOrNull(activeCatalogFile);
+                String candidateConfigText = candidateTextOrNull(candidateConfigFile);
+                String candidateCatalogText = candidateTextOrNull(candidateCatalogFile);
+                ActivePair active = null;
+                if (activeConfigText != null && activeCatalogText != null) {
+                    try {
+                        active = parsePair(activeConfigText, activeCatalogText,
+                            panelBase, key);
+                    } catch (Exception ignored) {
+                    }
+                }
+                boolean candidateValid = false;
+                if (candidateConfigText != null && candidateCatalogText != null) {
+                    try {
+                        parsePair(candidateConfigText, candidateCatalogText,
+                            panelBase, key);
+                        candidateValid = true;
+                    } catch (Exception ignored) {
+                    }
+                }
+                return new DiagnosticSnapshot(connectionMatches, false,
+                    activeConfigText != null, activeCatalogText != null,
+                    active != null,
+                    rawConfigVersion(activeConfigText), rawCatalogVersion(activeCatalogText),
+                    candidateConfigText != null, candidateCatalogText != null,
+                    rawConfigVersion(candidateConfigText),
+                    rawCatalogVersion(candidateCatalogText), candidateValid);
+            } catch (Exception blocked) {
+                return new DiagnosticSnapshot(false, true,
+                    false, false, false, 0, 0, false, false, 0, 0, false);
+            }
+        }
+    }
+
+    private static DiagnosticSnapshot unavailableDiagnostic() {
+        return new DiagnosticSnapshot(false, true,
+            false, false, false, 0, 0, false, false, 0, 0, false);
+    }
+
+    private static int rawConfigVersion(String text) {
+        try {
+            return text == null ? 0 : AppConfig.catalogVersion(new JSONObject(text));
+        } catch (Exception invalid) {
+            return 0;
+        }
+    }
+
+    private static int rawCatalogVersion(String text) {
+        try {
+            return text == null ? 0 : FormCatalog.catalogVersion(new JSONObject(text));
+        } catch (Exception invalid) {
+            return 0;
         }
     }
 

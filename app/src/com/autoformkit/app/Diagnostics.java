@@ -12,11 +12,29 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
+import java.util.regex.Pattern;
 
 public final class Diagnostics {
     private static final String CRASH_FILE = "last-crash.txt";
     private static final String LOG_FILE = "diagnostic-log.txt";
     private static final int MAX_LOG_BYTES = 24000;
+    private static final int MAX_SUPPORT_TEXT_CHARS = 8000;
+    private static final Pattern URL = Pattern.compile(
+        "(?i)\\b(?:https?://|wss?://)[^\\s<>]+", Pattern.CASE_INSENSITIVE);
+    private static final Pattern EMAIL = Pattern.compile(
+        "(?i)\\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}\\b");
+    private static final Pattern HOST_NAME = Pattern.compile(
+        "(?i)\\b(?:[A-Z0-9-]+\\.)+(?:com|net|org|cn|io|dev|app|cloud)\\b");
+    private static final Pattern PRIVATE_PATH = Pattern.compile(
+        "(?i)(?:/data/|/storage/|/sdcard/|/mnt/|/Users/)[^\\s:;,]+(?:/[^\\s:;,]+)*");
+    private static final Pattern SECRET_ASSIGNMENT = Pattern.compile(
+        "(?i)\\b(access[ _-]?key|catalog[ _-]?key|authorization|bearer|cookie|password|token|ticket|account|username|profile|entry)"
+            + "(\\s*[:=]\\s*)([^\\s,;]+)");
+    private static final Pattern SERIAL_ASSIGNMENT = Pattern.compile(
+        "(?i)\\b(sn|serial|base[ _-]?sn|new[ _-]?sn)(\\s*[:=]\\s*)([^\\s,;]+)");
+    private static final Pattern LONG_IDENTIFIER = Pattern.compile(
+        "\\b(?=[A-Za-z0-9_-]{12,64}\\b)(?=[A-Za-z0-9_-]*[0-9])[A-Za-z0-9_-]+\\b");
+    private static final Pattern NUMERIC_IDENTIFIER = Pattern.compile("\\b[0-9]{8,20}\\b");
 
     private Diagnostics() {
     }
@@ -63,6 +81,26 @@ public final class Diagnostics {
 
     public static synchronized String readLog(Context context) {
         return readText(context, LOG_FILE, 4000);
+    }
+
+    /**
+     * Removes credentials, endpoints, identifiers and private filesystem locations before text is
+     * shown in or copied from the formal build's hidden support panel.
+     */
+    public static String sanitizeForSupport(String text) {
+        String value = text == null ? "" : text;
+        value = URL.matcher(value).replaceAll("[url]");
+        value = EMAIL.matcher(value).replaceAll("[email]");
+        value = HOST_NAME.matcher(value).replaceAll("[host]");
+        value = PRIVATE_PATH.matcher(value).replaceAll("[path]");
+        value = SECRET_ASSIGNMENT.matcher(value).replaceAll("$1$2[redacted]");
+        value = SERIAL_ASSIGNMENT.matcher(value).replaceAll("$1$2[redacted]");
+        value = LONG_IDENTIFIER.matcher(value).replaceAll("[identifier]");
+        value = NUMERIC_IDENTIFIER.matcher(value).replaceAll("[identifier]");
+        if (value.length() > MAX_SUPPORT_TEXT_CHARS) {
+            value = value.substring(value.length() - MAX_SUPPORT_TEXT_CHARS);
+        }
+        return value;
     }
 
     private static void trimIfNeeded(File file) {
