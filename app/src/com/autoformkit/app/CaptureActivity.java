@@ -13,7 +13,6 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.ViewGroup;
-import android.view.WindowManager;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -38,7 +37,6 @@ public class CaptureActivity extends Activity implements SurfaceHolder.Callback 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         lang = getIntent().getStringExtra("lang") == null ? "zh" : getIntent().getStringExtra("lang");
         fileName = safeFileName(getIntent().getStringExtra("fileName"));
         if (fileName.isEmpty()) fileName = "photo-" + System.currentTimeMillis() + ".jpg";

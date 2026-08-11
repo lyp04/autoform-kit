@@ -3,6 +3,9 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-feature android:name="android.hardware.camera" android:required="false" />
@@ -40,6 +43,13 @@
             android:name=".SessionAuthProvider"
             android:authorities="${applicationId}.session"
             android:exported="true" />
+        <!-- The Activity still owns the journaled transaction; this service keeps that process at
+             foreground importance when an operator accidentally locks the screen mid-upload. -->
+        <service
+            android:name=".UploadProtectionService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
         <!-- Cross-app session bus. exported so a peer's directed broadcast reaches us even when
              backgrounded / process-dead; the receiver only re-reads our own (allow-list-protected)
              token, so a forged broadcast is harmless. -->

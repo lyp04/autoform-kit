@@ -30,6 +30,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.MediaStore;
 import android.text.SpannableStringBuilder;
 import android.text.Spanned;
@@ -208,6 +209,9 @@ public class MainActivity extends Activity {
     private static final int SCAN_PRECHECK_READ_TIMEOUT_MS = 4000;
     private static final int SCAN_PRECHECK_CORRECTION_THREADS = 4;
     private static final int SCAN_PRECHECK_CORRECTION_BUDGET_MS = 4000;
+    // Safety cap only: normal success/failure paths release this much earlier. A finite timeout
+    // prevents a process-local bug from holding the CPU indefinitely.
+    private static final long UPLOAD_CPU_WAKE_LOCK_TIMEOUT_MS = 60L * 60L * 1000L;
     // One bad unit must not strand the rest of the batch: keep going, but bail if many fail in a row (systemic).
     private static final Pattern LOG_SEQUENCE_PATTERN = Pattern.compile("#\\d+");
     private static final Pattern LOG_SN_ASSIGNMENT_PATTERN = Pattern.compile("SN=([A-Z0-9]{8,32})");
@@ -425,6 +429,13 @@ public class MainActivity extends Activity {
     private TextView submitProgressLabel;
     private int submitProgressTotal;
     private int submitProgressCompleted;
+    // The window flag prevents automatic screen-off; the partial WakeLock keeps the current
+    // transfer executing if the operator accidentally presses the physical power button. One
+    // submission lease may overlap parallel image transfers, so both protections share this count.
+    private final Object uploadPowerLock = new Object();
+    private int activeScreenAwakeUploads;
+    private PowerManager.WakeLock uploadCpuWakeLock;
+    private boolean submitScreenAwakeLease;
     private UpdateManager updateManager;
     private FormCatalogManager formCatalogManager;
     private ScrollView insetAwarePageView;
@@ -453,7 +464,6 @@ public class MainActivity extends Activity {
             // while API 23-34 retain the production app's existing decor and IME behavior.
             getWindow().setDecorFitsSystemWindows(false);
         }
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         prefs = getSharedPreferences("settings", MODE_PRIVATE);
         discardDisabledFinalSubmissionReplayBarriers();
         // A successful Panel switch may have crashed after its atomic preference commit but before
@@ -4414,9 +4424,11 @@ public class MainActivity extends Activity {
                             RemoteSideEffectSafetyRules.executeAlternateEntryOcr(
                                 sourceProfileSnapshot, targetProfileSnapshot,
                                 apiSnapshot.endpoints,
-                                () -> apiSnapshot.recognizeText(recognizeTextUrl, image,
-                                phase -> requireBoundOperation(
-                                    boundOperation, tokenSnapshot, phase)));
+                                () -> runScreenAwakeUpload(
+                                    () -> apiSnapshot.recognizeText(
+                                        recognizeTextUrl, image,
+                                        phase -> requireBoundOperation(
+                                            boundOperation, tokenSnapshot, phase))));
                         List<String> candidates = extractOcrCandidates(apiSnapshot, body);
                         if (!candidates.isEmpty()) {
                             runOnUiThread(() -> {
@@ -5231,7 +5243,7 @@ public class MainActivity extends Activity {
                                                         String uploadName) throws Exception {
         File prepared = prepareAlternateEntryUpload(source);
         try {
-            return api.uploadImage(prepared, uploadName);
+            return runScreenAwakeUpload(() -> api.uploadImage(prepared, uploadName));
         } finally {
             if (!prepared.equals(source)) deleteFileQuietly(prepared.getAbsolutePath());
         }
@@ -7088,10 +7100,11 @@ public class MainActivity extends Activity {
                     try {
                         JSONObject body = RemoteSideEffectSafetyRules.executeOcr(
                             ocrWorkflow, apiSnapshot.endpoints,
-                            () -> apiSnapshot.recognizeText(recognizeTextUrl,
-                                image,
-                                phase -> requireBoundOperation(
-                                    operation, tokenSnapshot, phase)));
+                            () -> runScreenAwakeUpload(
+                                () -> apiSnapshot.recognizeText(
+                                    recognizeTextUrl, image,
+                                    phase -> requireBoundOperation(
+                                        operation, tokenSnapshot, phase))));
                         requireBoundOperation(operation, tokenSnapshot,
                             "OCR candidate extraction");
                         List<String> candidates = extractOcrCandidates(apiSnapshot, body);
@@ -9875,8 +9888,125 @@ public class MainActivity extends Activity {
                 "print", "label_failed_after_retry", "print_adapter", null);
     }
 
+    private interface ScreenAwakeUpload<T> {
+        T run() throws Exception;
+    }
+
+    /** Keeps a foreground image transfer awake; every exit releases exactly its own lease. */
+    private <T> T runScreenAwakeUpload(ScreenAwakeUpload<T> upload) throws Exception {
+        beginScreenAwakeUpload();
+        try {
+            return upload.run();
+        } finally {
+            endScreenAwakeUpload();
+        }
+    }
+
+    private void beginScreenAwakeUpload() {
+        synchronized (uploadPowerLock) {
+            activeScreenAwakeUploads++;
+            if (activeScreenAwakeUploads == 1) {
+                acquireUploadCpuWakeLockLocked();
+                startUploadForegroundProtectionLocked();
+            }
+        }
+        refreshUploadScreenAwakeFlag();
+    }
+
+    private void endScreenAwakeUpload() {
+        synchronized (uploadPowerLock) {
+            if (activeScreenAwakeUploads <= 0) {
+                activeScreenAwakeUploads = 0;
+                releaseUploadCpuWakeLockLocked();
+                stopUploadForegroundProtectionLocked();
+                Diagnostics.append(this, "Upload screen-awake reference count underflow");
+            } else {
+                activeScreenAwakeUploads--;
+                if (activeScreenAwakeUploads == 0) {
+                    releaseUploadCpuWakeLockLocked();
+                    stopUploadForegroundProtectionLocked();
+                }
+            }
+        }
+        refreshUploadScreenAwakeFlag();
+    }
+
+    private void acquireUploadCpuWakeLockLocked() {
+        try {
+            if (uploadCpuWakeLock == null) {
+                PowerManager powerManager =
+                    (PowerManager) getSystemService(Context.POWER_SERVICE);
+                if (powerManager == null) {
+                    Diagnostics.append(this, "Upload CPU wake lock service unavailable");
+                    return;
+                }
+                uploadCpuWakeLock = powerManager.newWakeLock(
+                    PowerManager.PARTIAL_WAKE_LOCK,
+                    getPackageName() + ":upload-in-progress");
+                uploadCpuWakeLock.setReferenceCounted(false);
+            }
+            if (!uploadCpuWakeLock.isHeld()) {
+                uploadCpuWakeLock.acquire(UPLOAD_CPU_WAKE_LOCK_TIMEOUT_MS);
+            }
+        } catch (RuntimeException error) {
+            Diagnostics.append(this,
+                "Upload CPU wake lock acquire failed: " + conciseError(error));
+        }
+    }
+
+    private void releaseUploadCpuWakeLockLocked() {
+        if (uploadCpuWakeLock == null || !uploadCpuWakeLock.isHeld()) return;
+        try {
+            uploadCpuWakeLock.release();
+        } catch (RuntimeException error) {
+            Diagnostics.append(this,
+                "Upload CPU wake lock release failed: " + conciseError(error));
+        }
+    }
+
+    private void startUploadForegroundProtectionLocked() {
+        try {
+            UploadProtectionService.start(this);
+        } catch (RuntimeException error) {
+            // A foreground-service start can be rejected if an OCR worker reaches this point only
+            // after another app has already covered us. The already-held partial WakeLock still
+            // protects the immediate transfer; record the weaker process-lifetime guarantee.
+            Diagnostics.append(this,
+                "Upload foreground protection start failed: " + conciseError(error));
+        }
+    }
+
+    private void stopUploadForegroundProtectionLocked() {
+        try {
+            UploadProtectionService.stop(this);
+        } catch (RuntimeException error) {
+            Diagnostics.append(this,
+                "Upload foreground protection stop failed: " + conciseError(error));
+        }
+    }
+
+    private boolean uploadProtectionActive() {
+        synchronized (uploadPowerLock) {
+            return activeScreenAwakeUploads > 0;
+        }
+    }
+
+    private void refreshUploadScreenAwakeFlag() {
+        runOnUiThread(() -> {
+            if (isDestroyed()) return;
+            if (uploadProtectionActive()) {
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+        });
+    }
+
     private void showSubmitLoading(int total) {
-        if (submitProgressDialog != null && submitProgressDialog.isShowing()) return;
+        if (submitProgressDialog != null && submitProgressDialog.isShowing()) {
+            holdSubmitScreenAwakeLease();
+            return;
+        }
         int safeTotal = Math.max(1, total);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -9916,6 +10046,7 @@ public class MainActivity extends Activity {
         submitProgressDialog.setCancelable(false);
         submitProgressDialog.setCanceledOnTouchOutside(false);
         submitProgressDialog.show();
+        holdSubmitScreenAwakeLease();
     }
 
     private void hideSubmitLoading() {
@@ -9931,6 +10062,19 @@ public class MainActivity extends Activity {
         submitProgressLabel = null;
         submitProgressTotal = 0;
         submitProgressCompleted = 0;
+        releaseSubmitScreenAwakeLease();
+    }
+
+    private void holdSubmitScreenAwakeLease() {
+        if (submitScreenAwakeLease) return;
+        submitScreenAwakeLease = true;
+        beginScreenAwakeUpload();
+    }
+
+    private void releaseSubmitScreenAwakeLease() {
+        if (!submitScreenAwakeLease) return;
+        submitScreenAwakeLease = false;
+        endScreenAwakeUpload();
     }
 
     private void setSubmitProgressMessage(String message) {
@@ -10387,7 +10531,7 @@ public class MainActivity extends Activity {
                 "Main upload has no replay barrier context");
         }
         beginActiveMainUploadBarrier(context);
-        return api.uploadImage(file, uploadName);
+        return runScreenAwakeUpload(() -> api.uploadImage(file, uploadName));
     }
 
     private void recordDnsAffected(UnitRecord unit, int position) {
