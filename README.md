@@ -90,12 +90,13 @@ come from Panel at runtime.
 Formal APKs remain non-debuggable. The hidden support report contains only App/Android versions,
 cache presence/revisions, validation booleans, and anonymous local blocker counts; copyable crash
 and diagnostic text is redacted for credentials, endpoints, accounts, serial identifiers, and
-private paths. When an obsolete, now-invalid cached Panel pair makes its own local unsubmitted draft
-unrestorable while a strictly newer complete pair is already verified, the same hidden section may
-offer a double-confirmed recovery action. That action appears only when no remote-operation,
-submission, upload, print, independent-entry, manual-queue, camera, migration, or storage ambiguity
-exists. It deletes only the counted local unsubmitted drafts, never remote records, and then promotes
-the already-verified pair; it never runs automatically.
+private paths. A complete newer revision from the same Panel may activate while durable main-form
+drafts exist. When the operator continues one of those drafts, the App durably rebinds it only to a
+strictly newer revision of the same profile and connection before exposing its units; photos and
+queue contents are retained. Cross-Panel/profile moves, same-version changes, rollbacks, active
+camera or remote work, uncertain journals, alternate-entry state, and manual queues remain blocked.
+For obsolete drafts that cannot use this narrow rebind, the hidden section may still offer the
+double-confirmed destructive recovery action when all of its existing safety conditions hold.
 
 The App and Panel implement the one-time pairing protocol, but source availability alone does not
 enable it. Until the Panel Durable Object/secrets, download Worker, exact APK applicationId and

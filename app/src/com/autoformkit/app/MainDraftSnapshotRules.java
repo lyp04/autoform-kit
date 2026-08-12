@@ -176,6 +176,43 @@ final class MainDraftSnapshotRules {
     }
 
     /**
+     * Allows an unfinished queue to follow a strictly newer revision published by the same Panel
+     * for the same profile. The caller must still be at a local safe boundary with no camera,
+     * upload, submission, print, or previous-step journal in flight.
+     *
+     * <p>This is deliberately narrower than {@link #belongsToConnection}: malformed bindings,
+     * cross-Panel moves, profile changes, same-version semantic changes and rollbacks remain
+     * blocked. The draft bytes and photo paths are preserved; only their immutable binding is
+     * replaced after the newer complete pair is active.</p>
+     */
+    static boolean canRebindToNewerSameConnection(JSONObject draft, Binding target) {
+        if (draft == null || target == null
+                || exactInteger(draft.opt("version")) != DRAFT_VERSION) return false;
+        JSONObject storedJson = draft.optJSONObject(BINDING_FIELD);
+        if (storedJson == null) return false;
+        try {
+            Binding stored = parseBinding(storedJson);
+            return stored.connectionNamespace.equals(target.connectionNamespace)
+                && stored.profileId.equals(target.profileId)
+                && stored.catalogVersion < target.catalogVersion;
+        } catch (Exception invalidBinding) {
+            return false;
+        }
+    }
+
+    static JSONObject rebindToNewerSameConnection(JSONObject draft, Binding target) {
+        if (!canRebindToNewerSameConnection(draft, target)) {
+            throw invalid("draft cannot follow this Panel revision");
+        }
+        try {
+            return new JSONObject(draft.toString())
+                .put(BINDING_FIELD, target.toJson());
+        } catch (Exception error) {
+            throw invalid("cannot rebind draft to newer Panel revision");
+        }
+    }
+
+    /**
      * Proves storage ownership without requiring current catalog semantics to be unchanged.
      * A bound v3 draft may remain locked after a catalog update, but it still belongs to this
      * connection and must be preserved. Unbound v1/v2 data needs the exact cache-pair receipt.

@@ -128,6 +128,48 @@ public class MainDraftSnapshotRulesTest {
     }
 
     @Test
+    public void unfinishedDraftCanRebindOnlyToNewerSamePanelAndProfile() throws Exception {
+        MainDraftSnapshotRules.Binding original = binding();
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(
+            legacyDraft(), original);
+        MainDraftSnapshotRules.Binding newer =
+            MainDraftSnapshotRules.currentBinding(CONNECTION, CATALOG_VERSION + 1,
+                "sample-form", profile("CHANGED-SKU"), config("/other-submit"),
+                new JSONObject());
+
+        assertTrue(MainDraftSnapshotRules.canRebindToNewerSameConnection(draft, newer));
+        JSONObject rebound = MainDraftSnapshotRules.rebindToNewerSameConnection(
+            draft, newer);
+        assertEquals(MainDraftSnapshotRules.RestoreKind.EXACT,
+            MainDraftSnapshotRules.evaluate(
+                rebound, newer, null, RELEASE_CODE, "").kind);
+        assertEquals("SAMPLE-0001", rebound.getJSONArray("units")
+            .getJSONObject(0).getString("sn"));
+        assertEquals("SAMPLE-0001", draft.getJSONArray("units")
+            .getJSONObject(0).getString("sn"));
+
+        MainDraftSnapshotRules.Binding otherPanel =
+            MainDraftSnapshotRules.currentBinding("fedcba9876543210fedc",
+                CATALOG_VERSION + 1, "sample-form", profile("CHANGED-SKU"),
+                config("/other-submit"), new JSONObject());
+        MainDraftSnapshotRules.Binding otherProfile =
+            MainDraftSnapshotRules.currentBinding(CONNECTION, CATALOG_VERSION + 1,
+                "other-form", new JSONObject(profile("CHANGED-SKU").toString())
+                    .put("id", "other-form"), config("/other-submit"),
+                new JSONObject());
+        assertFalse(MainDraftSnapshotRules.canRebindToNewerSameConnection(
+            draft, original));
+        assertFalse(MainDraftSnapshotRules.canRebindToNewerSameConnection(
+            draft, otherPanel));
+        assertFalse(MainDraftSnapshotRules.canRebindToNewerSameConnection(
+            draft, otherProfile));
+        assertFalse(MainDraftSnapshotRules.canRebindToNewerSameConnection(
+            new JSONObject(draft.toString()).put("version", 99), newer));
+        assertThrows(IllegalArgumentException.class, () ->
+            MainDraftSnapshotRules.rebindToNewerSameConnection(draft, otherPanel));
+    }
+
+    @Test
     public void ownershipKeepsSameConnectionMismatchButRejectsAnotherPanel() throws Exception {
         MainDraftSnapshotRules.Binding exact = binding();
         JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), exact);

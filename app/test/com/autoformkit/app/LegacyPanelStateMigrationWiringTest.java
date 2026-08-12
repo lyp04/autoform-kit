@@ -140,7 +140,8 @@ public class LegacyPanelStateMigrationWiringTest {
             "LegacyUpgradeSafetyRules.cachePromotionAllowed("));
         assertTrue(safeBoundary.contains(
             "if (!legacyPanelStateReadyForCachePromotion()) return false;"));
-        assertTrue(promotion.contains("if (!safeToInstallBoundPanelSnapshot())"));
+        assertTrue(promotion.contains(
+            "if (!safeToActivateSameConnectionPanelRevision())"));
         assertTrue(promotion.contains("PanelPairCacheCoordinator.promoteCandidates("));
 
         int preserve = reconciliation.indexOf(

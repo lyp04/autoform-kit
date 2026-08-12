@@ -51,6 +51,23 @@ public class AdvancedSettingsVisibilityWiringTest {
         assertFalse(handler.contains("prefs.edit()"));
     }
 
+    @Test
+    public void revealedFooterShowsSoftwareAndActivePanelVersionsAtTheBottom()
+            throws Exception {
+        String source = mainActivitySource();
+        String settings = section(source,
+            "private void showSettingsPage()", "private void showFormPage()");
+        int gate = settings.indexOf("if (showAdvancedSettings)");
+        int crashLog = settings.indexOf("root.addView(crashLogText)", gate);
+        int footer = settings.indexOf("TextView versionFooter", gate);
+        int gateEnd = settings.indexOf("setPageContentView(scroll)", gate);
+
+        assertTrue(footer > crashLog && footer < gateEnd);
+        assertTrue(settings.substring(footer, gateEnd).contains("BuildConfig.VERSION_NAME"));
+        assertTrue(settings.substring(footer, gateEnd).contains("BuildConfig.VERSION_CODE"));
+        assertTrue(settings.substring(footer, gateEnd).contains("activeCatalogVersion"));
+    }
+
     private static String mainActivitySource() throws Exception {
         Path cwd = Paths.get(System.getProperty("user.dir")).toAbsolutePath();
         for (Path candidate : new Path[]{

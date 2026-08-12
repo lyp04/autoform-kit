@@ -883,6 +883,17 @@ public class MainActivity extends Activity {
             crashLogText.setTextColor(0xFF475569);
             crashLogText.setTextIsSelectable(true);
             root.addView(crashLogText);
+
+            TextView versionFooter = text(
+                t("software_version") + ": " + BuildConfig.VERSION_NAME
+                    + " (" + BuildConfig.VERSION_CODE + ")\n"
+                    + t("panel_version") + ": "
+                    + (activeCatalogVersion > 0 ? activeCatalogVersion : "-"),
+                12, false);
+            versionFooter.setTextColor(0xFF64748B);
+            versionFooter.setTextIsSelectable(true);
+            versionFooter.setPadding(0, dp(12), 0, dp(8));
+            root.addView(versionFooter);
         }
         setPageContentView(scroll);
         refreshLoginStatus();
@@ -13451,6 +13462,30 @@ public class MainActivity extends Activity {
             throw new JSONException("draft binding unavailable");
         }
         if (!decision.allowed()) {
+            // A complete newer revision from the same Panel may take over an unfinished queue for
+            // the same profile. Persist the new binding before exposing a single unit in memory;
+            // a process death therefore leaves either the original recoverable draft or a fully
+            // rebound draft, never an in-memory-only reinterpretation.
+            if (MainDraftSnapshotRules.canRebindToNewerSameConnection(draft, current)) {
+                try {
+                    JSONObject rebound = MainDraftSnapshotRules.rebindToNewerSameConnection(
+                        draft, current);
+                    rebound.put("savedAt", System.currentTimeMillis());
+                    rebound.put("savedAtText", new java.text.SimpleDateFormat(
+                        "yyyy-MM-dd HH:mm", java.util.Locale.US).format(new java.util.Date()));
+                    JSONObject store = loadDraftStore();
+                    draftMap(store).put(profileId, rebound);
+                    writeDraftStore(store, true);
+                    Diagnostics.append(this,
+                        "Draft rebound to newer same-Panel revision profile=" + profileId
+                            + " catalogVersion=" + current.catalogVersion);
+                    return rebound;
+                } catch (Exception error) {
+                    Diagnostics.append(this, "Same-Panel draft rebind write failed: "
+                        + conciseError(error));
+                    throw new JSONException("draft rebind could not be persisted");
+                }
+            }
             Diagnostics.append(this, "Draft binding blocked restore profile=" + profileId
                 + " reason=" + decision.reason);
             throw new JSONException("draft binding does not match active Panel semantics");
@@ -15795,7 +15830,8 @@ public class MainActivity extends Activity {
             }
 
             if (after.mode == PanelBootstrapRules.Mode.READY
-                    && activePair != null && safeToInstallBoundPanelSnapshot()) {
+                    && activePair != null
+                    && safeToActivateSameConnectionPanelRevision()) {
                 installBoundPanelSnapshot(activePair);
                 if (newlyReady) {
                     showSettingsPage();
@@ -15893,6 +15929,19 @@ public class MainActivity extends Activity {
 
     /** True only at a boundary where replacing the active config/profile pair cannot reinterpret data. */
     private boolean safeToInstallBoundPanelSnapshot() {
+        return safeToInstallBoundPanelSnapshot(false);
+    }
+
+    /**
+     * Same-connection catalog publishes may advance while durable main-form drafts exist. Those
+     * drafts keep their photos and are rebound only when restored under the strictly newer active
+     * profile. Connection changes continue to call the strict no-draft variant above.
+     */
+    private boolean safeToActivateSameConnectionPanelRevision() {
+        return safeToInstallBoundPanelSnapshot(true);
+    }
+
+    private boolean safeToInstallBoundPanelSnapshot(boolean allowStoredMainDraftRebind) {
         if (panelBoundaryCleanupBlocked || panelConnectionTupleIncomplete()
                 || !settingsPageOpen || submitting || profileOwnedRemoteWorkerActive()
                 || UpdateManager.installerHandoffActive(this)
@@ -15916,7 +15965,8 @@ public class MainActivity extends Activity {
         // Legacy, unscoped statistics are migrated when possible but never block a valid Panel.
         if (!legacyPanelStateReadyForCachePromotion()) return false;
         if (manualQueueRecoveryEvidencePresent()) return false;
-        return totalUnsubmittedDraftUnitCount(loadDraftStore()) == 0;
+        return allowStoredMainDraftRebind
+            || totalUnsubmittedDraftUnitCount(loadDraftStore()) == 0;
     }
 
     /**
@@ -15927,7 +15977,7 @@ public class MainActivity extends Activity {
      */
     private PanelPairCacheCoordinator.Promotion
             promotePanelPairCandidatesAtSafeBoundary() {
-        if (!safeToInstallBoundPanelSnapshot()) {
+        if (!safeToActivateSameConnectionPanelRevision()) {
             return PanelPairCacheCoordinator.Promotion.NONE;
         }
         final String expectedConnection = currentConnectionNamespace();
@@ -15957,7 +16007,7 @@ public class MainActivity extends Activity {
     }
 
     private boolean maybeInstallBoundPanelSnapshotAtSafeBoundary() {
-        if (!safeToInstallBoundPanelSnapshot()) return false;
+        if (!safeToActivateSameConnectionPanelRevision()) return false;
         PanelPairCacheCoordinator.Promotion promotion =
             promotePanelPairCandidatesAtSafeBoundary();
         PanelPairCacheCoordinator.ActivePair pair =
@@ -18105,6 +18155,8 @@ public class MainActivity extends Activity {
             case "photo_target_missing": return "\u62cd\u7167\u72b6\u6001\u4e22\u5931\uff0c\u5df2\u4fdd\u7559\u8349\u7a3f\uff0c\u8bf7\u56de\u5230\u5f55\u8868\u9875\u91cd\u8bd5\u3002";
             case "photo_preview_failed": return "\u7167\u7247\u9884\u89c8\u5931\u8d25\uff0c\u539f\u56fe\u6587\u4ef6\u4ecd\u4fdd\u7559\uff0c\u53ef\u7ee7\u7eed\u63d0\u4ea4\u3002";
             case "diagnostic_log_title": return "\u6700\u8fd1\u8bca\u65ad\u8bb0\u5f55";
+            case "software_version": return "\u8f6f\u4ef6\u7248\u672c";
+            case "panel_version": return "\u9762\u677f\u7248\u672c";
             case "settings_title": return "自动录表";
             case "saved": return "已保存";
             case "panel_connection": return "面板连接";
@@ -18521,6 +18573,8 @@ public class MainActivity extends Activity {
             case "photo_target_missing": return "Photo state was lost. The draft was kept; return to the form and retry.";
             case "photo_preview_failed": return "Photo preview failed. The original file is still saved and can be submitted.";
             case "diagnostic_log_title": return "Recent diagnostic log";
+            case "software_version": return "Software version";
+            case "panel_version": return "Panel version";
             case "settings_title": return "Auto Form";
             case "saved": return "Saved";
             case "panel_connection": return "Panel connection";
@@ -18937,6 +18991,8 @@ public class MainActivity extends Activity {
             case "photo_target_missing": return "Se perdió el estado de la foto. El borrador se conservó; vuelva al formulario e inténtelo de nuevo.";
             case "photo_preview_failed": return "No se pudo mostrar la vista previa de la foto. El archivo original sigue guardado y se puede enviar.";
             case "diagnostic_log_title": return "Registro de diagnóstico reciente";
+            case "software_version": return "Versión del software";
+            case "panel_version": return "Versión del panel";
             case "settings_title": return "Formulario automático";
             case "saved": return "Guardado";
             case "panel_connection": return "Conexión del panel";
