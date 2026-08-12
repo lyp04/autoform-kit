@@ -1,6 +1,6 @@
 # 全局配置
 
-Panel 是运行配置与表单行为的主体，App 只是读取并执行已验证配置的通用框架。App-facing 值写入私有 `form-profiles.json` 的 `settings`；只供 Worker 使用的通知提供方适配器写入私有 `panel-settings.json`。真实 profile、backend adapter、通知设置、更新源坐标与其他正式环境值都留在私有 Panel/catalog；公开源码只保留不可运行的虚构示例。完整自定义入口见[自定义边界](./customization.md)。
+Panel 是运行配置与表单行为的主体，App 只是读取并执行已验证配置的通用框架。App-facing 值写入私有 `form-profiles.json` 的 `settings`；只供 Worker 使用的通知提供方适配器及总开关写入私有 `panel-settings.json`。真实 profile、backend adapter、通知设置、更新源坐标与其他正式环境值都留在私有 Panel/catalog；公开源码只保留不可运行的虚构示例。完整自定义入口见[自定义边界](./customization.md)。
 
 ## 当前配置项
 
@@ -9,6 +9,7 @@ Panel 是运行配置与表单行为的主体，App 只是读取并执行已验�
 | `backendAdapter` | 后端地址、接口、字段与可选模块协议 | 是 |
 | `brand` | 设置页标题前缀 | 是 |
 | `notificationAdapter` | Worker 调用通知提供方的协议 | 否 |
+| `notificationsEnabled` | Worker 通知总开关；显式 `false` 时保留适配器但禁止发送 | 否 |
 | `diagnosticsPolicy` | 是否允许发送最小化结构化故障事件 | 是；运行时再派生为 `/api/config.notification.diagnosticsEnabled` |
 | `dailyStats` | 旧 App 登录页按显式 result key 分组的兼容汇总 | 是 |
 | `dailyStatsV2` | 新版 App 按精确 profile/result pair 分组，并可显示不重复计入总数的扁平汇总 | 是 |
@@ -55,7 +56,7 @@ Adapter 包含 endpoint metadata 和 field mapping，不能包含密码、长期
 
 ## `notificationAdapter`
 
-通知通过同源 Worker 代理。App 只能向 `/api/notify` 提交版本匹配、字段固定的结构化事件；provider URL、消息模板、响应成功标记与超时只保存在私有 `panel-settings.json`。v2 与 v3 是两套独立契约，不能混用字段。
+通知通过同源 Worker 代理。App 只能向 `/api/notify` 提交版本匹配、字段固定的结构化事件；provider URL、消息模板、响应成功标记、超时与 `notificationsEnabled` 总开关只保存在私有 `panel-settings.json`。总开关缺失时为兼容旧部署按开启处理；显式 `false` 时 `/api/config` 返回 `notification.enabled:false`、事件列表为空，且 `/api/notify` 在联系 provider 前拒绝请求。v2 与 v3 是两套独立契约，不能混用字段。
 
 ### v2：聚合事件（保留）
 
@@ -280,7 +281,7 @@ v3 App request 顶层只允许 `version`、`type`、`data`，且必须是 `versi
 
 发送规则：
 
-- 每个通过校验的 round 都发送 `summary`。
+- 只有 `notificationsEnabled` 总开关未关闭、对应 profile 已开启提交通知时，App 才发送 round；每个通过校验的 round 都发送 `summary`。
 - 仅当 `success:false`、`errors` 非空、`unconfirmedIdentifiers` 非空或 `networkAffectedIdentifiers` 非空时发送 `problem`。只有缺失、新增缺失或恢复项目时，不会单独触发 `problem`。
 - 适用的 delivery 会独立、并行开始；一个 provider 的失败、超时或拒绝不会阻止另一个 delivery 尝试发送。
 - 每个 delivery 只有在 HTTP status 命中自己的 `successStatuses`，并且 provider **原始响应文本**包含自己的 `response.textContains` 时才成功。匹配是 exact、case-sensitive 的普通文本包含判断；不解析 JSON，也不忽略大小写、空格或其他字符差异。
@@ -306,7 +307,7 @@ v3 App request 顶层只允许 `version`、`type`、`data`，且必须是 `versi
 
 v2 继续受支持。读取旧 v1 adapter 时，Worker/Panel 只会将 transport 与 provider success policy 安全迁移到 v2，并加入通用 `submission.summary` 模板；保存后写回 v2。迁移不会创建 `runtime.failure` 模板，也不会打开 `diagnosticsPolicy`。
 
-v1 或 v2 都不会自动迁移成 v3，公开仓库中的虚构 adapter 示例也继续使用 v2。升级 Panel 或 App 不会自动配置、发送或启用 `submission.round`。只有部署方在私有 `panel-settings.json` 中显式保存有效 v3 adapter，并让对应 profile 同时设置 `workflow.notifications.submissionSummary:true` 与显式 `profileLabel`，candidate App 才发送 v3 round。Panel 发布会交叉校验 adapter capability 与这些 profile 字段；缺项时拒绝发布。`/api/notify` 不接受旧的自由文本 body。
+v1 或 v2 都不会自动迁移成 v3，公开仓库中的虚构 adapter 示例也继续使用 v2。升级 Panel 或 App 不会自动配置、发送或启用 `submission.round`。只有部署方在私有 `panel-settings.json` 中保存有效 v3 adapter、未关闭 `notificationsEnabled`，并让对应 profile 同时设置 `workflow.notifications.submissionSummary:true` 与显式 `profileLabel`，candidate App 才发送 v3 round。Panel 发布会交叉校验 adapter capability 与这些 profile 字段；缺项时拒绝发布。`/api/notify` 不接受旧的自由文本 body。
 
 `notifyWebhook` 仅为旧 App 的迁移窗口保留；旧客户端可能直接收到并调用该 URL。新客户端不使用它。确认所有设备升级且 `/api/notify` 验证完成后，应清空该字段，避免继续暴露 provider 地址。
 

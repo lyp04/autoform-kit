@@ -192,9 +192,9 @@ Catalog root 的 contract：
 | --- | --- |
 | `form-profiles.json` | App-facing settings 与 profiles。 |
 | `manifest.json` | Version、SHA-256 与 payload URL。 |
-| `panel-settings.json` | 可选的 Worker-only `notificationAdapter`；首次保存 Worker-only setting 时创建，没有该设置时合法地不存在。 |
+| `panel-settings.json` | 可选的 Worker-only `notificationAdapter` 与 `notificationsEnabled` 总开关；首次保存 Worker-only setting 时创建，没有该设置时合法地不存在。 |
 
-活动 `backendAdapter` 存在 `form-profiles.json` 的 `settings`，覆盖 Cloudflare bootstrap。v2/v3 `notificationAdapter` 的 provider URL 只在 `panel-settings.json`，不会进入 App catalog/config；但 old-App migration 的 legacy `notifyWebhook` 仍在 `form-profiles.json`，并会暂时出现在 `/api/config`，所有旧设备升级后必须清空。Authority 中不存在 `panel-settings.json` 时，备份与发布证据也必须记录显式 absent，不能创建虚构空文件。Exact filled files 可保存到访问受控的 private backup/evidence，但不得复制到 public source、history、tag、Release、artifact 或日志。
+活动 `backendAdapter` 存在 `form-profiles.json` 的 `settings`，覆盖 Cloudflare bootstrap。v2/v3 `notificationAdapter` 的 provider URL 与 `notificationsEnabled` 总开关只在 `panel-settings.json`，不会进入 App catalog；总开关缺失时为兼容旧部署按开启处理，显式 `false` 时 `/api/config` 下发 `notification.enabled:false` 且 `/api/notify` 拒绝发送。old-App migration 的 legacy `notifyWebhook` 仍在 `form-profiles.json`，并会暂时出现在 `/api/config`，所有旧设备升级后必须清空。Authority 中不存在 `panel-settings.json` 时，备份与发布证据也必须记录显式 absent，不能创建虚构空文件。Exact filled files 可保存到访问受控的 private backup/evidence，但不得复制到 public source、history、tag、Release、artifact 或日志。
 
 ### Optional R2 cutover
 
@@ -223,7 +223,7 @@ R2 current 的发布证据。
 
 新 App 只接收 `notification {version,enabled,endpoint:"/api/notify",eventTypes,diagnosticsEnabled}`，并以 read key 调用 same-origin proxy。v2 capability 只提供 `submission.summary` / 可选 `runtime.failure`；v3 只提供 `submission.round`。App 只发送对应版本的严格结构化字段，不发送自由文本 message；Worker 根据私有 template 生成 provider message。
 
-提交汇总必须在对应 profile 显式设置 `workflow.notifications.submissionSummary:true`，缺失时默认关闭；v3 还必须提供显式 `profileLabel`。Panel 在 publish / settings save 时交叉校验当前 adapter capability 与所有启用 profile，缺项直接拒绝。Device diagnostics 只属于 v2，必须同时配置 `runtime.failure` event template 并显式打开全局 `diagnosticsPolicy`；任一缺失时关闭。先让 provider/relay 进入 safe test mode，用 fictional structured events 验证 template、provider body、status、response marker、timeout 与 rate limit，再启用。
+通知必须同时满足 Worker-only `notificationsEnabled:true`（缺失时兼容视为开启）以及对应 profile 的 `workflow.notifications.submissionSummary:true`；任一关闭都不发送。v3 还必须提供显式 `profileLabel`。Panel 在 publish / settings save 时交叉校验当前 adapter capability 与所有启用 profile，缺项直接拒绝。Device diagnostics 只属于 v2，必须同时配置 `runtime.failure` event template、开启 `notificationsEnabled` 并显式打开全局 `diagnosticsPolicy`；任一缺失时关闭。先让 provider/relay 进入 safe test mode，用 fictional structured events 验证 template、provider body、status、response marker、timeout 与 rate limit，再启用。
 
 旧 v1 adapter 会在读取时安全迁移为 v2，并只增加通用 `submission.summary` template；保存全局设置会持久化 v2。迁移不会创建 `runtime.failure` template、v3 delivery 或打开 diagnostics。v3 必须私下显式配置，不会因 Panel/App 升级自动启用。`notifyWebhook` 只用于 old-App migration，升级完成后清空。
 

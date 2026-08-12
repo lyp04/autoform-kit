@@ -476,6 +476,9 @@ async function handleRoundNotification(adapter, data) {
 async function handleNotification(request, env) {
   if (!catalogReadAuthorized(request, env)) return json({ error: "unauthorized" }, 401);
   const { settings } = await readProfiles(env);
+  if (settings?.notificationsEnabled === false) {
+    return json({ error: "notifications are disabled" }, 403);
+  }
   const adapter = migrateNotificationAdapter(settings?.notificationAdapter);
   const adapterErrors = validateNotificationAdapter(adapter);
   if (adapterErrors.length) return json({ error: "notifications are not configured" }, 503);
@@ -895,6 +898,12 @@ async function handleApi(request, env, url) {
     }
     const settings = {};
     if (typeof b.notifyWebhook === "string") settings.notifyWebhook = b.notifyWebhook;
+    if (Object.prototype.hasOwnProperty.call(b, "notificationsEnabled")) {
+      if (typeof b.notificationsEnabled !== "boolean") {
+        return json({ error: "notificationsEnabled must be a boolean" }, 400);
+      }
+      settings.notificationsEnabled = b.notificationsEnabled;
+    }
     if (Object.prototype.hasOwnProperty.call(b, "notificationAdapter")) {
       if (b.notificationAdapter === null) settings.notificationAdapter = null;
       else {
@@ -1129,7 +1138,8 @@ export default {
           }, 503);
         }
         const notificationAdapter = migrateNotificationAdapter(settings.notificationAdapter);
-        const notificationEnabled = validateNotificationAdapter(notificationAdapter).length === 0;
+        const notificationEnabled = settings.notificationsEnabled !== false
+          && validateNotificationAdapter(notificationAdapter).length === 0;
         const eventTypes = notificationEnabled
           ? notificationEventTypes(notificationAdapter) : [];
         const requestKeySha256 = await sha256Hex(auth(request).token);

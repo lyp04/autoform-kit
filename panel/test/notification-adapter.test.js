@@ -373,6 +373,43 @@ test("Worker proxies a neutral notification without exposing provider config to 
       Accept: "application/json",
       "Content-Type": "application/json; charset=utf-8"
     });
+
+    files["panel-settings.json"] = JSON.stringify({
+      schemaVersion: 1,
+      settings: { notificationAdapter, notificationsEnabled: false }
+    });
+    providerRequest = undefined;
+    const disabledConfigResponse = await worker.fetch(new Request(
+      "https://panel.test.invalid/api/config", {
+        headers: { Authorization: "Bearer sample-read-key" }
+      }), env);
+    assert.equal(disabledConfigResponse.status, 200);
+    const disabledConfig = await disabledConfigResponse.json();
+    assert.equal(disabledConfig.notification.enabled, false);
+    assert.deepEqual(disabledConfig.notification.eventTypes, []);
+    assert.equal(disabledConfig.notification.diagnosticsEnabled, false);
+
+    const disabledNotifyResponse = await worker.fetch(new Request(
+      "https://panel.test.invalid/api/notify", {
+        method: "POST",
+        headers: { Authorization: "Bearer sample-read-key", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          version: 2,
+          type: "submission.summary",
+          data: {
+            success: true,
+            submittedCount: 1,
+            errorCount: 0,
+            unconfirmedPrintCount: 0,
+            missingMaterialTypeCount: 0,
+            newMissingMaterialTypeCount: 0,
+            recoveredMaterialTypeCount: 0,
+            networkAffectedCount: 0
+          }
+        })
+      }), env);
+    assert.equal(disabledNotifyResponse.status, 403);
+    assert.equal(providerRequest, undefined);
   } finally {
     globalThis.fetch = previousFetch;
   }

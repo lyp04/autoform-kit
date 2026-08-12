@@ -1034,7 +1034,7 @@ test("settings-only publish rejects an invalid retained profile", async () => {
   }
 });
 
-test("notification provider adapter is stored privately and omitted from the hash-verified App catalog", async () => {
+test("notification provider settings are stored privately and omitted from the hash-verified App catalog", async () => {
   const files = new Map();
   files.set("form-profiles.json", {
     text: JSON.stringify({ schemaVersion: 2, version: 2, settings: { brand: "Sample" }, profiles: [] }),
@@ -1051,16 +1051,27 @@ test("notification provider adapter is stored privately and omitted from the has
   const github = installCatalogGitMock(files);
 
   try {
+    await assert.rejects(
+      publishCatalog({ GITHUB_REPO: "sample/catalog", GITHUB_TOKEN: "sample-token" }, [], {
+        publicUrl: "https://panel.test.invalid",
+        settings: { notificationAdapter, notificationsEnabled: "yes" }
+      }),
+      /notificationsEnabled must be a boolean/
+    );
+    assert.equal(files.has("panel-settings.json"), false);
     await publishCatalog({ GITHUB_REPO: "sample/catalog", GITHUB_TOKEN: "sample-token" }, [], {
       publicUrl: "https://panel.test.invalid",
-      settings: { notificationAdapter }
+      settings: { notificationAdapter, notificationsEnabled: false }
     });
     const appCatalog = JSON.parse(files.get("form-profiles.json").text);
     assert.equal("notificationAdapter" in appCatalog.settings, false);
+    assert.equal("notificationsEnabled" in appCatalog.settings, false);
     const privateSettings = JSON.parse(files.get("panel-settings.json").text);
     assert.deepEqual(privateSettings.settings.notificationAdapter, notificationAdapter);
+    assert.equal(privateSettings.settings.notificationsEnabled, false);
     const merged = await readProfiles({ GITHUB_REPO: "sample/catalog", GITHUB_TOKEN: "sample-token" });
     assert.deepEqual(merged.settings.notificationAdapter, notificationAdapter);
+    assert.equal(merged.settings.notificationsEnabled, false);
   } finally {
     github.restore();
   }

@@ -799,7 +799,7 @@ Profile 可用 `previousSteps.recipeMaxAttempts`、`submission.maxAttempts` 和 
 
 ### `workflow.notifications`
 
-`submissionSummary:true` 表示该 profile 允许发送结构化提交通知。缺少 `notifications`、缺少该字段或值为 `false` 时均不发送。这个 profile 开关不会单独启用通知：v2 还要求 Panel 全局 `notificationAdapter.eventTemplates` 包含 `submission.summary`；v3 还要求有效的双 delivery adapter 与下面的显式 `profileLabel`。v2 App 不把 profile 名称、账号、记录标识、item 明细或自由文本放入计数事件；完整通知协议见[全局配置](./configuration.md#notificationadapter)。
+`submissionSummary:true` 表示该 profile 允许发送结构化提交通知。缺少 `notifications`、缺少该字段或值为 `false` 时均不发送。这个 profile 开关不会单独启用通知：还要求 Worker-only `notificationsEnabled` 总开关未关闭；v2 要求 Panel 全局 `notificationAdapter.eventTemplates` 包含 `submission.summary`；v3 还要求有效的双 delivery adapter 与下面的显式 `profileLabel`。v2 App 不把 profile 名称、账号、记录标识、item 明细或自由文本放入计数事件；完整通知协议见[全局配置](./configuration.md#notificationadapter)。
 
 可选 `profileLabel` 是提供给 v3 `submission.round.data.profileLabel` 的显式通知显示名称：必须是非空 string，最长 160 characters。Panel 编辑器留空时删除该字段；App 不得从 `displayName`、`model`、template、SKU 或其他业务字段猜测替代值。缺少 `profileLabel` 时不能据此构造 v3 round 通知，但不会改变 v2 `submission.summary` 的既有行为。`workflow.notifications` 只允许：
 

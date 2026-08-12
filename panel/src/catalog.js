@@ -4,7 +4,7 @@
 // authoritative instead:
 //   form-profiles.json : { schemaVersion, version, profiles:[...] }   <- the app loads this
 //   manifest.json      : { schemaVersion, version, sha256, profilesUrl, minAppVersionCode, ... }
-//   panel-settings.json: Worker-only settings (never served through /catalog/*)
+//   panel-settings.json: Worker-only notification settings (never served through /catalog/*)
 // The app's FormCatalogManager fetches manifest.json, gates on schemaVersion/version, then
 // downloads profilesUrl and SHA-256-verifies it against manifest.sha256.
 
@@ -546,6 +546,11 @@ export async function publishCatalog(env, profiles, {
   if (settings !== undefined || prevSettings !== undefined) {
     mergedSettings = { ...(prevSettings || {}), ...(settings || {}) };
   }
+  if (mergedSettings
+      && Object.prototype.hasOwnProperty.call(mergedSettings, "notificationsEnabled")
+      && typeof mergedSettings.notificationsEnabled !== "boolean") {
+    throw new Error("notificationsEnabled must be a boolean");
+  }
   const dailyStatsErrors = validateDailyStats(mergedSettings?.dailyStats, profiles);
   if (dailyStatsErrors.length) {
     throw new Error(`dailyStats validation failed: ${dailyStatsErrors.join("; ")}`);
@@ -568,12 +573,15 @@ export async function publishCatalog(env, profiles, {
   if (!Number.isInteger(resolvedMinAppVersionCode) || resolvedMinAppVersionCode < 0) {
     throw new Error("minAppVersionCode must be a non-negative integer");
   }
-  // Provider protocol/URL is Worker-only. Migrate any earlier in-file value into a separate private
-  // settings file so the App catalog remains hash-verifiable without receiving the provider adapter.
+  // Provider protocol/URL and its global enable switch are Worker-only. Migrate any earlier in-file
+  // value into a separate private settings file so the App catalog remains hash-verifiable without
+  // receiving notification delivery configuration.
   const privateSettings = { ...prevPrivateSettings };
-  if (mergedSettings && Object.prototype.hasOwnProperty.call(mergedSettings, "notificationAdapter")) {
-    privateSettings.notificationAdapter = mergedSettings.notificationAdapter;
-    delete mergedSettings.notificationAdapter;
+  for (const key of ["notificationAdapter", "notificationsEnabled"]) {
+    if (mergedSettings && Object.prototype.hasOwnProperty.call(mergedSettings, key)) {
+      privateSettings[key] = mergedSettings[key];
+      delete mergedSettings[key];
+    }
   }
   const profilesObj = mergedSettings !== undefined
     ? { schemaVersion: SCHEMA_VERSION, version, settings: mergedSettings, profiles }

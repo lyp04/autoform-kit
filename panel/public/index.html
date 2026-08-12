@@ -179,7 +179,7 @@
 
     <div class="fsec">
       <h3>App 后端 &amp; 通知设置</h3>
-      <div class="h">App 从面板读取后端与运行配置（不再硬编码）。通知只接收严格结构化事件，文本由下面的私有 eventTemplates 在 Worker 内生成。改完点「保存」，App 下次启动生效。</div>
+      <div class="h">App 从面板读取后端与运行配置（不再硬编码）。飞书通知受下面的总开关和每个表单的开关共同控制；总开关关闭时保留适配器配置，但不会发送。改完点「保存」，App 下次启动生效。</div>
       <label>后端地址 (backendApiBase)</label>
       <input id="backendApiBaseInput" placeholder="https://backend.example.invalid/api" />
       <label>品牌名 (brand)</label>
@@ -195,7 +195,8 @@
       <input id="webOriginInput" placeholder="https://backend.example.invalid" />
       <label>Web Referer（可选，留空则不发该头）</label>
       <input id="webRefererInput" placeholder="https://backend.example.invalid/" />
-      <label>通知适配器 notificationAdapter（JSON，v2 / v3）</label>
+      <label style="display:flex;gap:8px;align-items:center"><input id="notificationsEnabledInput" type="checkbox" style="width:auto" />启用飞书通知（总开关；关闭后保留配置但不发送）</label>
+      <label>飞书通知适配器 notificationAdapter（JSON，v2 / v3）</label>
       <textarea id="notificationAdapterInput" spellcheck="false" placeholder='{ "version": 2, "url": "https://notifications.example.invalid/hooks/demo", "method": "POST", "bodyTemplate": { "text": "{{message}}" }, "eventTemplates": { "submission.summary": "Example summary: submitted={{submittedCount}}, errors={{errorCount}}" }, "successStatuses": [200, 202] }' style="min-height:220px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;white-space:pre"></textarea>
       <label style="display:flex;gap:8px;align-items:center"><input id="diagnosticsEnabledInput" type="checkbox" style="width:auto" />允许最小化故障事件（还需配置 runtime.failure 模板；默认关闭）</label>
       <label>旧版通知 Webhook（迁移期间保留）</label>
@@ -585,7 +586,7 @@ function settingsPanel(p){
   policies.appendChild(swField("扫码前预检", !!workflowValue().previousSteps?.scanPrecheck, value=>updateWorkflow("previousSteps","scanPrecheck",value)));
   policies.appendChild(swField("启用标识字符纠正", !!workflowValue().previousSteps?.identifierCorrection?.enabled, value=>updateNestedWorkflow("previousSteps","identifierCorrection","enabled",value)));
   policies.appendChild(swField("启用重复检查", !!workflowValue().duplicateCheck?.enabled, value=>updateWorkflow("duplicateCheck","enabled",value)));
-  policies.appendChild(swField("启用打印流程", !!workflowValue().printing?.enabled, value=>updateWorkflow("printing","enabled",value)));
+  policies.appendChild(swField("提交后打印（不勾选则不检查打印机）", !!workflowValue().printing?.enabled, value=>updateWorkflow("printing","enabled",value)));
   policies.appendChild(swField("允许手动补打", !!workflowValue().printing?.manualReprintEnabled, value=>{
     const w=JSON.parse(JSON.stringify(workflowValue()));
     w.printing=Object.assign({},w.printing||{},{manualReprintEnabled:value});
@@ -606,7 +607,7 @@ function settingsPanel(p){
   policies.appendChild(swField("提交前刷新列表项", !!workflowValue().materials?.refreshBeforeSubmit, value=>updateWorkflow("materials","refreshBeforeSubmit",value)));
   policies.appendChild(swField("启用缺失列表项恢复", !!workflowValue().materials?.missingRecovery?.enabled, value=>updateNestedWorkflow("materials","missingRecovery","enabled",value)));
   policies.appendChild(swField("缺失列表项本机提示", !!workflowValue().materials?.missingRecovery?.localNotice, value=>updateNestedWorkflow("materials","missingRecovery","localNotice",value)));
-  policies.appendChild(swField("发送聚合提交汇总（需全局事件模板）", !!workflowValue().notifications?.submissionSummary, value=>updateWorkflow("notifications","submissionSummary",value)));
+  policies.appendChild(swField("发送飞书提交通知（需同时开启全局通知）", !!workflowValue().notifications?.submissionSummary, value=>updateWorkflow("notifications","submissionSummary",value)));
   runtime.appendChild(policies);
   const notificationProfileLabel=inputCtl(workflowValue().notifications?.profileLabel||"",value=>{
     const w=JSON.parse(JSON.stringify(workflowValue()));
@@ -1950,6 +1951,8 @@ function openGlobalSettings(){
   $("notifyWebhookInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.notifyWebhook) || "";
   const notificationAdapter = (CATALOG_SETTINGS && CATALOG_SETTINGS.notificationAdapter) || null;
   $("notificationAdapterInput").value = notificationAdapter ? JSON.stringify(notificationAdapter, null, 2) : "";
+  $("notificationsEnabledInput").checked = !!notificationAdapter
+    && CATALOG_SETTINGS?.notificationsEnabled !== false;
   $("diagnosticsEnabledInput").checked = !!(CATALOG_SETTINGS?.diagnosticsPolicy?.enabled);
   $("backendApiBaseInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.backendApiBase) || "";
   $("brandInput").value = (CATALOG_SETTINGS && CATALOG_SETTINGS.brand) || "";
@@ -2042,6 +2045,7 @@ function buildUpdateSource(owner, repo) {
 }
 $("saveNotifyBtn").onclick = async () => {
   const notifyWebhook=$("notifyWebhookInput").value.trim();
+  const notificationsEnabled=$("notificationsEnabledInput").checked;
   const diagnosticsPolicy={enabled:$("diagnosticsEnabledInput").checked};
   const backendApiBase=$("backendApiBaseInput").value.trim();
   const brand=$("brandInput").value.trim();
@@ -2074,9 +2078,9 @@ $("saveNotifyBtn").onclick = async () => {
   }
   const btn=$("saveNotifyBtn"), lbl=btn.textContent; btn.disabled=true; btn.textContent="保存中…"; $("notifyMsg").textContent="";
   try {
-    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationAdapter, diagnosticsPolicy, dailyStats, dailyStatsV2, dailyStatsAlternateEntries, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
+    const saved=await api("/api/settings", { method:"POST", body:{ baseVersion:CATALOG_VERSION, notificationsEnabled, notificationAdapter, diagnosticsPolicy, dailyStats, dailyStatsV2, dailyStatsAlternateEntries, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns } });
     CATALOG_VERSION=saved.version;
-    CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notificationAdapter, diagnosticsPolicy, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns });
+    CATALOG_SETTINGS = Object.assign({}, CATALOG_SETTINGS, { notificationsEnabled, notificationAdapter, diagnosticsPolicy, notifyWebhook, backendApiBase, brand, updateOwner, updateRepo, updateSource, minAppVersionCode, webOrigin, webReferer, endpoints, backendAdapter, sessionInvalidCodes, sessionInvalidMessagePatterns });
     applyDailyStatsToLocalSettings(dailyStats);
     applyDailyStatsV2ToLocalSettings(dailyStatsV2);
     applyDailyStatsAlternateEntriesToLocalSettings(dailyStatsAlternateEntries);
