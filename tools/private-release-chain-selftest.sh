@@ -1001,8 +1001,10 @@ global.fetch = async function fixtureFetch(url, options = {}) {
   const authClass = authenticated ? "correct" : (authorization ? "incorrect" : "anonymous");
   fs.appendFileSync(process.env.AUTOFORM_CHAIN_FETCH_LOG,
     `${JSON.stringify({ method, path: parsed.pathname, authClass })}\n`, { mode: 0o600 });
-  let status = 401;
-  let body = Buffer.from('{"error":"unauthorized"}\n', "utf8");
+  let status = parsed.pathname === "/api/panel-config" ? 200 : 401;
+  let body = parsed.pathname === "/api/panel-config"
+    ? Buffer.from('{"fixture":true}\n', "utf8")
+    : Buffer.from('{"error":"unauthorized"}\n', "utf8");
   if (authenticated) {
     status = 200;
     if (parsed.pathname === "/api/profiles") {
@@ -1639,7 +1641,6 @@ assert_fetch_matrix() {
     | [
       "/api/config",
       "/api/profiles",
-      "/api/panel-config",
       "/api/runtime-provenance",
       "/catalog/form-profiles.json",
       "/catalog/manifest"
@@ -1648,6 +1649,9 @@ assert_fetch_matrix() {
     and ([$ordinaryGetRoutes[] as $route
       | calls($requests; "GET"; $route; "correct") == $runs] | all)
     and calls($requests; "GET"; "/api/runtime-provenance"; "correct") == (2 * $runs)
+    and calls($requests; "GET"; "/api/panel-config"; "correct") == $runs
+    and calls($requests; "GET"; "/api/panel-config"; "anonymous") == $runs
+    and calls($requests; "GET"; "/api/panel-config"; "incorrect") == $runs
     and ([$protectedGetRoutes[] as $route
       | calls($requests; "GET"; $route; "anonymous") == $runs
         and calls($requests; "GET"; $route; "incorrect") == $runs] | all)
@@ -1710,6 +1714,7 @@ jq -e -s \
     and $report.bindings.catalogAuthorityType == "github"
     and $report.bindings.panelSettingsPresent == false
     and $report.checks.incorrectBearerDenied == true
+    and $report.checks.panelBootstrapPublic == true
     and $report.checks.runtimeProvenanceRechecked == true
     and $environment.AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256
       == $report.verifierSha256

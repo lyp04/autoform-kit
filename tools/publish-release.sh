@@ -1605,6 +1605,7 @@ verify_private_release_evidence() {
         catalogManifestLiveExact: true,
         catalogReadKeyConfigured: true,
         authenticatedPairFetched: true,
+        panelBootstrapPublic: true,
         anonymousAccessDenied: true,
         incorrectBearerDenied: true,
         runtimeProvenanceRechecked: true,

@@ -20,7 +20,7 @@ Cloudflare 输入的一次迁移。前者只补 legacy base URL；后者只在�
 `auth.sessionProofCodes` 时补值。新部署不得把它们当成第二套配置：把经核对的等价值写入完整
 `BACKEND_ADAPTER_JSON`，随后保存到 private `settings.backendAdapter` 并删除旧输入。
 
-`/api/panel-config` 在校验 `CATALOG_READ_KEY` 后、backend 登录前，向浏览器返回 authoring 所需的 adapter 子集。因此 backend host、authoring endpoint、字段与 conversion mapping 是受 read key 保护的配置，但不是 secret。需要更强隐藏时，应限制整个 Panel 的网络可达范围。
+`/api/panel-config` 在 backend 登录前匿名向浏览器返回 authoring 所需的最小 adapter 子集，因此 Panel 登录页不需要第二个共享密钥。Backend host、authoring endpoint、字段与 conversion mapping 不是 secret，adapter 中不得存放 credential；需要隐藏这些 metadata 时，应使用 Cloudflare Access 或限制整个 Panel 的网络可达范围。Catalog 与 App config 仍由 `CATALOG_READ_KEY` 保护。
 
 ## 顶层结构
 

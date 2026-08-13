@@ -167,24 +167,23 @@ test("missing and placeholder deployment config fail explicitly", async () => {
   assert.match((await response.json()).error, /backend adapter is not configured/);
 });
 
-test("panel bootstrap requires the catalog read key when configured", async () => {
+test("panel bootstrap does not require the App catalog read key", async () => {
   const env = {
     BACKEND_ADAPTER_JSON: JSON.stringify(validBackendAdapter()),
     CATALOG_READ_KEY: "sample-panel-access-key"
   };
   const url = "https://panel.test.invalid/api/panel-config";
-  assert.equal((await worker.fetch(new Request(url), env)).status, 401);
-  assert.equal((await worker.fetch(new Request(url, {
-    headers: { Authorization: "Bearer wrong-key" }
-  }), env)).status, 401);
-
-  const response = await worker.fetch(new Request(url, {
-    headers: { Authorization: "Bearer sample-panel-access-key" }
-  }), env);
-  assert.equal(response.status, 200);
-  const body = await response.json();
-  assert.equal(body.backendAdapter.baseUrl, "https://api.test.invalid/v1");
-  assert.equal("submitEntry" in body.backendAdapter.endpoints, false);
+  for (const request of [
+    new Request(url),
+    new Request(url, { headers: { Authorization: "Bearer wrong-key" } }),
+    new Request(url, { headers: { Authorization: "Bearer sample-panel-access-key" } })
+  ]) {
+    const response = await worker.fetch(request, env);
+    assert.equal(response.status, 200);
+    const body = await response.json();
+    assert.equal(body.backendAdapter.baseUrl, "https://api.test.invalid/v1");
+    assert.equal("submitEntry" in body.backendAdapter.endpoints, false);
+  }
 });
 
 test("panel bootstrap reads authoring settings from seeded R2 without GitHub", async () => {

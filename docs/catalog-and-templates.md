@@ -22,9 +22,9 @@ APK 内置 seed 只是 fictional fallback，不是 private catalog 的初始数�
 
 ## 进入 Panel
 
-1. 输入与 `CATALOG_READ_KEY` 相同的 Panel access key；浏览器只在当前 tab 的 `sessionStorage` 保存它。
-2. 使用获准的 backend account 完成 challenge 和 login。
-3. 浏览器直连 backend；Worker 在受保护写操作前调用 user-info 重新验证 token。
+1. 使用获准的 backend account 完成 challenge 和 login；登录页不再要求 `CATALOG_READ_KEY`。
+2. 浏览器直连 backend；Worker 在受保护写操作前调用 user-info 重新验证 token。
+3. `CATALOG_READ_KEY` 只由 App/受管设备用于读取 catalog、App config 和相关代理 route。
 
 Panel 没有独立 account database。Backend 必须确保只有获准 account 能通过这条校验，或在 edge/network 层增加更严格的访问控制。
 

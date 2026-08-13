@@ -28,7 +28,7 @@ Panel 是正式表单、策略和集成配置的主体，App 只是通用执行�
 | `GITHUB_TOKEN` | Fine-grained token，只授权 private catalog 的 Contents read/write。只放 Cloudflare secret。 |
 | `CATALOG_READ_KEY` | 正式环境必须设置高熵值。它是 shared read credential，不是 per-user authorization。 |
 | `APP_PAIR_ISSUER_KEY` | 与下载 Worker 共享的独立高熵 server-to-server credential；不能复用 read key 或 browser/backend token。 |
-| `BACKEND_ADAPTER_JSON` | 首次引导值。通过 read key 后其 authoring subset 会返回浏览器，不能当作 secret。 |
+| `BACKEND_ADAPTER_JSON` | 首次引导值。其 authoring subset 会在账号登录前返回浏览器，不能当作 secret。 |
 | `AI_API_KEY` | 仅在审查并启用 AI 时设置；限制额度和权限并定期轮换。 |
 | `GITHUB_REPO` / `PUBLIC_URL` | 使用 deployment vars；不要回填 public example。 |
 
@@ -40,14 +40,13 @@ Worker secret/runtime、成功兑换响应和 App connection store 中出现。i
 下载 Worker 也不能把 issuer secret 发送到页面。下载 Worker 可以由部署方明确配置为公开或受控发行；
 公开模式不提供用户授权，并意味着任意访客都可取得 shared Panel connection credential。
 
-### Read gate 是 fail-open
+### App read gate 是 fail-open
 
 当 `CATALOG_READ_KEY` 未设置时，shared read check 允许匿名访问。影响包括：
 
 - `/catalog/*`；
 - `/api/config`；
 - `/api/profiles` 的 read-key path；
-- `/api/panel-config`；
 - `/api/runtime-provenance`；
 - `/api/notify`。
 
@@ -97,7 +96,7 @@ Provider adapter 不支持 custom headers。如果 provider 要求 header creden
 - Android manifest 当前允许 cleartext traffic 以兼容集成；正式配置仍应只使用 HTTPS。
 - Browser backend token 位于 Panel origin 的 `localStorage`；任何 same-origin XSS 都可能读取它。使用受控 domain、TLS 和最少第三方 script。
 
-`/api/panel-config` 在 backend login 前、read-key validation 后提供 challenge/login/template authoring 所需 adapter subset。持有 read key 的访问者可看到 backend host、authoring endpoint、field 和 conversion mapping。若这些 metadata 也必须隐藏，请增加 network/edge access control；把 adapter 放进 Cloudflare secret 并不会改变 bootstrap response。
+`/api/panel-config` 在 backend login 前匿名提供 challenge/login/template authoring 所需的最小 adapter subset，使网页登录只需要账号、密码和验证码。访问者可看到 backend host、authoring endpoint、field 和 conversion mapping；这些值不能包含 credential。若这些 metadata 也必须隐藏，请增加 Cloudflare Access 或 network/edge access control；把 adapter 放进 Cloudflare secret 并不会改变 bootstrap response。Catalog、App config、runtime provenance 与 notification proxy 仍由 `CATALOG_READ_KEY` 保护。
 
 ## 5. Credential 与 session
 
@@ -190,7 +189,7 @@ signed v1.0.4 与 signed v1.0.6 的历史 cache 本身没有连接 binding。**P
 
 - [ ] Private catalog 与 public source 完全分离；两份必选文件位于正确 repository，可选 `panel-settings.json` 的 present/absent 状态符合当前 authority。
 - [ ] Full history、tag、Release 和附件不含 deployment data。
-- [ ] `CATALOG_READ_KEY` 已设置；catalog、config、Panel bootstrap、runtime provenance 与 notification proxy 均拒绝匿名访问。
+- [ ] `CATALOG_READ_KEY` 已设置；catalog、App config、runtime provenance 与 notification proxy 均拒绝匿名访问，Panel bootstrap 匿名响应只包含审阅后的 authoring subset。
 - [ ] 若启用一键配对：公开/受控发行策略与 shared read-key 权限边界已明确接受；`APP_PAIR_TICKETS` SQLite migration、独立 `APP_PAIR_ISSUER_KEY`、精确 applicationId allow-list 与 <=600 秒 TTL 已配置；错误 issuer/read key、未知/过期/已用 ticket 和并发兑换均以 no-store 通用失败结束，且真实设备只成功一次。
 - [ ] `notificationAdapter` 与 `eventTemplates` 未出现在 App-facing response；migration-only direct URL 已清空。
 - [ ] 每个 profile 的提交汇总开关与全局 diagnostics policy 均按最小需要显式设置；缺失时已验证为关闭。

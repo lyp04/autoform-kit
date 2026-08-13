@@ -1108,10 +1108,11 @@ export default {
           panelRuntime: panelRuntimeFromVersionMetadata(env.CF_VERSION_METADATA)
         });
       }
-      // Browser bootstrap exposes only the authoring subset of the same versioned adapter consumed by
-      // the Worker and App. Private catalog settings override the Cloudflare bootstrap after first save.
+      // Browser bootstrap is intentionally available before backend login so the Panel can render the
+      // deployment-owned captcha/login contract without a second shared credential. It exposes only
+      // the authoring subset; every catalog read and mutation still requires either the App read key
+      // or a backend session verified below. Private catalog settings override the Cloudflare bootstrap.
       if (path === "/api/panel-config" && request.method === "GET") {
-        if (!catalogReadAuthorized(request, env)) return json({ error: "panel access key required" }, 401);
         let settings = {};
         if (hasCatalogStorage(env)) settings = (await readProfiles(env)).settings;
         const adapter = resolveBackendAdapter(env, settings);

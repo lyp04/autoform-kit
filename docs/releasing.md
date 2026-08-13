@@ -491,8 +491,9 @@ Worker bundle 的密码学 attestation，也不能视为对 `gh` 的绑定。
 live manifest 必须与 authority manifest 原始字节相同，并以 SHA-256 绑定 catalog version、catalog
 digest、same-origin `profilesUrl` 与最低 App version。Worker-only setting 不通过 live App route 获取，
 只从所选 authority 绑定 present/absent 及其 domain-separated SHA-256。匿名 catalog/config/manifest、
-profiles、Panel config、runtime provenance 与 notification 请求必须全部返回 `401`；向这七条受保护
-route 分别发送一个确保不同于真实 key 的错误 Bearer 也必须返回 `401`。验证窗口末端还会重新读取 authenticated runtime
+profiles、runtime provenance 与 notification 请求必须全部返回 `401`；向这六条受保护
+route 分别发送一个确保不同于真实 key 的错误 Bearer 也必须返回 `401`。Panel `/api/panel-config` 则必须在
+匿名、错误 Bearer 和正确 read key 三种请求下返回完全相同的最小 authoring subset。验证窗口末端还会重新读取 authenticated runtime
 provenance，要求原始响应字节完全不变，并重新确认 public repository identity 仍为 public。
 
 上述 GitHub/R2 discriminator、private-bucket checks、pointer byte recheck、optional settings 与 live
@@ -713,8 +714,8 @@ custom properties。若这些功能已公开启用，必须另做逐面审计并
 stability，而不能把 GitHub baseline 当作 authority 或声称已绑定 ETag。两种分支均须
 确认 bootstrap GitHub repository 不公开、正式部署存在至少 32 字符的高熵 `CATALOG_READ_KEY`，
 且匿名与 deliberately incorrect Bearer 分别请求 `/catalog/form-profiles.json`、`/catalog/manifest`、
-`/api/config`、`/api/profiles`、`/api/panel-config`、`/api/runtime-provenance` 与 `/api/notify` 七条受保护
-route 都返回 `401`。公开源码无法替代这些部署证据，因为 Worker 为无 live data/adapter 的 local demo 保留了
+`/api/config`、`/api/profiles`、`/api/runtime-provenance` 与 `/api/notify` 六条受保护
+route 都返回 `401`；`/api/panel-config` 必须匿名可用且只返回相同的最小 authoring subset。公开源码无法替代这些部署证据，因为 Worker 为无 live data/adapter 的 local demo 保留了
 “未设置 key 时开放”的兼容行为。任一证据缺失、过期或不匹配时，gate 必须输出
 `releaseReady:false`，不得发布。
 
@@ -829,7 +830,7 @@ Android 不支持用较低 `versionCode` 直接回滚。回滚通常需要发布
 - [ ] GitHub API 已机械确认 source repository 为 public；稳定 Release 已显式设为 latest，并在创建后复核 tag、draft/prerelease 状态、精确三项资产及重新下载字节的 SHA-256。
 - [ ] Release note 与附件适合公开。
 - [ ] Reviewed deployment evidence 已选择唯一 authority：GitHub 分支绑定 private repository + exact commit；R2 分支通过 remote Wrangler 确认 bucket 无 public URL/domain，绑定 current pointer exact bytes/state/snapshot，并通过验证窗口前后 pointer byte recheck。没有把该检查写成 ETag binding，也未把 stale GitHub baseline 当成 current；Release 未包含 filled Panel/adapter export。
-- [ ] 正式部署已设置高熵 `CATALOG_READ_KEY`，并实测匿名和错误 Bearer 访问 `/catalog/form-profiles.json`、`/catalog/manifest`、`/api/config`、`/api/profiles`、`/api/panel-config`、`/api/runtime-provenance`、`/api/notify` 全部返回 `401`。缺少任一证据即停止发布。
+- [ ] 正式部署已设置高熵 `CATALOG_READ_KEY`，并实测匿名和错误 Bearer 访问 `/catalog/form-profiles.json`、`/catalog/manifest`、`/api/config`、`/api/profiles`、`/api/runtime-provenance`、`/api/notify` 全部返回 `401`；`/api/panel-config` 匿名、错误 Bearer 与正确 key 响应完全相同且只包含 authoring subset。缺少任一证据即停止发布。
 - [ ] Mode-`0600` config/catalog evidence 与 authenticated live config/catalog 原始字节一致；live manifest 与 authority manifest 原始字节一致，其 version、catalog SHA-256、same-origin profiles URL 与最低 App version 精确绑定同一 pair。Optional `panel-settings.json` 的 present/absent 状态来自 authority 证据，不来自 App route。
 - [ ] Panel 通过带 `CF_VERSION_METADATA` 的 clean source-tag 入口部署；authenticated live runtime provenance 精确匹配审阅的 source commit，并另有 exact bundle/build attestation。匿名 provenance route 返回 `401`。
 - [ ] 新 Panel → private config → 旧 App compatibility → 新 App 的顺序已验证，新增 workflow 尚未提前启用。

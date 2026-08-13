@@ -1157,11 +1157,11 @@ const protectedPanelRoutes = Object.freeze([
   { name: "manifest", path: "/catalog/manifest", post: false },
   { name: "config", path: "/api/config", post: false },
   { name: "profiles", path: "/api/profiles", post: false },
-  { name: "panel-config", path: "/api/panel-config", post: false },
   { name: "runtime-provenance", path: "/api/runtime-provenance", post: false },
   { name: "notification", path: "/api/notify", post: true }
 ]);
-const [authenticatedResponses, anonymousResponses, incorrectBearerResponses] =
+const [authenticatedResponses, anonymousResponses, incorrectBearerResponses,
+  publicPanelBootstrapResponses] =
   await Promise.all([
     Promise.all([
       requestStatus("authenticated-config", "/api/config", { authenticated: true }),
@@ -1176,15 +1176,26 @@ const [authenticatedResponses, anonymousResponses, incorrectBearerResponses] =
       `anonymous-${route.name}`, route.path, { post: route.post }))),
     Promise.all(protectedPanelRoutes.map((route) => requestStatus(
       `incorrect-bearer-${route.name}`, route.path,
-      { incorrectBearer: true, post: route.post })))
+      { incorrectBearer: true, post: route.post }))),
+    Promise.all([
+      requestStatus("anonymous-panel-config", "/api/panel-config"),
+      requestStatus("incorrect-bearer-panel-config", "/api/panel-config", {
+        incorrectBearer: true
+      })
+    ])
   ]);
 const [authenticatedConfig, authenticatedCatalog, authenticatedManifest,
   authenticatedPanelConfig, authenticatedProfiles] = authenticatedResponses;
+const [anonymousPanelConfig, incorrectBearerPanelConfig] = publicPanelBootstrapResponses;
 if (authenticatedConfig.status !== 200 || !authenticatedConfig.body.equals(configFile.bytes)
     || authenticatedCatalog.status !== 200 || !authenticatedCatalog.body.equals(catalogFile.bytes)
     || authenticatedManifest.status !== 200
     || !authenticatedManifest.body.equals(rawManifest)
     || authenticatedPanelConfig.status !== 200
+    || anonymousPanelConfig.status !== 200
+    || incorrectBearerPanelConfig.status !== 200
+    || !anonymousPanelConfig.body.equals(authenticatedPanelConfig.body)
+    || !incorrectBearerPanelConfig.body.equals(authenticatedPanelConfig.body)
     || authenticatedProfiles.status !== 200
     || [...anonymousResponses, ...incorrectBearerResponses]
       .some((response) => response.status !== 401)) {
@@ -1254,6 +1265,7 @@ const result = {
     catalogManifestLiveExact: true,
     catalogReadKeyConfigured: true,
     authenticatedPairFetched: true,
+    panelBootstrapPublic: true,
     anonymousAccessDenied: true,
     incorrectBearerDenied: true,
     runtimeProvenanceRechecked: true,

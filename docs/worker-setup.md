@@ -74,7 +74,7 @@ npx wrangler secret put AI_API_KEY --config wrangler.local.toml
 | --- | --- |
 | `BACKEND_ADAPTER_JSON` | 首次 Panel login 所需完整 v1 adapter；从 standard input 粘贴 repository 外准备的 JSON。 |
 | `GITHUB_TOKEN` | Worker 读写 private catalog。 |
-| `CATALOG_READ_KEY` | Shared credential，保护 catalog、App config、Panel bootstrap 和 notification proxy。 |
+| `CATALOG_READ_KEY` | App shared credential，保护 catalog、App config、runtime provenance 和 notification proxy；不用于 Panel 网页登录。 |
 | `APP_PAIR_ISSUER_KEY` | 只与下载 Worker 共享的独立 server-to-server 高熵 credential；不得复用 read key 或 browser/backend token。 |
 | `AI_API_KEY` | Optional authoring AI；未启用时不要设置。 |
 
@@ -86,7 +86,7 @@ Wrangler 会交互读取 secret；不要把值放在 command arguments 或 shell
 
 ### 正式环境必须设置 read key
 
-未配置 `CATALOG_READ_KEY` 时 shared read gate fail-open，包括 `/catalog/*`、`/api/config`、`/api/profiles` read-key path、`/api/panel-config`、`/api/runtime-provenance` 和 `/api/notify`。这只适合没有 live data/adapter 的 local demo。
+未配置 `CATALOG_READ_KEY` 时 App shared read gate fail-open，包括 `/catalog/*`、`/api/config`、`/api/profiles` read-key path、`/api/runtime-provenance` 和 `/api/notify`。这只适合没有 live data/adapter 的 local demo。`/api/panel-config` 始终在账号登录前匿名返回最小 authoring subset。
 
 使用高熵随机值，并通过受管方式配置 devices。轮换会立即使旧 key 失效，应先安排 rollout window。
 
@@ -104,13 +104,13 @@ Backend 必须：
 
 Panel 没有第二套 password 或 role database。任何通过 configured user-info validation 的 backend token 都可执行 Panel write，因此 backend 或 edge layer 必须限制获准 account。
 
-`/api/panel-config` 在 login 前向持有 read key 的 browser 返回 authoring adapter subset。若 endpoint metadata 也必须隐藏，应限制整个 Panel 的 network access。
+`/api/panel-config` 在 login 前匿名向 browser 返回 authoring adapter subset。若 endpoint metadata 也必须隐藏，应使用 Cloudflare Access 或限制整个 Panel 的 network access。
 
 ### 管理授权边界
 
 允许哪些账号 author/publish 是部署自定义的一部分，不是 profile 字段。正式环境必须在 backend
 user-info authorization 中只允许专用管理员账号，并按需要在 Cloudflare Access、反向代理或受控网络
-增加第二层访问限制。`CATALOG_READ_KEY` 只保护读取 route，不提供管理员角色隔离。
+增加第二层访问限制。`CATALOG_READ_KEY` 只保护 App 读取 route，不提供管理员角色隔离，也不参与 Panel 网页登录。
 
 ### One-time App pairing issuer
 
@@ -178,13 +178,12 @@ git diff --check
 先在 private repository 创建默认分支和至少一个初始 commit；Panel 不负责创建空仓库的首个分支。若使用非默认分支，确保该分支已经存在，并在 local `wrangler.local.toml` 设置同一个 `GITHUB_BRANCH`。
 
 1. 打开已部署 Panel。
-2. 输入与 `CATALOG_READ_KEY` 相同的 Panel access key；它只保存在当前 tab `sessionStorage`。
-3. 加载 bootstrap 后，用 dedicated backend account login。
-4. 在 global settings 检查并保存完整 `backendAdapter`。
-5. Optional：配置 v2 `notificationAdapter`、`diagnosticsPolicy`、brand 和 public update source。
-6. 从 fictional/dedicated template 创建第一个 profile，设置需要访问项的 `pickerVisible:true`。
-7. 人工检查完整 JSON，然后 publish。
-8. 确认写入正确的默认 private GitHub authority。
+2. 用 dedicated backend account login；bootstrap 会自动加载，不要求 Panel access key。
+3. 在 global settings 检查并保存完整 `backendAdapter`。
+4. Optional：配置 v2 `notificationAdapter`、`diagnosticsPolicy`、brand 和 public update source。
+5. 从 fictional/dedicated template 创建第一个 profile，设置需要访问项的 `pickerVisible:true`。
+6. 人工检查完整 JSON，然后 publish。
+7. 确认写入正确的默认 private GitHub authority。
 
 Catalog root 的 contract：
 
@@ -243,13 +242,19 @@ for PANEL_EXAMPLE_PATH in \
   /catalog/manifest \
   /api/config \
   /api/profiles \
-  /api/panel-config \
   /api/runtime-provenance; do
   assert_401 "${PANEL_EXAMPLE_ORIGIN}${PANEL_EXAMPLE_PATH}"
   assert_401 \
     -H 'Authorization: Bearer DELIBERATELY_WRONG_EXAMPLE_KEY' \
     "${PANEL_EXAMPLE_ORIGIN}${PANEL_EXAMPLE_PATH}"
 done
+
+# Panel browser bootstrap intentionally needs no shared key and must return the same safe subset
+# even when an irrelevant/incorrect Bearer is present.
+curl --fail-with-body "${PANEL_EXAMPLE_ORIGIN}/api/panel-config"
+curl --fail-with-body \
+  -H 'Authorization: Bearer DELIBERATELY_WRONG_EXAMPLE_KEY' \
+  "${PANEL_EXAMPLE_ORIGIN}/api/panel-config"
 
 assert_401 -X POST -H 'Content-Type: application/json' --data '{}' \
   "${PANEL_EXAMPLE_ORIGIN}/api/notify"
@@ -260,9 +265,6 @@ assert_401 -X POST \
   "${PANEL_EXAMPLE_ORIGIN}/api/notify"
 
 # Fictional positive samples; inject the real key only in a controlled shell.
-curl --fail-with-body \
-  -H 'Authorization: Bearer EXAMPLE_READ_KEY' \
-  "${PANEL_EXAMPLE_ORIGIN}/api/panel-config"
 curl --fail-with-body \
   -H 'Authorization: Bearer EXAMPLE_READ_KEY' \
   "${PANEL_EXAMPLE_ORIGIN}/catalog/manifest"
@@ -291,8 +293,8 @@ npm run verify:provenance -- \
 
 Expected：
 
-- Requests without key return `401`，including `/api/profiles`、notification POST and runtime provenance；a deliberately incorrect Bearer returns `401` on every protected route；
-- Correct key returns a non-secret authoring adapter subset and App-facing catalog/config；
+- Requests without key return `401`，including `/api/profiles`、notification POST and runtime provenance；a deliberately incorrect Bearer returns `401` on every App-protected route；
+- `/api/panel-config` accepts anonymous browser bootstrap and returns only the same non-secret authoring adapter subset with no credential；correct App key returns the App-facing catalog/config；
 - `panel-settings.json` 与 v2/v3 `notificationAdapter` provider URL 不能通过 `/catalog/*` 或 `/api/config` 读取；migration-only legacy `notifyWebhook` 是临时 App-facing 例外，旧设备升级后必须清空；
 - `/api/notify` rejects free-form `message` and fields outside the selected event schema；
 - Manifest `profilesUrl` uses the same host as Panel；

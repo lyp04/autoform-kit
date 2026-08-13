@@ -55,14 +55,6 @@
   <section class="card" id="loginCard">
     <h2>登录账号</h2>
     <div class="sub">用你后端系统的账号密码登录。登录就是这个面板的门槛——登进来才能改/发布表单。</div>
-    <div id="panelAccessGate" style="padding:10px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px">
-      <label style="margin-top:0">面板访问密钥（部署启用了 CATALOG_READ_KEY 时必填）</label>
-      <div class="row">
-        <input id="panelAccessKey" type="password" autocomplete="off" placeholder="只保存在当前标签页" />
-        <button id="panelAccessBtn" class="ghost" type="button" style="flex:0 0 auto">加载面板配置</button>
-      </div>
-      <div class="muted" style="font-size:12px;margin-top:4px">密钥仅存 sessionStorage，不写 URL 或 localStorage。</div>
-    </div>
     <div class="row">
       <div class="g"><label>账号</label><input id="account" autocomplete="username" /></div>
       <div class="g"><label>密码</label><input id="password" type="password" autocomplete="current-password" /></div>
@@ -71,13 +63,13 @@
     <div class="row">
       <img id="captchaImg" alt="captcha" title="点击换一张" />
       <input id="captcha" style="flex:2" placeholder="输入图里的数字" />
-      <button id="loginBtn" style="flex:0 0 auto">登录</button>
+      <button id="loginBtn" style="flex:0 0 auto" disabled>登录</button>
     </div>
     <p class="err" id="loginErr"></p>
     <details style="margin-top:10px">
       <summary class="muted" style="cursor:pointer">已经登录过后端网页？粘贴 token 直接进（高级）</summary>
       <label>从已登录的后端网页 F12 → Network → 请求头 <code>Authorization</code> 中复制令牌部分</label>
-      <div class="row"><input id="pasteToken" style="flex:3" placeholder="粘贴 token" /><button id="tokenBtn" class="ghost" style="flex:0 0 auto">进入</button></div>
+      <div class="row"><input id="pasteToken" style="flex:3" placeholder="粘贴 token" /><button id="tokenBtn" class="ghost" style="flex:0 0 auto" disabled>进入</button></div>
     </details>
   </section>
 
@@ -240,16 +232,17 @@ let DRAFT = null;               // single source of truth (the profile object)
 let PREVIEW_RESULT = null;      // optional configured result key used by the preview
 let BACKEND_ADAPTER = null;     // supplied by Worker env/private catalog; never baked into this file
 let BACKEND_CLIENT = null;
-let PANEL_ACCESS_KEY = sessionStorage.getItem("panelAccessKey") || "";
 let FP = sessionStorage.getItem("fp");
 if (!FP) { FP = [...crypto.getRandomValues(new Uint8Array(16))].map(b=>b.toString(16).padStart(2,"0")).join(""); sessionStorage.setItem("fp", FP); }
+// Remove the credential cached by older Panel builds. Browser login now uses only the verified
+// backend account session; CATALOG_READ_KEY remains an App-only catalog/config credential.
+try { sessionStorage.removeItem("panelAccessKey"); } catch(e) {}
 
 // Call OUR worker. Sends the backend token as a Bearer — the worker verifies it (verifyToken) on
 // every call, so a valid backend login is the gate. /api/profiles also requires that token (auth:true).
-async function api(path, { method="GET", body, auth=true, accessKey="" } = {}) {
+async function api(path, { method="GET", body, auth=true } = {}) {
   const headers = { "Content-Type": "application/json" };
   if (auth && TOKEN) { headers["Authorization"] = "Bearer " + TOKEN; headers["X-Fp"] = FP; }
-  else if (accessKey) headers["Authorization"] = "Bearer " + accessKey;
   const res = await fetch(path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const data = await res.json().catch(()=>({}));
   if (res.status === 401 && TOKEN) { TOKEN=""; clearSession(); showLogin(); throw new Error(data.error || "登录已失效，请重新登录"); }
@@ -2125,29 +2118,18 @@ async function initializePanel(){
   if(PANEL_INITIALIZED || !window.BackendClient) return;
   PANEL_INITIALIZED=true;
   try {
-    const config=await api("/api/panel-config", { auth:false, accessKey:PANEL_ACCESS_KEY });
+    const config=await api("/api/panel-config", { auth:false });
     BACKEND_ADAPTER=config.backendAdapter;
     BACKEND_CLIENT=window.BackendClient.createBackendClient(BACKEND_ADAPTER, { fingerprint:FP });
-    $("panelAccessGate").classList.add("hide");
     $("loginBtn").disabled=false; $("tokenBtn").disabled=false;
     await restoreSession();
   } catch(e) {
     PANEL_INITIALIZED=false;
     $("loginCard").classList.remove("hide");
     $("loginBtn").disabled=true; $("tokenBtn").disabled=true;
-    $("panelAccessGate").classList.remove("hide");
-    $("loginErr").textContent=e.status===401
-      ? "请输入正确的面板访问密钥以加载配置。"
-      : "面板配置错误："+e.message+"\n请先在 Cloudflare 配置完整的 BACKEND_ADAPTER_JSON，再重新部署。";
+    $("loginErr").textContent="面板配置错误："+e.message+"\n请先在 Cloudflare 配置完整的 BACKEND_ADAPTER_JSON，再重新部署。";
   }
 }
-$("panelAccessKey").value=PANEL_ACCESS_KEY;
-$("panelAccessBtn").onclick=()=>{
-  PANEL_ACCESS_KEY=$("panelAccessKey").value.trim();
-  if(PANEL_ACCESS_KEY)sessionStorage.setItem("panelAccessKey",PANEL_ACCESS_KEY);
-  else sessionStorage.removeItem("panelAccessKey");
-  initializePanel();
-};
 if(window.BackendClient) initializePanel();
 else window.addEventListener("backend-client-ready", initializePanel, { once:true });
 </script>

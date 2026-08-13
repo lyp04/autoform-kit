@@ -846,8 +846,10 @@ global.fetch = async function fixtureFetch(url, options = {}) {
   const parsed = new URL(url);
   const authenticated = options.headers?.Authorization
     === `Bearer ${process.env.AUTOFORM_SELFTEST_CATALOG_READ_KEY}`;
-  let status = 401;
-  let body = Buffer.from('{"error":"unauthorized"}\n', "utf8");
+  let status = parsed.pathname === "/api/panel-config" ? 200 : 401;
+  let body = parsed.pathname === "/api/panel-config"
+    ? Buffer.from('{"fixture":true}\n', "utf8")
+    : Buffer.from('{"error":"unauthorized"}\n', "utf8");
   if (authenticated) {
     if (parsed.pathname === "/api/config") {
       status = 200;
