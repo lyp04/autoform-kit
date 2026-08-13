@@ -800,20 +800,23 @@ final class ProfileWorkflow {
     static final class WorkflowArtifact {
         private static final Set<String> ALLOWED_KEYS = Collections.unmodifiableSet(
             new LinkedHashSet<>(java.util.Arrays.asList(
-                "key", "title", "titleI18n", "required", "uploadNameTemplate")));
+                "key", "title", "titleI18n", "required", "uploadNameTemplate",
+                PhotoInputSourceRules.KEY)));
         final String key;
         final String title;
         final JSONObject titleI18n;
         final boolean required;
         final String uploadNameTemplate;
+        final String inputSource;
 
         private WorkflowArtifact(String key, String title, JSONObject titleI18n, boolean required,
-                                 String uploadNameTemplate) {
+                                 String uploadNameTemplate, String inputSource) {
             this.key = key;
             this.title = title;
             this.titleI18n = titleI18n;
             this.required = required;
             this.uploadNameTemplate = uploadNameTemplate;
+            this.inputSource = inputSource;
         }
 
         static WorkflowArtifact from(JSONObject json, int index, List<String> errors) {
@@ -852,8 +855,15 @@ final class ProfileWorkflow {
                 errors.add(path + ".uploadNameTemplate");
                 valid = false;
             }
+            String inputSource = PhotoInputSourceRules.CAMERA;
+            try {
+                inputSource = PhotoInputSourceRules.from(json);
+            } catch (IllegalArgumentException invalidSource) {
+                errors.add(path + "." + PhotoInputSourceRules.KEY);
+                valid = false;
+            }
             return valid ? new WorkflowArtifact(key, title, json.optJSONObject("titleI18n"),
-                json.optBoolean("required", false), uploadNameTemplate) : null;
+                json.optBoolean("required", false), uploadNameTemplate, inputSource) : null;
         }
 
         String formatUploadName(String identifier, int index) {

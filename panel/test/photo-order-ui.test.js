@@ -2,10 +2,11 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 
-import { PHOTO_ORDERS } from "../src/profile.js";
+import { PHOTO_INPUT_SOURCES, PHOTO_ORDERS } from "../src/profile.js";
 import {
   PHOTO_ORDER_OPTIONS,
-  derivePhotoOrderPreview
+  derivePhotoOrderPreview,
+  profilePhotoSlots
 } from "../public/form-preview.js";
 
 test("structured editor and preview expose exactly the App photo-order schema values", () => {
@@ -77,4 +78,31 @@ test("Panel structured control writes profile.defaultPhotoOrder and keeps JSON/p
   assert.match(html, /window\.FormPreview = \{[^\n]*PHOTO_ORDER_OPTIONS/);
   assert.match(html, /orderSelect\.onchange=\(\)=>\{[\s\S]{0,320}p\.defaultPhotoOrder=orderSelect\.value;[\s\S]{0,120}syncDraftTextarea\(p\);[\s\S]{0,120}renderPreview\(\);/);
   assert.doesNotMatch(html, /delete\s+c\.defaultPhotoOrder/);
+});
+
+test("Panel exposes the same bounded input-source control at every operator photo location", async () => {
+  assert.deepEqual([...PHOTO_INPUT_SOURCES], ["camera", "gallery", "file"]);
+  const html = await readFile(new URL("../public/index.html", import.meta.url), "utf8");
+  for (const marker of [
+    '["camera","仅拍照"]',
+    '["gallery","仅从相册选择"]',
+    '["file","仅从文件选择"]',
+    'artifact?.inputSource||"camera"',
+    'entry.inputSource||"camera"',
+    'sl.inputSource||"camera"',
+    'p.workflow.photos.inputSource||"camera"'
+  ]) assert.ok(html.includes(marker), marker);
+  assert.ok(html.includes(
+    "const slotMode=Array.isArray(p.photoSlots)&&p.photoSlots.length>0;"));
+});
+
+test("an empty modern slot array still uses the legacy photo source policy", () => {
+  const slots = profilePhotoSlots({
+    photoSlots: [],
+    uploadFields: [{ field: "legacy-photo", title: "Legacy photo" }],
+    workflow: { photos: { inputSource: "file" } }
+  });
+  assert.equal(slots.length, 1);
+  assert.equal(slots[0].field, "legacy-photo");
+  assert.equal(slots[0].inputSource, "file");
 });

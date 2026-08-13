@@ -49,6 +49,49 @@ public class CatalogPromotionValidatorTest {
     }
 
     @Test
+    public void acceptsBoundedPhotoInputSourcesAndRejectsMalformedPolicy()
+            throws Exception {
+        for (String inputSource : new String[]{"camera", "gallery", "file"}) {
+            JSONObject compatible = catalog();
+            JSONObject profile = firstProfile(compatible);
+            profile.getJSONArray("photoSlots").getJSONObject(0)
+                .put("inputSource", inputSource);
+            profile.getJSONObject("workflow").getJSONObject("photos")
+                .put("inputSource", inputSource);
+            profile.getJSONObject("workflow").getJSONObject("previousSteps")
+                .getJSONArray("artifacts").put(new JSONObject()
+                    .put("key", "sample-evidence")
+                    .put("title", "Sample evidence")
+                    .put("required", false)
+                    .put("uploadNameTemplate", "{identifier}-sample-evidence.jpg")
+                    .put("inputSource", inputSource));
+            assertTrue(inputSource,
+                CatalogPromotionValidator.isStructurallyValid(compatible));
+        }
+
+        JSONObject invalidSlot = catalog();
+        firstProfile(invalidSlot).getJSONArray("photoSlots").getJSONObject(0)
+            .put("inputSource", "camera_or_gallery");
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(invalidSlot));
+
+        JSONObject invalidGlobal = catalog();
+        firstProfile(invalidGlobal).getJSONObject("workflow").getJSONObject("photos")
+            .put("inputSource", true);
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(invalidGlobal));
+
+        JSONObject invalidArtifact = catalog();
+        firstProfile(invalidArtifact).getJSONObject("workflow")
+            .getJSONObject("previousSteps").getJSONArray("artifacts")
+            .put(new JSONObject()
+                .put("key", "sample-evidence")
+                .put("title", "Sample evidence")
+                .put("required", false)
+                .put("uploadNameTemplate", "{identifier}-sample-evidence.jpg")
+                .put("inputSource", " gallery"));
+        assertFalse(CatalogPromotionValidator.isStructurallyValid(invalidArtifact));
+    }
+
+    @Test
     public void oldCatalogWithoutPrintCompatibilityFieldsUsesCurrentSafeFallback()
             throws Exception {
         JSONObject legacy = catalog();

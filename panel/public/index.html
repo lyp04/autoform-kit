@@ -450,6 +450,8 @@ function inputCtl(val,on){ const i=document.createElement("input"); i.value=val;
 function numCtl(val,min,on){ const i=document.createElement("input"); i.type="number"; i.className="num"; i.min=min; i.value=val; i.oninput=()=>on(Math.max(min, parseInt(i.value||min,10))); return i; }
 function rangeNumCtl(val,min,max,on){ const i=document.createElement("input"); i.type="number"; i.className="num"; i.min=min; i.max=max; i.value=val; i.oninput=()=>{ const parsed=parseInt(i.value,10); const next=Math.min(max,Math.max(min,Number.isInteger(parsed)?parsed:min)); i.value=next; on(next); }; return i; }
 function selectCtl(val,options,on){ const s=document.createElement("select"); options.forEach(([value,label])=>{ const o=document.createElement("option"); o.value=value; o.textContent=label; s.appendChild(o); }); s.value=val; s.onchange=()=>on(s.value); return s; }
+const PHOTO_INPUT_SOURCE_OPTIONS=[["camera","仅拍照"],["gallery","仅从相册选择"],["file","仅从文件选择"]];
+function photoInputSourceCtl(value,on){ return selectCtl(value||"camera",PHOTO_INPUT_SOURCE_OPTIONS,on); }
 // Profile-specific appearance, scan and workflow settings.
 const COLOR_PALETTE=["#1989FA","#0F766E","#2563EB","#7C3AED","#9333EA","#EA580C","#DC2626","#BE123C","#65A30D","#16A34A","#0891B2","#111827"];
 function settingsPanel(p){
@@ -763,9 +765,24 @@ function settingsPanel(p){
       const value=JSON.parse(artifacts.value||"[]");
       if(!Array.isArray(value)) throw new Error("必须是 JSON 数组");
       updateWorkflow("previousSteps","artifacts",value);
+      renderForm();
     }catch(error){ alert("前置步骤素材格式错误："+error.message); artifacts.value=JSON.stringify(workflowValue().previousSteps?.artifacts||[],null,2); }
   };
   runtime.appendChild(field("前置步骤素材 artifacts（JSON 数组）",artifacts));
+  const artifactSources=document.createElement("div"); artifactSources.className="row";
+  const configuredArtifacts=Array.isArray(previousPolicy.artifacts)?previousPolicy.artifacts:[];
+  configuredArtifacts.forEach((artifact,index)=>{
+    const label=(artifact?.title||artifact?.key||("附件 "+(index+1)))+" · 取图方式";
+    artifactSources.appendChild(field(label,photoInputSourceCtl(artifact?.inputSource||"camera",value=>{
+      const next=JSON.parse(JSON.stringify(workflowValue().previousSteps?.artifacts||[]));
+      if(!next[index])return;
+      next[index].inputSource=value;
+      updateWorkflow("previousSteps","artifacts",next);
+      artifacts.value=JSON.stringify(next,null,2);
+    }),"g"));
+  });
+  if(!configuredArtifacts.length)artifactSources.appendChild(mutedLine("当前没有前置步骤附件。"));
+  runtime.appendChild(artifactSources);
 
   const legacyDraftArtifactKey=inputCtl(previousPolicy.legacyDraftArtifactKey||"",value=>{
     updateWorkflow("previousSteps","legacyDraftArtifactKey",value.trim());
@@ -966,6 +983,7 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
       const photoPolicy=document.createElement("div"); photoPolicy.className="row";
       photoPolicy.appendChild(field("最少照片",rangeNumCtl(entry.minPhotos??1,1,20,value=>patchEntry(index,"minPhotos",value)),"g"));
       photoPolicy.appendChild(field("最多照片（0 = 不限）",rangeNumCtl(entry.maxPhotos??1,0,2147483647,value=>patchEntry(index,"maxPhotos",value)),"g"));
+      photoPolicy.appendChild(field("取图方式",photoInputSourceCtl(entry.inputSource||"camera",value=>patchEntry(index,"inputSource",value)),"g"));
       const separator=inputCtl(entry.joinWith??",",value=>patchEntry(index,"joinWith",value)); separator.placeholder="URL 拼接分隔符";
       photoPolicy.appendChild(field("照片 URL 分隔符",separator,"g"));
       const uploadTemplate=inputCtl(entry.uploadNameTemplate??"",value=>patchEntry(index,"uploadNameTemplate",value));
@@ -1108,7 +1126,7 @@ function alternateEntriesEditor(p,workflowValue,updateWorkflow){
     const scanner={applyExpectedLengthTo:[...scannerSources]};
     next.push({
     id:"",title:"",targetProfileId:"",identifierRole:"primary",resultKey:"",
-    photoTargetFields:[],joinWith:",",minPhotos:1,maxPhotos:1,
+    photoTargetFields:[],joinWith:",",minPhotos:1,maxPhotos:1,inputSource:"camera",
     uploadNameTemplate:"",toggles:[],
     scanner,
     submissionRetry:{maxAttempts:1,retryDelayMs:0},
@@ -1286,6 +1304,9 @@ function photoSlotRow(p, arr, i, opts={}){
   r.appendChild(field((opts.label||"框名称")+(opts.index?(" "+(i+1)):""), inputCtl(sl.title||sl.field||"", v=>{ sl.title=v; syncDraftTextarea(p); renderPreview(); }), "g"));
   r.appendChild(field("最少张", numCtl(sl.minPhotos??(opts.minDefault??1),0,v=>{ sl.minPhotos=v; renderPreview(); })));
   r.appendChild(field("最多张", numCtl(sl.maxPhotos??10,1,v=>{ sl.maxPhotos=v; renderPreview(); })));
+  if(opts.inputSource!==false){
+    r.appendChild(field("取图方式",photoInputSourceCtl(sl.inputSource||"camera",v=>{ sl.inputSource=v; syncDraftTextarea(p); renderPreview(); })));
+  }
   if(opts.deletable){ const del=document.createElement("button"); del.className="danger"; del.textContent="删";
     del.onclick=()=>{ arr.splice(i,1); syncDraftTextarea(p); renderPreview(); renderForm(); }; r.appendChild(del); }
   return r;
@@ -1316,9 +1337,17 @@ function resultPhotosEditor(p){
   s.appendChild(orderBox);
 
   // Required profile photos (v2 photoSlots or legacy uploadFields).
-  const arr = Array.isArray(p.photoSlots) ? p.photoSlots : (Array.isArray(p.uploadFields) ? p.uploadFields : null);
+  const slotMode=Array.isArray(p.photoSlots)&&p.photoSlots.length>0;
+  const arr = slotMode ? p.photoSlots : (Array.isArray(p.uploadFields) ? p.uploadFields : null);
   const a=box(); a.appendChild(h3mini("必填照片框"));
-  if(arr && arr.length){ arr.forEach((_,i)=> a.appendChild(photoSlotRow(p, arr, i, {label:"框", index:true, deletable:true}))); }
+  if(!slotMode){
+    p.workflow=p.workflow||{};
+    p.workflow.photos=Object.assign({includeOptionalSlots:false},p.workflow.photos||{});
+    a.appendChild(field("前面 / 后面 / 补充照片统一取图方式",photoInputSourceCtl(p.workflow.photos.inputSource||"camera",value=>{
+      p.workflow.photos.inputSource=value; syncDraftTextarea(p); renderPreview();
+    })));
+  }
+  if(arr && arr.length){ arr.forEach((_,i)=> a.appendChild(photoSlotRow(p, arr, i, {label:"框", index:true, deletable:true,inputSource:slotMode}))); }
   else a.appendChild(mutedLine("（无必填照片框）"));
   s.appendChild(a);
 
@@ -1329,7 +1358,7 @@ function resultPhotosEditor(p){
   if(!opt.length) c.appendChild(mutedLine("没有可选框。"));
   opt.forEach((_,i)=> c.appendChild(photoSlotRow(p, opt, i, {label:"框名称", minDefault:0, deletable:true})));
   const add=document.createElement("button"); add.className="ghost sm"; add.style.marginTop="6px"; add.textContent="＋ 添加可选照片框";
-  add.onclick=()=>{ opt.push({field:"", title:"可选照片", minPhotos:0, maxPhotos:10, required:false}); syncDraftTextarea(p); renderPreview(); renderForm(); };
+  add.onclick=()=>{ opt.push({field:"", title:"可选照片", minPhotos:0, maxPhotos:10, required:false,inputSource:"camera"}); syncDraftTextarea(p); renderPreview(); renderForm(); };
   c.appendChild(add);
   c.appendChild(mutedLine("新增后必须填写后端模板已经定义的照片字段 ID；Panel 不会自动编造提交字段。"));
   s.appendChild(c);

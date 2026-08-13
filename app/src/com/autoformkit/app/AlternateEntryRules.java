@@ -26,6 +26,7 @@ final class AlternateEntryRules {
     private static final Set<String> ENTRY_KEYS = setOf(
         "id", "title", "titleI18n", "targetProfileId", "identifierRole", "resultKey",
         "photoTargetFields", "joinWith", "minPhotos", "maxPhotos", "uploadNameTemplate",
+        PhotoInputSourceRules.KEY,
         "scanner", "submissionRetry", "toggles", "flags", "dataOverrides", "dynamicOverrideFields",
         "dynamicOverrideProviders", "resultPresets");
     private static final Set<String> ENTRY_SCANNER_KEYS = setOf(
@@ -241,6 +242,10 @@ final class AlternateEntryRules {
         return copyObject(target);
     }
 
+    static String photoInputSource(JSONObject entryConfig) {
+        return PhotoInputSourceRules.from(entryConfig);
+    }
+
     /**
      * Validates an entry for UI rendering before any live provider lookup is allowed to run.
      *
@@ -274,6 +279,7 @@ final class AlternateEntryRules {
         if (catalogProfiles == null) throw invalid("catalog profiles are required");
         if (entryConfig == null) throw invalid("entry config is required");
         rejectUnknownKeys(entryConfig, ENTRY_KEYS, "entry config");
+        photoInputSource(entryConfig);
 
         String sourceId = requiredText(sourceProfile, "id", "source profile.id");
         String entryId = requiredText(entryConfig, "id", "entry config.id");

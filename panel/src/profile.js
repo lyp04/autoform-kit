@@ -1,4 +1,5 @@
 export const PHOTO_ORDERS = Object.freeze(["fronts_then_backs", "front_back_per_unit"]);
+export const PHOTO_INPUT_SOURCES = Object.freeze(["camera", "gallery", "file"]);
 
 export function normalizeSn(value) {
   return String(value || "")
@@ -330,6 +331,10 @@ function validateRuntimePolicy(profile, resultKeys, errors) {
       && (!Array.isArray(profile.photoSlots) || profile.photoSlots.length === 0)) {
     errors.push("workflow.photos.includeOptionalSlots=true requires non-empty photoSlots");
   }
+  if (isPlainObject(photos)) {
+    validatePhotoInputSource(photos.inputSource,
+      "workflow.photos.inputSource", errors);
+  }
   const duplicate = profile.workflow.duplicateCheck;
   if (!isPlainObject(duplicate)) {
     errors.push("workflow.duplicateCheck must be an object");
@@ -518,6 +523,7 @@ function validateRuntimePolicy(profile, resultKeys, errors) {
 const ALTERNATE_ENTRY_KEYS = Object.freeze([
   "id", "title", "titleI18n", "targetProfileId", "identifierRole", "resultKey",
   "photoTargetFields", "joinWith", "minPhotos", "maxPhotos", "uploadNameTemplate",
+  "inputSource",
   "scanner", "submissionRetry", "toggles", "flags", "dataOverrides", "dynamicOverrideFields",
   "dynamicOverrideProviders", "resultPresets"
 ]);
@@ -596,6 +602,7 @@ function validateAlternateEntries(profile, value, errors) {
     }
     validateUploadNameTemplate(entry.uploadNameTemplate,
       `${path}.uploadNameTemplate`, errors);
+    validatePhotoInputSource(entry.inputSource, `${path}.inputSource`, errors);
     const primaryPlugin = Array.isArray(profile.snPlugins)
       ? profile.snPlugins.find((plugin) => plugin?.key === "primary") : undefined;
     const primaryScanner = isPlainObject(primaryPlugin?.scanner)
@@ -1523,7 +1530,15 @@ function validatePhotoSlots(value, path, errors) {
         errors.push(`${itemPath}.${key} must be a boolean`);
       }
     }
+    validatePhotoInputSource(slot.inputSource, `${itemPath}.inputSource`, errors);
   });
+}
+
+function validatePhotoInputSource(value, path, errors) {
+  if (value === undefined) return;
+  if (typeof value !== "string" || !PHOTO_INPUT_SOURCES.includes(value)) {
+    errors.push(`${path} must be camera, gallery, or file`);
+  }
 }
 
 function validateSnPlugins(value, errors, rootPath = "snPlugins") {
@@ -2044,7 +2059,8 @@ function validateWorkflowArtifacts(value, errors) {
       errors.push(`${itemPath} must be an object`);
       return;
     }
-    allowOnly(artifact, ["key", "title", "titleI18n", "required", "uploadNameTemplate"],
+    allowOnly(artifact, ["key", "title", "titleI18n", "required", "uploadNameTemplate",
+      "inputSource"],
       itemPath, errors);
     requireString(artifact.key, `${itemPath}.key`, errors);
     if (typeof artifact.key === "string" && artifact.key.trim()) {
@@ -2056,6 +2072,7 @@ function validateWorkflowArtifacts(value, errors) {
     if (typeof artifact.required !== "boolean") errors.push(`${itemPath}.required must be a boolean`);
     validateUploadNameTemplate(artifact.uploadNameTemplate,
       `${itemPath}.uploadNameTemplate`, errors, { requireIndex: false });
+    validatePhotoInputSource(artifact.inputSource, `${itemPath}.inputSource`, errors);
   });
   return keys;
 }

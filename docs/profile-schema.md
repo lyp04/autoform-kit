@@ -266,6 +266,7 @@ Scanner 对象支持：
       },
       "minPhotos": 1,
       "maxPhotos": 3,
+      "inputSource": "camera",
       "required": true,
       "conditional": false
     },
@@ -274,6 +275,7 @@ Scanner 对象支持：
       "title": "示例照片二",
       "minPhotos": 1,
       "maxPhotos": 3,
+      "inputSource": "gallery",
       "required": true,
       "conditional": false
     }
@@ -286,6 +288,7 @@ Scanner 对象支持：
   仍是上线证据。
 - `title` 是 fallback；`titleI18n` 可提供 `en`、`es`。
 - `minPhotos` / `maxPhotos` 决定数量边界；可选框通常使用 `minPhotos:0`。
+- 可选 `inputSource` 只能是 `camera`、`gallery` 或 `file`，分别表示仅拍照、仅从系统相册选择、仅从系统文件选择。缺失时严格保留旧行为 `camera`；不支持自由字符串或同时开放多个来源。
 - `defaultPhotoOrder` 允许 `fronts_then_backs` 或 `front_back_per_unit`。
 - `optionalSlots` 只有在 `workflow.photos.includeOptionalSlots:true` 时才进入 App 的拍摄、校验、上传和 payload；迁移默认是 `false`，避免把旧目录中仅供预览的可选框自动变成现场提交字段。
 
@@ -308,6 +311,7 @@ Scanner 对象支持：
 `uploadFields`，但 Panel 的任何新发布都要求每项显式写出非空 `sources`，不再创建依靠位置猜测
 正反面的新目录。迁移中的 `uploadFields` 必须原样留在私有 catalog，不能重排、猜字段或按标题改
 映射；只有用旧 APK 与 candidate App 的 exact payload replay 证明等价后，才可转换为新 slot。
+旧路径的前面、后面及 supplemental 照片共用 `workflow.photos.inputSource`；缺失同样为 `camera`。
 Panel advanced JSON 和发布校验仍会检查结构、非空 field、重复 owner 与 profile 内引用，但不会
 重新查询 live backend；这不等于已自动完成无损迁移。
 
@@ -461,7 +465,8 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
             "es": "Archivo de ejemplo"
           },
           "required": true,
-          "uploadNameTemplate": "{identifier}-example-evidence.jpg"
+          "uploadNameTemplate": "{identifier}-example-evidence.jpg",
+          "inputSource": "gallery"
         }
       ],
       "templates": [
@@ -552,7 +557,7 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
 | `recipeMaxAttempts` | 单个精确上一工序 recipe 位置的持久累计总提交次数，`1..10`；进程/设备重启、再次点击提交或重新进入批次都不重置。只有业务 non-success 命中独立的 `operations.previousSteps.recipeOutcomePolicy.retryableNotWrittenRules`、明确证明 recipe 未写入时才会消耗下一次；submit `outcomePolicy` 和 legacy `retryableMessagePatterns` 都不能授权。缺少有效 recipe retry policy 时新 App 把有效上限收敛为 `1`；`UNCERTAIN` 不得继续。字段本身缺失时也为 `1`。 |
 | `recipeRetryDelayMs` | recipe 可重试响应后的等待，`0..60000` ms；最后一次之后不等待。缺失时为 `0`。 |
 | `legacyDraftArtifactKey` | 旧 v1 草稿中未命名 `aStepPhotoPath` 的显式兼容目标。空字符串表示不映射；非空时必须精确引用一个 `artifacts[].key`。App 不会按附件数量、标题或顺序猜测。 |
-| `artifacts` | 可选附件定义；每项包含唯一 `key`、`title`、可选 `titleI18n`、boolean `required` 与 Panel-owned `uploadNameTemplate`。 |
+| `artifacts` | 可选附件定义；每项包含唯一 `key`、`title`、可选 `titleI18n`、boolean `required`、Panel-owned `uploadNameTemplate`，以及可选的 `inputSource`。 |
 | `templates` | 可选 recipe 数组；只有总开关开启、数组非空且当前 result key 命中 `triggerResultKeys` 时才执行。 |
 
 `directCreateResultKeys` 只改变 recipe 创建前的存在性 GET。当前结果命中该数组、且没有可精确匹配当前草稿与 recipe 链的持久 receipt 时，App 跳过创建前 GET，仍按 `triggerResultKeys`、`templates` 及照片 source/binding 执行 recipe；创建完成后仍按 `verifyAttempts` / `verifyDelayMs` 做存在性 GET 复核。精确持久 receipt 的续跑与恢复优先，不会因这个字段被忽略或重建。若还要避免扫码后的快速 GET，同一 result key 也必须列入 `scanPrecheckExcludedResultKeys`。移除 trigger、清空 templates 或关闭总开关都会同时关闭 recipe 与其照片上传，不能用来表达“跳过查询但仍上传照片”。
@@ -581,6 +586,8 @@ Panel 会确认提交值存在于 `options`，必填项不能保持空值。
 `legacyDraftArtifactKey` 必须由私有迁移根据真实旧流程语义填写，不能因为当前只有一个 artifact 就自动选中。它只控制旧草稿照片如何进入当前 `workflowArtifacts` 以及如何为高 versionCode 回滚保留旧字段；当前提交仍只读取 recipe 明确引用的 artifact。没有被 live replay 证明等价时保持空字符串，让旧路径原样留在草稿但不上传。
 
 `artifacts[].uploadNameTemplate` 必须显式包含 `{identifier}`，可选包含 `{index}`，且不能含路径分隔符、冒号、引号、控制字符或其他花括号占位符。旧流程只有一张附件时可以由私有 Panel 写成类似 `{identifier}-example-evidence.jpg` 的部署规则；公共示例只使用虚构名称。App 只在 recipe 来源确实引用该 artifact 时应用它，不会把某条产线文件名固化在框架内。非 artifact 的普通照片来源继续使用框架通用文件名。
+
+`artifacts[].inputSource` 使用与照片框相同的三个精确值；缺失为 `camera`。例如补录证据必须从已有图片中选择时写 `gallery`，App 不会请求相机权限或回退到拍照。系统 picker 返回的 URI 会立即复制到 App 私有目录、验证为可解码图片并重新编码为有界 JPEG；原始外部 URI 不写入草稿。
 
 `templates[]` 支持两种互斥形式。原有静态 recipe 保持兼容：`templateId`、`warehouseId`、`sku` 都必须显式给出；两个 ID 必须是正整数，SKU 与 `serialField` 必须非空，`fixedData` 必须是对象，`delayAfterMs` 是非负整数。`photoBindings[].source` 必须引用 `artifacts[].key` 或当前 profile 的照片字段，`targetField` 是目标模板字段。`serialField` 和所有 `targetField` 不得覆盖 `fixedData` 的顶层 key，`targetField` 不得等于 `serialField` 或彼此重复。App 不会回退到主 profile 的仓库或 SKU。
 
@@ -617,7 +624,9 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
 
 ### `workflow.photos`
 
-`includeOptionalSlots` 控制 `optionalSlots` 是否真正进入 App 运行时。设为 `false` 时只处理 `photoSlots`；设为 `true` 后，可选框会按 Panel 标题显示，达到必填框最少张数后可从具体照片框选择入口拍摄，并随对应 field 提交。旧 App 未提交这些可选框，因此既有部署迁移时必须保持 `false`，除非现场明确要启用这项新行为并完成端到端验证。
+`includeOptionalSlots` 控制 `optionalSlots` 是否真正进入 App 运行时。设为 `false` 时只处理 `photoSlots`；设为 `true` 后，可选框会按 Panel 标题显示，达到必填框最少张数后可从具体照片框选择入口添加，并随对应 field 提交。旧 App 未提交这些可选框，因此既有部署迁移时必须保持 `false`，除非现场明确要启用这项新行为并完成端到端验证。
+
+可选 `inputSource` 是 legacy `uploadFields` 的统一取图方式；现代 `photoSlots` / `optionalSlots` 使用各自 item 上的 `inputSource`。三个位置都缺失时为 `camera`。扫码、条码和 OCR 的相机入口不读取这个字段，不能被照片配置改成相册或文件。
 
 ### `workflow.alternateEntries`
 
@@ -642,6 +651,7 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
         "joinWith": ",",
         "minPhotos": 1,
         "maxPhotos": 2,
+        "inputSource": "file",
         "uploadNameTemplate": "{identifier}-alternate-entry-{index}.jpg",
         "scanner": {
           "applyExpectedLengthTo": ["ocr", "barcode", "entered"]
@@ -724,6 +734,7 @@ Policy 缺失时，新 App 对每个 recipe 位置最多发送一次，并把所
 - `targetProfileId` 必须在最终 catalog 中只命中一个 profile，不能等于来源 profile，并且目标必须显式设置 `pickerVisible:false`；
 - 隐藏目标必须有正整数 `template.id` / `template.warehouseId`、非空 `template.sku` 与 `snFields.primary`；`identifierRole` 当前只能是 `primary`，App 不从入口名称猜标识来源；
 - `resultKey` 必须精确引用目标 `gradeMap`；`photoTargetFields` 必须非空、无重复，并且只引用目标 `uploadFields`、`photoSlots` 或 `optionalSlots` 声明的 field；`minPhotos` 必须为 `1..20`；`maxPhotos:0` 明确表示不限张数（用于保持旧独立入口行为），正数则必须 `>= minPhotos`；`joinWith` 必须非空；
+- 可选 `inputSource` 只允许 `camera`、`gallery`、`file`，缺失为 `camera`；它只决定独立入口附件如何取得，不改变目标字段、数量、文件名或上传规则；
 - `uploadNameTemplate` 由 Panel 显式保存，只能使用 `{identifier}` 与 `{index}` 两个占位符并且必须同时包含两者；禁止 `/`、`\\`、冒号、引号和控制字符。结构化编辑器新建入口时把该字段留空，管理员必须显式填写（例如完全虚构的 `{identifier}-alternate-entry-{index}.jpg`），否则发布校验会拒绝；App 格式化时把 identifier 中不属于 `A-Z` / `a-z` / `0-9` / `.` / `_` / `-` 的字符替换为 `_`，index 从 `1` 开始；
 - `scanner.applyExpectedLengthTo` 必须显式列出 `ocr`、`barcode`、`entered` 中至少一个且不能重复；它只覆盖此独立入口的精确长度适用来源，精确长度值及其他归一化/标签规则仍来自来源 profile 的 effective primary scanner。来源只配置 `allowedLengths` 而没有精确长度时，该兼容 scope 仍必须保留，但没有可应用的精确长度规则；
 - `scanner.applyAllowedLengthsTo` 是可选的独立入口 override。缺失时继承来源 effective primary scanner 的 allowed-length scope；来源存在 `allowedLengths` 但缺失自身 `applyAllowedLengthsTo` 时，其默认 scope 是 `ocr`、`barcode`、`entered` 三者。显式配置时只覆盖该独立入口，必须是由这三个精确小写值组成的非空、无重复数组，并且来源 primary scanner 必须有非空 `allowedLengths`；否则 Panel 拒绝发布，App 也 fail closed。离散长度数值从不定义在 entry 上；

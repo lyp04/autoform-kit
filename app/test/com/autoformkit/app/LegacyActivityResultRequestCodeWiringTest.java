@@ -48,6 +48,14 @@ public class LegacyActivityResultRequestCodeWiringTest {
             "REQ_SCAN_ALTERNATE_ENTRY_SN = 2015;"));
         assertTrue(source.contains(
             "REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO = 2016;"));
+        assertTrue(source.contains(
+            "REQ_PICK_MAIN_PHOTO_FROM_GALLERY = 2017;"));
+        assertTrue(source.contains(
+            "REQ_PICK_MAIN_PHOTO_FROM_FILE = 2018;"));
+        assertTrue(source.contains(
+            "REQ_PICK_ALTERNATE_PHOTO_FROM_GALLERY = 2019;"));
+        assertTrue(source.contains(
+            "REQ_PICK_ALTERNATE_PHOTO_FROM_FILE = 2020;"));
 
         String dispatch = section(source,
             "protected void onActivityResult(int requestCode, int resultCode, Intent data)",
@@ -56,8 +64,7 @@ public class LegacyActivityResultRequestCodeWiringTest {
             "if (requestCode == REQ_SCAN_ALTERNATE_ENTRY_SN) {\n"
                 + "            handleAlternateEntryScanResult(resultCode, data);"));
         assertTrue(dispatch.contains(
-            "if (requestCode == REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO) {\n"
-                + "            handleAlternateEntryPhotoResult(resultCode, data);"));
+            "handleAlternateEntryPhotoResult(requestCode, resultCode, data);"));
         assertFalse(dispatch.contains("REQ_LEGACY_"));
         assertFalse(dispatch.contains("requestCode == 2011"));
         assertFalse(dispatch.contains("requestCode == 2012"));

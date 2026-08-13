@@ -145,7 +145,8 @@ public class DirectCreatePreviousStepsWiringTest {
                 .put("key", currentPhoto)
                 .put("title", "Sample current photo")
                 .put("required", true)
-                .put("uploadNameTemplate", "{identifier}-sample-current.jpg")))
+                .put("uploadNameTemplate", "{identifier}-sample-current.jpg")
+                .put("inputSource", "gallery")))
             .put("templates", new JSONArray()
                 .put(dynamicRecipe(7001, 1, new JSONObject()
                     .put("sample-photo-alias", currentPhoto)))
@@ -162,6 +163,8 @@ public class DirectCreatePreviousStepsWiringTest {
         assertEquals(1, workflow.workflowArtifacts.size());
         assertTrue(workflow.workflowArtifacts.get(0).required);
         assertEquals(currentPhoto, workflow.workflowArtifacts.get(0).key);
+        assertEquals(PhotoInputSourceRules.GALLERY,
+            workflow.workflowArtifacts.get(0).inputSource);
         assertEquals(2, workflow.dynamicPreviousStepRecipes.size());
         assertTrue(workflow.dynamicPreviousStepRecipes.get(0).sources
             .containsValue(currentPhoto));

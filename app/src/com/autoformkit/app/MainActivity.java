@@ -111,6 +111,10 @@ public class MainActivity extends Activity {
     private static final int REQ_LEGACY_CAPTURE_A_STEP_ENTRY_PHOTO = 2014;
     private static final int REQ_SCAN_ALTERNATE_ENTRY_SN = 2015;
     private static final int REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO = 2016;
+    private static final int REQ_PICK_MAIN_PHOTO_FROM_GALLERY = 2017;
+    private static final int REQ_PICK_MAIN_PHOTO_FROM_FILE = 2018;
+    private static final int REQ_PICK_ALTERNATE_PHOTO_FROM_GALLERY = 2019;
+    private static final int REQ_PICK_ALTERNATE_PHOTO_FROM_FILE = 2020;
     private static final String CHANNEL_ID = "material_shortage";
     private static final String DRAFT_KEY = "pending_form_draft_json";
     private static final String DRAFT_STORE_KEY = "pending_form_draft_store_json";
@@ -4592,7 +4596,14 @@ public class MainActivity extends Activity {
             toast(t("alternate_entry_photo_limit"));
             return;
         }
-        if (!ensureCameraPermission()) return;
+        final String inputSource;
+        try {
+            inputSource = AlternateEntryRules.photoInputSource(alternateEntryConfig);
+        } catch (IllegalArgumentException invalid) {
+            alert(t("panel_required_title"), t("alternate_entry_invalid"));
+            return;
+        }
+        if (!ensurePhotoInputSourceReady(inputSource)) return;
         String operationGuard = alternateEntryOperationGuard();
         if (operationGuard.isEmpty()) {
             alert(t("panel_required_title"), t("alternate_entry_invalid"));
@@ -4600,12 +4611,12 @@ public class MainActivity extends Activity {
         }
         try {
             final File outputFile;
+            final AlternateEntryAsyncReservation reservation;
             synchronized (UpdateInstallRules.HANDOFF_LOCK) {
                 outputFile = createAlternateEntryPhotoOutputFile();
-                AlternateEntryAsyncReservation reservation =
-                    createAlternateEntryReservationLocked(
-                        AlternateEntryAsyncReservation.KIND_PHOTO, operationGuard,
-                        outputFile.getAbsolutePath());
+                reservation = createAlternateEntryReservationLocked(
+                    AlternateEntryAsyncReservation.KIND_PHOTO, operationGuard,
+                    outputFile.getAbsolutePath());
                 if (reservation == null || !prefs.edit()
                     .putString(PENDING_ALTERNATE_ENTRY_PHOTO_PATH_KEY,
                         outputFile.getAbsolutePath())
@@ -4626,6 +4637,24 @@ public class MainActivity extends Activity {
                 pendingAlternateEntryPhotoUri = SimplePhotoProvider.uriForFile(this, outputFile);
                 pendingAlternateEntryPhotoGuard = operationGuard;
                 pendingAlternateEntryPhotoReservation = reservation;
+            }
+            if (!PhotoInputSourceRules.CAMERA.equals(inputSource)) {
+                Intent picker = photoPickerIntent(inputSource);
+                if (picker.resolveActivity(getPackageManager()) == null) {
+                    clearAlternateEntryReservation(reservation, true);
+                    alert(t(PhotoInputSourceRules.GALLERY.equals(inputSource)
+                            ? "gallery_missing_title" : "file_picker_missing_title"),
+                        t(PhotoInputSourceRules.GALLERY.equals(inputSource)
+                            ? "gallery_missing_detail" : "file_picker_missing_detail"));
+                    return;
+                }
+                int requestCode = PhotoInputSourceRules.GALLERY.equals(inputSource)
+                    ? REQ_PICK_ALTERNATE_PHOTO_FROM_GALLERY
+                    : REQ_PICK_ALTERNATE_PHOTO_FROM_FILE;
+                Diagnostics.append(this,
+                    "Starting configured alternate photo picker source=" + inputSource);
+                startActivityForResult(picker, requestCode);
+                return;
             }
             Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingAlternateEntryPhotoUri);
@@ -4665,7 +4694,8 @@ public class MainActivity extends Activity {
             + System.currentTimeMillis() + ".jpg"));
     }
 
-    private void handleAlternateEntryPhotoResult(int resultCode, Intent data) {
+    private void handleAlternateEntryPhotoResult(
+            int requestCode, int resultCode, Intent data) {
         if (pendingAlternateEntryPhotoUri != null) {
             try {
                 revokeUriPermission(pendingAlternateEntryPhotoUri,
@@ -4689,8 +4719,22 @@ public class MainActivity extends Activity {
             clearAlternateEntryReservation(reservation, true);
             return;
         }
-        String path = data == null ? "" : data.getStringExtra("photoPath");
-        if (path == null || path.isEmpty()) path = reservation.outputPath;
+        String path;
+        if (requestCode == REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO) {
+            path = data == null ? "" : data.getStringExtra("photoPath");
+            if (path == null || path.isEmpty()) path = reservation.outputPath;
+        } else {
+            Uri source = data == null ? null : data.getData();
+            try {
+                PrivateJpegImporter.importImage(
+                    this, source, new File(reservation.outputPath));
+                path = reservation.outputPath;
+            } catch (Exception importFailure) {
+                clearAlternateEntryReservation(reservation, true);
+                alert(t("photo_import_failed"), conciseError(importFailure));
+                return;
+            }
+        }
         File photoFile = path == null || path.isEmpty() ? null : new File(path);
         if (!reservation.outputPath.equals(path)
                 || !alternateEntryPageOpen || alternateEntryConfig == null) {
@@ -6786,11 +6830,12 @@ public class MainActivity extends Activity {
             toast(t("no_photo_needed"));
             return;
         }
-        if (!ensureCameraPermission()) return;
+        String inputSource = configuredPhotoInputSource(workflowPhotoPolicy());
+        if (inputSource.isEmpty() || !ensurePhotoInputSourceReady(inputSource)) return;
         pendingPhotoIndex = step.index;
         pendingPhotoSide = step.side;
         pendingPhotoField = "";
-        startCameraForPendingPhoto();
+        startPendingPhotoInput(inputSource);
     }
 
     private void captureNextSlotPhoto() {
@@ -6799,7 +6844,6 @@ public class MainActivity extends Activity {
             toast(t("no_photo_needed"));
             return;
         }
-        if (!ensureCameraPermission()) return;
         beginSlotCapture(next[0], next[1]);
     }
 
@@ -6808,7 +6852,6 @@ public class MainActivity extends Activity {
         if (!ensurePanelReadyForUse()) return;
         int index = units.indexOf(unit);
         if (index < 0) return;
-        if (!ensureCameraPermission()) return;
         beginSlotCapture(index, slotIndex);
     }
 
@@ -6816,10 +6859,12 @@ public class MainActivity extends Activity {
         JSONArray slots = photoSlots();
         JSONObject slot = slots == null ? null : slots.optJSONObject(slotIndex);
         if (slot == null) return;
+        String inputSource = configuredPhotoInputSource(slot);
+        if (inputSource.isEmpty() || !ensurePhotoInputSourceReady(inputSource)) return;
         pendingPhotoIndex = unitIndex;
         pendingPhotoSide = "slot";
         pendingPhotoField = slot.optString("field");
-        startCameraForPendingPhoto();
+        startPendingPhotoInput(inputSource);
     }
 
     private void captureSupplementalPhoto(UnitRecord unit) {
@@ -6827,29 +6872,63 @@ public class MainActivity extends Activity {
         if (!ensurePanelReadyForUse()) return;
         int index = units.indexOf(unit);
         if (index < 0) return;
-        if (!ensureCameraPermission()) return;
+        String inputSource = configuredPhotoInputSource(workflowPhotoPolicy());
+        if (inputSource.isEmpty() || !ensurePhotoInputSourceReady(inputSource)) return;
         pendingPhotoIndex = index;
         pendingPhotoSide = "supplemental";
         pendingPhotoField = "";
-        startCameraForPendingPhoto();
+        startPendingPhotoInput(inputSource);
+    }
+
+    private JSONObject workflowPhotoPolicy() {
+        JSONObject workflow = profile == null ? null : profile.optJSONObject("workflow");
+        return workflow == null ? null : workflow.optJSONObject("photos");
+    }
+
+    private String configuredPhotoInputSource(JSONObject owner) {
+        try {
+            return PhotoInputSourceRules.from(owner);
+        } catch (IllegalArgumentException invalid) {
+            alert(t("panel_required_title"), t("panel_missing_config")
+                + PhotoInputSourceRules.KEY);
+            return "";
+        }
+    }
+
+    private boolean ensurePhotoInputSourceReady(String inputSource) {
+        return !PhotoInputSourceRules.CAMERA.equals(inputSource)
+            || ensureCameraPermission();
+    }
+
+    private void startPendingPhotoInput(String inputSource) {
+        if (PhotoInputSourceRules.CAMERA.equals(inputSource)) {
+            startCameraForPendingPhoto();
+        } else {
+            startPickerForPendingPhoto(inputSource);
+        }
+    }
+
+    private File preparePendingPhotoOutput() throws IOException {
+        File outputFile = createPendingPhotoOutputFile();
+        pendingOutputPhotoPath = outputFile.getAbsolutePath();
+        UnitRecord targetUnit = pendingPhotoIndex >= 0
+            && pendingPhotoIndex < units.size() ? units.get(pendingPhotoIndex) : null;
+        if (targetUnit == null || preparePendingMainFormTarget(
+                PendingFormOperationRules.PHOTO, targetUnit.sequence,
+                PendingFormOperationRules.ROLE_PHOTO, pendingPhotoSide,
+                pendingPhotoField, pendingOutputPhotoPath, "", pendingPhotoIndex) == null) {
+            pendingOutputPhotoPath = "";
+            alert(t("draft_save_failed"), t("draft_binding_locked_detail"));
+            return null;
+        }
+        return outputFile;
     }
 
     private void startCameraForPendingPhoto() {
         try {
-            File outputFile = createPendingPhotoOutputFile();
-            pendingOutputPhotoPath = outputFile.getAbsolutePath();
+            File outputFile = preparePendingPhotoOutput();
+            if (outputFile == null) return;
             pendingOutputPhotoUri = SimplePhotoProvider.uriForFile(this, outputFile);
-            UnitRecord targetUnit = pendingPhotoIndex >= 0
-                && pendingPhotoIndex < units.size() ? units.get(pendingPhotoIndex) : null;
-            if (targetUnit == null || preparePendingMainFormTarget(
-                    PendingFormOperationRules.PHOTO, targetUnit.sequence,
-                    PendingFormOperationRules.ROLE_PHOTO, pendingPhotoSide,
-                    pendingPhotoField, pendingOutputPhotoPath, "", pendingPhotoIndex) == null) {
-                pendingOutputPhotoUri = null;
-                pendingOutputPhotoPath = "";
-                alert(t("draft_save_failed"), t("draft_binding_locked_detail"));
-                return;
-            }
             Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
             intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingOutputPhotoUri);
             intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
@@ -6873,6 +6952,52 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void startPickerForPendingPhoto(String inputSource) {
+        try {
+            Intent intent = photoPickerIntent(inputSource);
+            if (intent.resolveActivity(getPackageManager()) == null) {
+                alert(t(PhotoInputSourceRules.GALLERY.equals(inputSource)
+                        ? "gallery_missing_title" : "file_picker_missing_title"),
+                    t(PhotoInputSourceRules.GALLERY.equals(inputSource)
+                        ? "gallery_missing_detail" : "file_picker_missing_detail"));
+                return;
+            }
+            File outputFile = preparePendingPhotoOutput();
+            if (outputFile == null) return;
+            int requestCode = PhotoInputSourceRules.GALLERY.equals(inputSource)
+                ? REQ_PICK_MAIN_PHOTO_FROM_GALLERY : REQ_PICK_MAIN_PHOTO_FROM_FILE;
+            Diagnostics.append(this, "Starting configured photo picker source=" + inputSource);
+            startActivityForResult(intent, requestCode);
+        } catch (Exception exc) {
+            clearPendingPhotoOutput();
+            alert(t("photo_picker_failed"), conciseError(exc));
+        }
+    }
+
+    private Intent photoPickerIntent(String inputSource) {
+        if (PhotoInputSourceRules.GALLERY.equals(inputSource)) {
+            Intent intent;
+            if (Build.VERSION.SDK_INT >= 33) {
+                intent = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                intent.setType("image/*");
+                if (intent.resolveActivity(getPackageManager()) != null) return intent;
+            }
+            intent = new Intent(Intent.ACTION_PICK,
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+            intent.setType("image/*");
+            intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            return intent;
+        }
+        if (!PhotoInputSourceRules.FILE.equals(inputSource)) {
+            throw new IllegalArgumentException("Unsupported photo input source");
+        }
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        return intent;
+    }
+
     private void startInternalCamera(File outputFile) {
         Intent intent = new Intent(this, CaptureActivity.class);
         intent.putExtra("fileName", outputFile.getName());
@@ -6889,8 +7014,10 @@ public class MainActivity extends Activity {
             handleAlternateEntryScanResult(resultCode, data);
             return;
         }
-        if (requestCode == REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO) {
-            handleAlternateEntryPhotoResult(resultCode, data);
+        if (requestCode == REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO
+                || requestCode == REQ_PICK_ALTERNATE_PHOTO_FROM_GALLERY
+                || requestCode == REQ_PICK_ALTERNATE_PHOTO_FROM_FILE) {
+            handleAlternateEntryPhotoResult(requestCode, resultCode, data);
             return;
         }
         if (requestCode == REQ_SCAN_SN || requestCode == REQ_SCAN_BASE) {
@@ -6905,7 +7032,9 @@ public class MainActivity extends Activity {
             handleOcrPhotoResult(requestCode, resultCode, data);
             return;
         }
-        if (requestCode != REQ_CAPTURE_PHOTO) {
+        if (requestCode != REQ_CAPTURE_PHOTO
+                && requestCode != REQ_PICK_MAIN_PHOTO_FROM_GALLERY
+                && requestCode != REQ_PICK_MAIN_PHOTO_FROM_FILE) {
             return;
         }
         PendingFormOperationRules.Target target = pendingMainFormTargetForResult(
@@ -6926,8 +7055,22 @@ public class MainActivity extends Activity {
             clearPendingPhotoOutput();
             return;
         }
-        String path = data == null ? "" : data.getStringExtra("photoPath");
-        if (path == null || path.isEmpty()) path = target.outputPath;
+        String path;
+        if (requestCode == REQ_CAPTURE_PHOTO) {
+            path = data == null ? "" : data.getStringExtra("photoPath");
+            if (path == null || path.isEmpty()) path = target.outputPath;
+        } else {
+            Uri source = data == null ? null : data.getData();
+            try {
+                PrivateJpegImporter.importImage(this, source, new File(target.outputPath));
+                path = target.outputPath;
+            } catch (Exception importFailure) {
+                deleteFileQuietly(target.outputPath);
+                clearPendingPhotoOutput();
+                alert(t("photo_import_failed"), conciseError(importFailure));
+                return;
+            }
+        }
         if (!target.outputPath.equals(path)) {
             alert(t("photo_save_failed"), t("photo_target_missing"));
             return;
@@ -12541,11 +12684,11 @@ public class MainActivity extends Activity {
             return;
         }
         int index = units.indexOf(target.unit);
-        if (index < 0 || !ensureCameraPermission()) return;
+        if (index < 0 || !ensurePhotoInputSourceReady(target.artifact.inputSource)) return;
         pendingPhotoIndex = index;
         pendingPhotoSide = "artifact";
         pendingPhotoField = target.artifact.key;
-        startCameraForPendingPhoto();
+        startPendingPhotoInput(target.artifact.inputSource);
     }
 
     private boolean hasRequiredWorkflowArtifacts(UnitRecord unit) {
@@ -18247,10 +18390,14 @@ public class MainActivity extends Activity {
             case "ocr_base": return "拍照识别";
             case "match": return "匹配";
             case "photos": return "拍照";
-            case "take_next_photo": return "拍下一张";
+            case "take_next_photo": return "添加下一张照片";
             case "choose_gallery_photo": return "\u4ece\u76f8\u518c\u6dfb\u52a0\u56fe\u7247";
             case "gallery_missing_title": return "\u76f8\u518c\u4e0d\u53ef\u7528";
             case "gallery_missing_detail": return "\u7cfb\u7edf\u6ca1\u6709\u53ef\u7528\u7684\u56fe\u7247\u9009\u62e9\u5668\u3002";
+            case "file_picker_missing_title": return "文件选择不可用";
+            case "file_picker_missing_detail": return "系统没有可用的图片文件选择器。";
+            case "photo_picker_failed": return "图片选择失败";
+            case "photo_import_failed": return "图片导入失败";
             case "delete_photo": return "\u5220\u9664";
             case "go_back": return "返回";
             case "alternate_entry_subtitle": return "选择表单、录入一个标识并拍照后提交。提交目标和字段全部由面板配置。";
@@ -18331,7 +18478,7 @@ public class MainActivity extends Activity {
             case "previous_steps_created": return "配置的前置记录流程已完成。";
             case "previous_step_recipe": return "前置记录配方";
             case "workflow_artifacts": return "流程附件";
-            case "capture_workflow_artifact": return "拍摄下一项流程附件";
+            case "capture_workflow_artifact": return "添加下一项流程附件";
             case "workflow_artifacts_done": return "所需流程附件已完成";
             case "workflow_artifacts_required": return "请先完成面板配置的必需流程附件。";
             case "workflow_artifact_missing": return "缺少流程附件来源: ";
@@ -18665,10 +18812,14 @@ public class MainActivity extends Activity {
             case "ocr_base": return "Photo OCR";
             case "match": return "Match";
             case "photos": return "Photos";
-            case "take_next_photo": return "Take next photo";
+            case "take_next_photo": return "Add next photo";
             case "choose_gallery_photo": return "Add from gallery";
             case "gallery_missing_title": return "Gallery unavailable";
             case "gallery_missing_detail": return "No image picker is available on this device.";
+            case "file_picker_missing_title": return "File picker unavailable";
+            case "file_picker_missing_detail": return "No image file picker is available on this device.";
+            case "photo_picker_failed": return "Image selection failed";
+            case "photo_import_failed": return "Image import failed";
             case "delete_photo": return "Delete";
             case "go_back": return "Back";
             case "alternate_entry_subtitle": return "Choose a form, enter one identifier, capture photos, and submit. The Panel owns every target and field.";
@@ -18749,7 +18900,7 @@ public class MainActivity extends Activity {
             case "previous_steps_created": return "Configured previous-record workflow completed.";
             case "previous_step_recipe": return "previous-record recipe";
             case "workflow_artifacts": return "Workflow attachments";
-            case "capture_workflow_artifact": return "Capture next workflow attachment";
+            case "capture_workflow_artifact": return "Add next workflow attachment";
             case "workflow_artifacts_done": return "Required workflow attachments complete";
             case "workflow_artifacts_required": return "Complete the panel-required workflow attachments first.";
             case "workflow_artifact_missing": return "Missing workflow attachment source: ";
@@ -19083,10 +19234,14 @@ public class MainActivity extends Activity {
             case "ocr_base": return "OCR foto";
             case "match": return "Asignar";
             case "photos": return "Fotos";
-            case "take_next_photo": return "Tomar siguiente foto";
+            case "take_next_photo": return "Agregar siguiente foto";
             case "choose_gallery_photo": return "Agregar de galeria";
             case "gallery_missing_title": return "Galeria no disponible";
             case "gallery_missing_detail": return "No hay selector de imagenes disponible en este dispositivo.";
+            case "file_picker_missing_title": return "Selector de archivos no disponible";
+            case "file_picker_missing_detail": return "No hay selector de archivos de imagen disponible en este dispositivo.";
+            case "photo_picker_failed": return "Error al seleccionar imagen";
+            case "photo_import_failed": return "Error al importar imagen";
             case "delete_photo": return "Eliminar";
             case "go_back": return "Volver";
             case "alternate_entry_subtitle": return "Elija un formulario, introduzca un identificador, tome fotos y envíe. Panel define todos los destinos y campos.";
@@ -19167,7 +19322,7 @@ public class MainActivity extends Activity {
             case "previous_steps_created": return "Flujo de registros previos completado.";
             case "previous_step_recipe": return "receta de registro previo";
             case "workflow_artifacts": return "Adjuntos del flujo";
-            case "capture_workflow_artifact": return "Capturar el siguiente adjunto";
+            case "capture_workflow_artifact": return "Agregar el siguiente adjunto";
             case "workflow_artifacts_done": return "Adjuntos requeridos completos";
             case "workflow_artifacts_required": return "Complete primero los adjuntos requeridos por el panel.";
             case "workflow_artifact_missing": return "Falta la fuente del adjunto: ";

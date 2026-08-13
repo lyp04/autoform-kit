@@ -263,6 +263,11 @@ final class CatalogPromotionValidator {
         boolean includeOptional = false;
         JSONObject workflow = profile.optJSONObject("workflow");
         JSONObject photoPolicy = workflow == null ? null : workflow.optJSONObject("photos");
+        try {
+            PhotoInputSourceRules.from(photoPolicy);
+        } catch (IllegalArgumentException invalid) {
+            reject(path + ".workflow.photos." + PhotoInputSourceRules.KEY);
+        }
         if (photoPolicy != null && photoPolicy.has("includeOptionalSlots")) {
             Object raw = photoPolicy.opt("includeOptionalSlots");
             if (!(raw instanceof Boolean)) reject(path + ".workflow.photos.includeOptionalSlots");
@@ -300,6 +305,11 @@ final class CatalogPromotionValidator {
             }
             if (slot.has("conditional") && !(slot.opt("conditional") instanceof Boolean)) {
                 reject(itemPath + ".conditional");
+            }
+            try {
+                PhotoInputSourceRules.from(slot);
+            } catch (IllegalArgumentException invalid) {
+                reject(itemPath + "." + PhotoInputSourceRules.KEY);
             }
         }
         return fields;

@@ -27,6 +27,37 @@ function validChoice() {
   };
 }
 
+test("Panel photo input sources are explicit, bounded, and camera-compatible by default", () => {
+  for (const inputSource of ["camera", "gallery", "file"]) {
+    const profile = sampleProfile();
+    profile.photoSlots[0].inputSource = inputSource;
+    profile.workflow.photos.inputSource = inputSource;
+    profile.workflow.previousSteps.artifacts = [{
+      key: "sample-evidence",
+      title: "Sample evidence",
+      required: true,
+      uploadNameTemplate: "{identifier}-sample-evidence.jpg",
+      inputSource
+    }];
+    assert.deepEqual(validateFormProfile(profile), []);
+  }
+
+  const invalid = sampleProfile();
+  invalid.photoSlots[0].inputSource = "camera_or_gallery";
+  invalid.workflow.photos.inputSource = true;
+  invalid.workflow.previousSteps.artifacts = [{
+    key: "sample-evidence",
+    title: "Sample evidence",
+    required: true,
+    uploadNameTemplate: "{identifier}-sample-evidence.jpg",
+    inputSource: " gallery"
+  }];
+  const errors = validateFormProfile(invalid);
+  assert(errors.includes("photoSlots[0].inputSource must be camera, gallery, or file"));
+  assert(errors.includes("workflow.photos.inputSource must be camera, gallery, or file"));
+  assert(errors.includes("workflow.previousSteps.artifacts[0].inputSource must be camera, gallery, or file"));
+});
+
 test("legacy upload sources stay inside the bounded front/back wire contract", () => {
   const compatible = sampleProfile();
   delete compatible.photoSlots;

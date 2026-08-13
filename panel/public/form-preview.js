@@ -172,20 +172,26 @@ export function syncSnFields(p) {
 }
 
 // Normalize a slot-ish object to { field, title, minPhotos, maxPhotos, required }.
-function normSlot(s) {
+function normSlot(s, fallbackInputSource = "camera") {
   return {
     field: s.field || s.kind || "",
     title: s.title || s.field || "上传照片",
     minPhotos: s.minPhotos == null ? 1 : s.minPhotos,
     maxPhotos: s.maxPhotos == null ? 10 : s.maxPhotos,
-    required: s.required !== false
+    required: s.required !== false,
+    inputSource: s.inputSource || fallbackInputSource
   };
 }
 
 // Profile photo slots. Supports v2 photoSlots and legacy uploadFields/imageFields.
 export function profilePhotoSlots(p) {
-  if (Array.isArray(p && p.photoSlots)) return p.photoSlots.map(normSlot);
-  if (Array.isArray(p && p.uploadFields) && p.uploadFields.length) return p.uploadFields.map(normSlot);
+  if (Array.isArray(p && p.photoSlots) && p.photoSlots.length) {
+    return p.photoSlots.map((slot) => normSlot(slot));
+  }
+  if (Array.isArray(p && p.uploadFields) && p.uploadFields.length) {
+    const source = p.workflow?.photos?.inputSource || "camera";
+    return p.uploadFields.map((slot) => normSlot(slot, source));
+  }
   return [];
 }
 
@@ -454,7 +460,9 @@ function iconBtn(svg) {
 function uploadSlot(s) {
   const w = document.createElement("div");
   w.appendChild(h(`<div class="fp-uplab">${s.required ? '<span class="fp-star">*</span>' : ""}${esc(s.title)}</div>`));
-  w.appendChild(h(`<div class="fp-upbtn">${ICON_UPLOAD}<span>上传</span></div>`));
+  const action = s.inputSource === "gallery" ? "相册"
+    : (s.inputSource === "file" ? "文件" : "拍照");
+  w.appendChild(h(`<div class="fp-upbtn">${ICON_UPLOAD}<span>${action}</span></div>`));
   return w;
 }
 

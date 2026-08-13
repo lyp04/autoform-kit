@@ -288,10 +288,12 @@ tools/publish-release.sh \
 ```
 
 **当前发布策略继续 fail closed。** `tools/private-release-gate-policy.json` 只启用一份经审查并固定
-SHA-256 的外部 gate。该 gate 是一次性的 v1.0.14 maintenance gate：它只接受公开 v1.0.13
-（versionCode 17）到 v1.0.14（versionCode 18）的同 package/同 signer 升级、精确审阅过的 source
-diff、catalog v55 的 private R2 authority，以及下述 schema-v5 当前升级证据。v1.0.14 tag/Release
-存在后不可复用；任何其他版本、基线、changed-path 集合、catalog revision 或 authority 都会停止。
+SHA-256 的外部 gate。该 gate 是一次性的 v1.0.16 maintenance gate：它只接受公开 v1.0.15
+（versionCode 19）到 v1.0.16（versionCode 20）的同 package/同 signer 升级、精确内容哈希绑定的
+source diff、部署后仍与 App 成对的 private R2 authority，以及下述 schema-v5 当前升级证据。
+它额外要求 Panel 的 source-tag/runtime provenance、dry-run bundle 证据、签名覆盖升级、fresh install
+和 `gallery` Photo Picker 回填证据。v1.0.16 tag/Release 存在后不可复用；任何其他版本、基线、
+changed-path 集合、catalog revision 或 authority 都会停止。
 后续版本必须重新审查真实 gate、更新其 exact SHA-256 并提交 policy，不能沿用、临时关闭或绕过。
 
 原 gate 必须是可执行、非符号链接且 group/other 不可写的普通文件。发布脚本不会从该可变路径直接
@@ -510,7 +512,7 @@ Runtime provenance 是 private-evidence verifier 的强制输入：它通过 rea
 它仍只证明受控部署流程提供的 version metadata/source tag，不是上传 bundle 的 byte attestation；受审
 private gate 在生成 `privateDeployment:true` 前还必须绑定独立的 exact bundle/build 证据。
 
-> **v1.0.14 只有在现场证据通过时才是 GO。** Source policy 已固定一次性 v1.0.14 gate；发布现场仍须
+> **v1.0.16 只有在现场证据通过时才是 GO。** Source policy 已固定一次性 v1.0.16 gate；发布现场仍须
 > 提供 candidate 绑定的 mode-`0600` config/catalog/deployment inputs、authenticated live
 > authority/manifest 结果与 current-upgrade release-ready report。缺少任一输入或 live recheck 不一致，
 > publisher 都会在 GitHub 写入前停止。
@@ -520,7 +522,7 @@ private gate 在生成 `privateDeployment:true` 前还必须绑定独立的 exac
 本节是每次启用 gate 前必须满足并审查的合同；policy enabled 不等于现场证据已经通过。
 仓库中的 `verify-private-release-evidence.mjs` 已实现 mode-`0600` migration report、Panel
 config/catalog pair、GitHub/R2 authority、optional settings、authenticated live manifest 与 runtime
-provenance 的 schema v2 检查。它只在取得真实 deployment inputs 时才有现场意义。一次性 v1.0.14
+provenance 的 schema v2 检查。它只在取得真实 deployment inputs 时才有现场意义。一次性 v1.0.16
 gate 已固定身份，但仍必须在每次发布调用中完成完整 live 验证；手填 status/hash/boolean 不构成依据。
 
 `--gate` 必须是可执行的普通文件。它可以位于仓库外；若位于仓库内，则必须未被跟踪且被 `.gitignore` 覆盖。发布脚本不接受预先写好的证明，而是为每次调用创建一个新的私有临时输出路径，再执行 gate。以下环境变量提供给 gate：
@@ -737,7 +739,7 @@ Replay input 是 exact JSON object，绑定 `sourceCommit`、`catalogVersion`、
 
 逐操作检查必须覆盖：authority/server correlation、remote receipt、journal/pair cross-proof、持久 challenge 重放、evidence id 重放、本地可编辑 JSON/按钮不能解锁、原子持久化返回 false、持久化后进程退出、该类 legacy uncertainty，以及该操作自己的 written/not-written/partial/complete 与错 connection/catalog/pair/profile/draft/operation/payload/recipe/upload identity。顶层还必须有真实 signed-upgrade operator-device test、runtime wiring、challenge consumption 与 atomic persistence 证据。
 
-当前仓库中的 `ControlledRecoveryRules` 与 adapter schema 只是纯验证/状态转换合同；`MainActivity` 尚未接入持久 challenge、evidence-id consumption、operator transport 或原子 write-back/清锁。当前 App 的原 POST 也未把 recovery subject/operation id 送到 reconciliation authority。因此，任何修改这些路径的版本在部署方实现服务器相关性来源和运行时 wiring，并在签名覆盖升级设备上生成上述材料之前，真实 gate 必须失败。一次性 v1.0.14 maintenance gate 通过精确 baseline/diff allowlist 证明这些路径未变化，而不是把缺失能力伪装成 `controlledRecovery:true`。
+当前仓库中的 `ControlledRecoveryRules` 与 adapter schema 只是纯验证/状态转换合同；`MainActivity` 尚未接入持久 challenge、evidence-id consumption、operator transport 或原子 write-back/清锁。当前 App 的原 POST 也未把 recovery subject/operation id 送到 reconciliation authority。因此，任何修改这些路径的版本在部署方实现服务器相关性来源和运行时 wiring，并在签名覆盖升级设备上生成上述材料之前，真实 gate 必须失败。一次性 v1.0.16 maintenance gate 通过精确 baseline、逐文件内容哈希和敏感方法不变检查证明原 upload/submit/recovery 路径未变化，而不是把缺失能力伪装成 `controlledRecovery:true`。
 
 仓库自带纯临时 fixture 自测，用 stub 替代 GitHub、Git 与 Android 元数据工具，不构建也不联网。`release-workflow-selftest.sh` 会先强制运行 controlled-recovery attestation 自测，任一权限、竞态、绑定或输出保护回归都会让整个离线发布自测失败：
 

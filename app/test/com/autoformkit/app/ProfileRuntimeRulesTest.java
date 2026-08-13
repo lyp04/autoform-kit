@@ -189,7 +189,8 @@ public class ProfileRuntimeRulesTest {
                     .put("key", "example-evidence")
                     .put("title", "Example evidence")
                     .put("required", true)
-                    .put("uploadNameTemplate", "{identifier}-sample-evidence.jpg")))
+                    .put("uploadNameTemplate", "{identifier}-sample-evidence.jpg")
+                    .put("inputSource", "gallery")))
                 .put("templates", new JSONArray().put(new JSONObject()
                     .put("templateId", 42)
                     .put("warehouseId", 7)
@@ -219,6 +220,8 @@ public class ProfileRuntimeRulesTest {
         assertFalse(workflow.shouldAutoCreatePreviousSteps("SAMPLE-REVIEW"));
         assertFalse(workflow.shouldDirectCreatePreviousSteps("SAMPLE-REVIEW"));
         assertEquals("example-evidence", workflow.workflowArtifacts.get(0).key);
+        assertEquals(PhotoInputSourceRules.GALLERY,
+            workflow.workflowArtifacts.get(0).inputSource);
         assertEquals("UNIT_01-sample-evidence.jpg",
             workflow.workflowArtifactUploadName("example-evidence", "UNIT/01", 1));
         assertEquals(42, workflow.previousStepRecipes.get(0).templateId);

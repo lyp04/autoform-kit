@@ -78,6 +78,19 @@ test("a fully closed fictional alternate entry passes local and catalog validati
   assert.deepEqual(validateProfilesForPublish([source], [source, target]), []);
 });
 
+test("alternate-entry photo source is Panel-owned and strictly bounded", () => {
+  for (const inputSource of ["camera", "gallery", "file"]) {
+    const { source, target } = configuredCatalog();
+    source.workflow.alternateEntries.entries[0].inputSource = inputSource;
+    assert.deepEqual(validateFormProfile(source), []);
+    assert.deepEqual(validateProfilesForPublish([source, target]), []);
+  }
+  const { source } = configuredCatalog();
+  source.workflow.alternateEntries.entries[0].inputSource = "photos";
+  assert(validateFormProfile(source).includes(
+    "workflow.alternateEntries.entries[0].inputSource must be camera, gallery, or file"));
+});
+
 test("Panel-owned result presets provide strict mutually exclusive A/B/C choices", () => {
   const { source, target } = configuredCatalog();
   const entry = source.workflow.alternateEntries.entries[0];
