@@ -43,7 +43,7 @@ public class SystemBarInsetsTest {
     }
 
     @Test
-    public void onlyTheThreeFullPageRootsUseTheSharedInsetHandler() throws Exception {
+    public void fullPagesAndCameraControlsUseTheSharedInsetHandler() throws Exception {
         String main = source("MainActivity.java");
         String capture = source("CaptureActivity.java");
         String scanner = source("ScannerActivity.java");
@@ -54,10 +54,22 @@ public class SystemBarInsetsTest {
         assertTrue(main.contains("SystemBarInsets.requestWhenAttached(insetAwarePageView);"));
         assertTrue(main.contains("SystemBarInsets.requestWhenAttached(scroll);"));
         assertTrue(main.contains("getWindow().setDecorFitsSystemWindows(false);"));
-        assertFalse(capture.contains("SystemBarInsets."));
+        assertTrue(capture.contains(
+            "root, header, footer, orientedChrome, reviewControlsStage);"));
+        assertTrue(capture.contains(
+            "SystemBarInsets.rotateCameraOverlayInsets(orientedChrome, delta);"));
+        assertTrue(capture.contains("SystemBarInsets.requestWhenAttached(root);"));
         assertFalse(scanner.contains("SystemBarInsets."));
         assertTrue(helper.contains("WindowInsets.Type.systemBars()"));
         assertTrue(helper.contains("WindowInsets.Type.displayCutout()"));
+        assertTrue(helper.contains("setHeight(topOverlay, padded(topHeight, systemBars.top))"));
+        assertTrue(helper.contains(
+            "setHeight(bottomOverlay, padded(bottomHeight, systemBars.bottom))"));
+        assertTrue(helper.contains("static void rotateCameraOverlayInsets("));
+        assertTrue(helper.contains("left = state.top;"));
+        assertTrue(helper.contains("top = state.right;"));
+        assertTrue(helper.contains("right = state.bottom;"));
+        assertTrue(helper.contains("bottom = state.left;"));
         assertTrue(helper.contains("padded(baseline.left, systemBars.left)"));
         assertTrue(helper.contains("padded(baseline.top, systemBars.top)"));
         assertTrue(helper.contains("padded(baseline.right, systemBars.right)"));
