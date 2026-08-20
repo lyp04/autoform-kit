@@ -14,7 +14,8 @@ import {
   validateDailyStatsV2
 } from "./daily-stats.js";
 
-export const SCHEMA_VERSION = 2; // keep in sync with FormCatalog.SUPPORTED_SCHEMA_VERSION (Android)
+// v3 adds profile-owned scanner.ocrPositionRules.
+export const SCHEMA_VERSION = 3; // keep in sync with FormCatalog.SUPPORTED_SCHEMA_VERSION (Android)
 
 export class CatalogPublishConflictError extends Error {
   constructor() {

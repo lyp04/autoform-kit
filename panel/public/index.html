@@ -1198,6 +1198,26 @@ function scannerPolicyEditor(owner,title,onChange,opts={}){
   list("stripLabels","识别并剥离的标签","例如 S/N（仅示例）");
   list("stripLabelsFrom","剥离标签的入口","ocr, barcode, entered（需先配置标签）");
   list("rejectedSubstrings","拒绝包含文本","逗号分隔；请只填私有规则");
+  const ocrRules=document.createElement("textarea"); ocrRules.rows=7; ocrRules.spellcheck=false;
+  ocrRules.style.cssText="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12px;white-space:pre;min-width:360px";
+  ocrRules.value=Array.isArray(current().ocrPositionRules)
+    ?JSON.stringify(current().ocrPositionRules,null,2):"";
+  ocrRules.placeholder='[{"positions":[3,4],"allowedCharacters":"0123456789","corrections":{"O":"0"}}]';
+  ocrRules.oninput=()=>{
+    const raw=ocrRules.value.trim();
+    if(!raw){ ocrRules.setCustomValidity(""); set("ocrPositionRules",undefined); return; }
+    try{
+      const parsed=JSON.parse(raw);
+      if(!Array.isArray(parsed)) throw new Error("必须是 JSON 数组");
+      ocrRules.setCustomValidity(""); set("ocrPositionRules",parsed);
+    }catch(error){
+      ocrRules.setCustomValidity(`OCR 固定位置规则格式错误：${error.message}`);
+    }
+  };
+  ocrRules.onblur=()=>{ if(!ocrRules.checkValidity()) ocrRules.reportValidity(); };
+  body.appendChild(field("OCR 固定位置规则（JSON）",ocrRules,"g"));
+  const ocrRulesHint=mutedLine("positions 从 1 开始；纠错只作用于 OCR，允许字符和每个纠错映射都必须显式配置。真实规则只保存在私有 profile。");
+  ocrRulesHint.style.flexBasis="100%"; body.appendChild(ocrRulesHint);
   const toggles=document.createElement("div"); toggles.className="row"; toggles.style.cssText="flex-basis:100%;gap:14px";
   toggles.appendChild(swField("拒绝纯数字",current().rejectNumericOnly===true,value=>set("rejectNumericOnly",value)));
   toggles.appendChild(swField("必须同时含字母和数字",current().requireLetterAndDigit===true,value=>set("requireLetterAndDigit",value)));

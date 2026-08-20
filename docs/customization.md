@@ -87,7 +87,7 @@ Recipe outcome 发布门只针对实际可执行路径：`workflow.previousSteps
 - Backend template：`template`、`snFields`、`requiresSecondSn`、提交字段与 option value；
 - 输入：`snPlugins` 中的框名、输入提示及各自 `labelI18n` / `placeholderI18n`，以及 `photoSlots`、`optionalSlots`、`choiceFields`、`operationFields`、`conditionalFields.perResult`、混合版本迁移期的等值 `perGrade` alias、`materialGroups`；新模板导入的可见 `singleChoice` 使用空 `value` 和 `reviewRequired:true`，管理员在 Panel 明确选择后才清除标记，发布门拒绝仍待确认的值；
 - Result mapping：legacy wire name `gradeMap`，但 key 是任意不透明 result key；`label` / `value` 保留旧版与导入契约，结构化编辑器只用可选 `operatorLabel` / `operatorLabelI18n` 定制新版操作员文案，并可设置结果颜色；
-- 扫描：`expectedSnLength`、profile migration fallback `scanner`、`snPlugins[key=primary|secondary].scanner`；role scanner 可定义单一 `expectedLength`、离散 `allowedLengths` 及各自应用于 OCR / barcode / entered 的 source scope，prefix、文字识别 timing、纯数字拒绝、候选来源/评分、label 匹配、字符与排除规则、归一化以及 `prompt` / `promptI18n` 提示；额外输入当前不声明相机扫码；
+- 扫描：`expectedSnLength`、profile migration fallback `scanner`、`snPlugins[key=primary|secondary].scanner`；role scanner 可定义单一 `expectedLength`、离散 `allowedLengths` 及各自应用于 OCR / barcode / entered 的 source scope，prefix、文字识别 timing、纯数字拒绝、候选来源/评分、label 匹配、字符与排除规则、归一化、仅作用于 OCR 的显式固定位置约束/纠错 `ocrPositionRules`，以及 `prompt` / `promptI18n` 提示；额外输入当前不声明相机扫码；
 - Legacy-compatible missing-item ignore policy：`notifySkipMaterials`（不自动移除、重试或通知）；
 - 上一工序：`workflow.previousSteps` 总开关、扫描预检、结果排除/触发、只对 trigger 子集生效的 `directCreateResultKeys`（跳过创建前查询但保留创建后复核）、附件及其 Panel-owned `uploadNameTemplate`、静态 recipe，或动态 recipe 的 template identity、resolver ID 与 source alias、标识字符替换、适用 result key 及应用动作、大小写策略、缺失次数/动作、recipe 尝试/等待与复核次数/等待；
 - 迁移核对：`workflow.compatibilityReviewed`；Panel 不会自动勾选，只有逐项对照旧现场行为后才能设为 `true`；
@@ -100,6 +100,8 @@ Recipe outcome 发布门只针对实际可执行路径：`workflow.previousSteps
 - Item recognition：`materialCodePattern` 和每项 `defaultQty`。
 
 需要用户从标准表单选择器进入的每个来源 profile 都必须显式设置 `pickerVisible:true`。只作为独立入口提交目标的 profile 必须显式设置 `pickerVisible:false`，并由来源 profile 的 `workflow.alternateEntries.entries[].targetProfileId` 精确引用；Panel 不按名称、相邻顺序或模板 ID 猜目标。完整结构见 [Profile schema](./profile-schema.md)。
+
+`ocrPositionRules` 属于 catalog schema v3。部署它时应先发布并验证支持 v3 的 App，live catalog 暂时保持旧 schema；目标设备升级后，再由同步升级的 Panel 在同一次发布中写入 schema v3、真实私有规则，并把 `minAppVersionCode` 提高到实际支持该字段的 App versionCode。不能先把新字段塞进 schema v2，也不能只依赖旧 App 会忽略未知 scanner key；回滚到只支持 v2 的 App 前，须先发布更高 catalog revision、移除新字段并恢复为 v2 兼容 catalog。
 
 缺少新策略字段的旧 profile 在解析/编辑阶段按安全值展示：独立入口和其他可选模块关闭、重复记录阻止、打印关闭、缺失恢复关闭、提交一次、网络额外重试和相邻条目等待为零、本地核对记录只保留 1 天。安全值不是无损迁移；新 App 的提交门要求既有完整显式策略和 `compatibilityReviewed:true`。为保持已发布 catalog 可升级，旧 catalog 单独缺少打印的 `batchEndRecheckMode` / `unknownStatusPresentation` 时仍按当前 `deferred_missing_two_pass` / `distinct` 运行；字段存在但非法会被 App 拒绝，Panel 的任何新发布也必须显式补齐两者。用结构化编辑器打开旧 profile 时，Panel 会把默认值写入草稿；管理员仍应按旧现场行为逐项校正和验证后再发布。
 

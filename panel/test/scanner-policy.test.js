@@ -273,6 +273,95 @@ test("conversion, App delivery and publish validation preserve allowed-length po
     "snPlugins[0].scanner.expectedLength must be included in allowedLengths when both are configured"));
 });
 
+test("OCR position rules preserve explicit corrections and validate fail closed", () => {
+  const profile = profileWithScanner();
+  const rules = [{
+    positions: [3, 4],
+    allowedCharacters: "0123456789",
+    corrections: { O: "0" }
+  }];
+  profile.snPlugins[0].scanner.ocrPositionRules = rules;
+  assert.deepEqual(validateFormProfile(profile), []);
+
+  const served = clientCatalog({ version: 8, profiles: [profile], settings: {} });
+  assert.deepEqual(served.profiles[0].snPlugins[0].scanner.ocrPositionRules, rules);
+
+  const malformed = structuredClone(profile);
+  malformed.snPlugins[0].scanner.ocrPositionRules = [
+    {
+      positions: [0, 3, 3],
+      allowedCharacters: "00",
+      corrections: { O: "A", o: "0", 0: "0" },
+      guess: true
+    },
+    { positions: [3], allowedCharacters: "ABC" }
+  ];
+  const errors = validateFormProfile(malformed);
+  for (const expected of [
+    "snPlugins[0].scanner.ocrPositionRules[0].guess is not supported",
+    "snPlugins[0].scanner.ocrPositionRules[0].positions[0] must be an integer from 1 to 256",
+    "snPlugins[0].scanner.ocrPositionRules[0].positions[2] must be unique",
+    "snPlugins[0].scanner.ocrPositionRules[0].allowedCharacters must be unique (case-insensitive)",
+    "snPlugins[0].scanner.ocrPositionRules[0].corrections.O target must be listed in allowedCharacters",
+    "snPlugins[0].scanner.ocrPositionRules[0].corrections.o source must be unique (case-insensitive)",
+    "snPlugins[0].scanner.ocrPositionRules[0].corrections.0 must not be a no-op correction",
+    "snPlugins[0].scanner.ocrPositionRules[1].positions[0] must not overlap another OCR position rule"
+  ]) assert.ok(errors.includes(expected), expected);
+});
+
+test("OCR position rules reject empty, mistyped and ambiguous shapes", () => {
+  const scanner = profileWithScanner().snPlugins[0].scanner;
+  const failures = [
+    [[], "snPlugins[0].scanner.ocrPositionRules must not be empty"],
+    ["positions", "snPlugins[0].scanner.ocrPositionRules must be an array"],
+    [[null], "snPlugins[0].scanner.ocrPositionRules[0] must be an object"],
+    [[{ allowedCharacters: "0123" }],
+      "snPlugins[0].scanner.ocrPositionRules[0].positions must be an array"],
+    [[{ positions: [3], allowedCharacters: "0123", corrections: {} }],
+      "snPlugins[0].scanner.ocrPositionRules[0].corrections must not be empty"],
+    [[{ positions: [3], allowedCharacters: "O0", corrections: { O: "0" } }],
+      "snPlugins[0].scanner.ocrPositionRules[0].corrections.O source must not already be allowed"]
+  ];
+  failures.forEach(([value, expected]) => {
+    const profile = profileWithScanner();
+    profile.snPlugins[0].scanner = { ...scanner, ocrPositionRules: value };
+    assert.ok(validateFormProfile(profile).includes(expected), expected);
+  });
+});
+
+test("OCR positions fit the effective OCR length constraints", () => {
+  const withRuleAt = (position) => [{
+    positions: [position], allowedCharacters: "0123456789", corrections: { O: "0" }
+  }];
+
+  const discrete = profileWithScanner();
+  discrete.snPlugins[0].scanner.ocrPositionRules = withRuleAt(10);
+  discrete.snPlugins[0].scanner.allowedLengths = [9, 10, 11];
+  assert.ok(validateFormProfile(discrete).includes(
+    "snPlugins[0].scanner.allowedLengths[0] must include every configured OCR position"));
+
+  const exact = profileWithScanner();
+  exact.snPlugins[0].scanner.ocrPositionRules = withRuleAt(11);
+  exact.snPlugins[0].scanner.applyAllowedLengthsTo = ["barcode", "entered"];
+  assert.ok(validateFormProfile(exact).includes(
+    "snPlugins[0].scanner.expectedLength must include every configured OCR position"));
+
+  const bounded = profileWithScanner();
+  bounded.snPlugins[0].scanner.ocrPositionRules = withRuleAt(13);
+  assert.ok(validateFormProfile(bounded).includes(
+    "snPlugins[0].scanner.maxLength must include every configured OCR position"));
+
+  const implicit = profileWithScanner();
+  delete implicit.snPlugins[0].scanner.expectedLength;
+  delete implicit.snPlugins[0].scanner.allowedLengths;
+  delete implicit.snPlugins[0].scanner.applyExpectedLengthTo;
+  delete implicit.snPlugins[0].scanner.applyAllowedLengthsTo;
+  delete implicit.snPlugins[0].scanner.maxLength;
+  implicit.snPlugins[0].scanner.ocrPositionRules = withRuleAt(65);
+  assert.ok(validateFormProfile(implicit).includes(
+    "snPlugins[0].scanner.ocrPositionRules positions must not exceed the default maxLength of 64"));
+});
+
 test("label source scope requires an explicit non-empty label list", () => {
   const profile = profileWithScanner();
   profile.snPlugins[1].scanner.stripLabelsFrom = ["barcode"];
@@ -301,6 +390,7 @@ test("Panel exposes structured role-scanner controls instead of requiring raw JS
     "自动文字识别", "候选选择", "候选来源顺序", "候选约束应用入口", "精确长度应用入口",
     "允许长度（逗号分隔）", "允许长度作用入口", "精确长度可同时保留为旧版 App fallback",
     "标签匹配", "候选字符", "识别并剥离的标签", "剥离标签的入口",
+    "OCR 固定位置规则", "positions 从 1 开始",
     "请先配置至少一个需识别并剥离的标签",
     "拒绝纯数字", "必须同时含字母和数字", "移除空白"
   ]) {

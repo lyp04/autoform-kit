@@ -1,6 +1,6 @@
 # Profile schema 参考
 
-Catalog 当前使用 `schemaVersion: 2`。Profile 是 Panel 发布给 App 的运行描述；表单可见性、字段、结果、照片、扫描和可选流程都应由 profile 决定，而不是由 App 猜测。
+Catalog 当前使用 `schemaVersion: 3`。v3 新增 profile 自有的 `scanner.ocrPositionRules`；未使用该字段的历史 schema v2 catalog 仍可兼容读取。Profile 是 Panel 发布给 App 的运行描述；表单可见性、字段、结果、照片、扫描和可选流程都应由 profile 决定，而不是由 App 猜测。
 
 优先使用 Panel 的结构化编辑器与预览。只有尚无控件的字段才使用「高级 JSON」。本页示例均为虚构数据；真实模板、字段、选项和流程标识只应进入私有 catalog。
 
@@ -8,7 +8,7 @@ Catalog 当前使用 `schemaVersion: 2`。Profile 是 Panel 发布给 App 的运
 
 ```json
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "version": 1,
   "settings": {},
   "profiles": []
@@ -210,6 +210,13 @@ cross-App profile provider 暴露，`color` / `discovery` 不驱动当前主表�
         "candidateCharacterMode": "alphanumeric",
         "applyCandidateRulesTo": ["ocr"],
         "stripLabelsFrom": ["ocr"],
+        "ocrPositionRules": [
+          {
+            "positions": [3, 4],
+            "allowedCharacters": "0123456789",
+            "corrections": { "O": "0" }
+          }
+        ],
         "caseMode": "upper",
         "removeWhitespace": true
       }
@@ -242,10 +249,11 @@ Scanner 对象支持：
 - `labelMatchMode`：`literal` 按 `stripLabels` 字面匹配；`compact_optional_slash` 在 label 内忽略任意空白并允许斜杠缺省，可通用表达印刷标签的紧凑/分隔变体，不在 App 写死某个 label；
 - `candidateCharacterMode`：`identifier` 允许字母、数字及 `._/-`；`alphanumeric` 只允许字母数字；
 - `applyCandidateRulesTo`：非空 source 数组，可含 `ocr`、`barcode`、`entered`，且必须包含 `ocr`。它决定 min/max、字符模式、字母数字组合和排除文本还要应用到哪些入口；`expectedLength` 使用独立的 `applyExpectedLengthTo`，`rejectNumericOnly` 仍应用于三种来源。`entered` 包含首页手输、详情编辑和结果回填，`barcode` 包含首次扫码与相机重扫。配置希望候选约束在所有入口不可绕过时写三项；回放只在 OCR 候选阶段执行这些规则的旧算法时显式只写 `["ocr"]`；
+- `ocrPositionRules`：可选的非空规则数组，仅对 OCR 生效。每条规则以从 1 开始的 `positions` 约束一个或多个固定位置，`allowedCharacters` 是 1..36 个不区分大小写且不重复的字母/数字；可选 `corrections` 只允许把单个、尚未被允许的字母/数字显式映射到允许字符。位置必须为 `1..256`、同一规则内不重复且不能跨规则重叠；最大位置还必须落入每个适用于 OCR 的 `allowedLengths`，否则落入适用于 OCR 的 `expectedLength`，两者都不约束 OCR 时则不得超过显式或默认的 `maxLength`。空规则、未知 key、无效/无效用映射、映射目标不在允许集，或纠错后仍不满足位置格式时均 fail-closed。App 不猜测 `O/0` 等相似字符；真实位置和映射必须来自私有 profile。旧 App 不识别该字段，因此启用依赖它的私有 catalog 前必须通过相应的最低 App 版本门槛；
 - `caseMode`：`upper` 或 `preserve`；`removeWhitespace`：是否移除全部空白；
 - `prompt` 与可选 `promptI18n`：Panel 定义的扫码提示。
 
-`always` 在 scanner 打开约 350ms 后开始本地文字候选，`fallback` 约 1200ms 后才开始；两者文字尝试间隔均为约 650ms。相机仍使用 App 固定的稳定结果复核与安全 zoom，它们不是生产 profile 差异。要回放旧的评分型候选算法，应使用 `candidateMode:"ranked"`，显式列出旧算法实际使用的 candidate sources，并把旧前缀、排除文本、长度、label 匹配、字符模式、source scope、归一化和字符约束逐项迁到私有 role scanner；不得把这些真实值写回公开源码。
+`always` 在 scanner 打开约 350ms 后开始本地文字候选，`fallback` 约 1200ms 后才开始；两者文字尝试间隔均为约 650ms。手动文字识别按钮会启动一个有界的连续采样窗口，在窗口内自动完成稳定结果复核，不要求操作员为同一标签重复点击；超时仍未得到稳定合法候选时会停止并提示。文字候选优先使用可视引导框内的标签，并按中心距离与倾斜程度排序；框内没有合法候选时才回退整帧。相机仍使用 App 固定的稳定结果复核与安全 zoom，它们不是生产 profile 差异。要回放旧的评分型候选算法，应使用 `candidateMode:"ranked"`，显式列出旧算法实际使用的 candidate sources，并把旧前缀、排除文本、长度、label 匹配、字符模式、source scope、归一化和字符约束逐项迁到私有 role scanner；不得把这些真实值写回公开源码。
 
 缺少整个 scanner 的旧 profile 使用已存在的通用默认：大写、移除空白、`ranked`、prefix/general candidate、OCR 不自动启动、相机候选长度 6..64，且手输不额外套用隐式 6..64。旧 profile 通过 `expectedSnLength` 迁移出的 `expectedLength` 在未声明 source scope 时继续覆盖 OCR、barcode 和 entered；旧独立入口要保持“相机校验长度、手输不校验长度”，必须在私有 Panel profile 中显式写 `applyExpectedLengthTo:["ocr","barcode"]`。配置字段一旦存在但类型、范围或交叉约束错误，Android policy 会 fail-closed，不接受候选或录入；Panel 会在更早阶段拒绝发布。这样升级不会把拼错的生产规则静默变成宽松默认。
 
