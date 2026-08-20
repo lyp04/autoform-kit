@@ -33,6 +33,8 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.MeteringPoint;
 import androidx.camera.core.MeteringPointFactory;
 import androidx.camera.core.Preview;
+import androidx.camera.core.UseCaseGroup;
+import androidx.camera.core.ViewPort;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
 import androidx.core.content.ContextCompat;
@@ -77,6 +79,7 @@ public class ScannerActivity extends ComponentActivity {
     private static final long AUTO_ZOOM_STEP_MS = 1900L;
     private static final long MANUAL_TEXT_SESSION_MS = 4200L;
     private static final long MANUAL_TEXT_SAMPLE_INTERVAL_MS = 420L;
+    private static final long CAMERA_VIEWPORT_RETRY_MS = 80L;
     private static final float GUIDE_WIDTH_FRACTION = 0.86f;
     private static final float GUIDE_HEIGHT_FRACTION = 0.30f;
     private static final float GUIDE_TOP_FRACTION = 0.36f;
@@ -95,16 +98,19 @@ public class ScannerActivity extends ComponentActivity {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicBoolean processing = new AtomicBoolean(false);
     private final ExecutorService analyzerExecutor = Executors.newSingleThreadExecutor();
+    private final Object manualSessionLock = new Object();
 
     private ProcessCameraProvider cameraProvider;
     private Camera camera;
     private BarcodeScanner barcodeScanner;
     private TextRecognizer textRecognizer;
     private final AtomicBoolean finished = new AtomicBoolean(false);
+    private boolean cameraBindRetryPosted = false;
     private boolean ignoredNumericScan = false;
     private boolean ignoredWrongLengthScan = false;
     private String ignoredWrongLengthSource = "";
     private final AtomicLong manualTextDeadlineMs = new AtomicLong(0L);
+    private final AtomicLong manualTextGeneration = new AtomicLong(0L);
     // These are analyzer-thread state. The deadline is atomic because the shutter runs on main.
     private boolean manualTextSawCandidate = false;
     private boolean manualTextFailureSeen = false;
@@ -323,6 +329,12 @@ public class ScannerActivity extends ComponentActivity {
     @OptIn(markerClass = ExperimentalGetImage.class)
     private void bindCameraUseCases() {
         if (cameraProvider == null || finished.get()) return;
+        ViewPort viewPort = previewView == null ? null : previewView.getViewPort();
+        if (viewPort == null) {
+            scheduleCameraBindRetry();
+            return;
+        }
+        cameraBindRetryPosted = false;
         Preview preview = new Preview.Builder()
             .setTargetResolution(new Size(1280, 720))
             .build();
@@ -335,16 +347,29 @@ public class ScannerActivity extends ComponentActivity {
         analysis.setAnalyzer(analyzerExecutor, this::analyzeImage);
 
         cameraProvider.unbindAll();
+        UseCaseGroup useCases = new UseCaseGroup.Builder()
+            .setViewPort(viewPort)
+            .addUseCase(preview)
+            .addUseCase(analysis)
+            .build();
         camera = cameraProvider.bindToLifecycle(
             this,
             CameraSelector.DEFAULT_BACK_CAMERA,
-            preview,
-            analysis
+            useCases
         );
         focusCenterSoon();
         Diagnostics.append(this, "MLKit scanner started autoTextMode="
             + scannerPolicy.autoTextMode + " policyValid=" + scannerPolicy.valid
             + " ocrOnly=" + ocrOnly);
+    }
+
+    private void scheduleCameraBindRetry() {
+        if (cameraBindRetryPosted || finished.get() || previewView == null) return;
+        cameraBindRetryPosted = true;
+        previewView.postDelayed(() -> {
+            cameraBindRetryPosted = false;
+            if (!finished.get()) bindCameraUseCases();
+        }, CAMERA_VIEWPORT_RETRY_MS);
     }
 
     @OptIn(markerClass = ExperimentalGetImage.class)
@@ -361,10 +386,9 @@ public class ScannerActivity extends ComponentActivity {
             return;
         }
         int rotation = imageProxy.getImageInfo().getRotationDegrees();
-        int recognitionWidth = orientedImageWidth(
-            imageProxy.getWidth(), imageProxy.getHeight(), rotation);
-        int recognitionHeight = orientedImageHeight(
-            imageProxy.getWidth(), imageProxy.getHeight(), rotation);
+        UprightFrameGeometry frameGeometry = uprightFrameGeometry(
+            imageProxy.getWidth(), imageProxy.getHeight(), rotation,
+            imageProxy.getCropRect());
         InputImage image = InputImage.fromMediaImage(mediaImage, rotation);
         boolean runBarcode = !ocrOnly;
         boolean runText = shouldReadText(now);
@@ -383,8 +407,7 @@ public class ScannerActivity extends ComponentActivity {
         if (runBarcode) {
             barcodeScanner.process(image)
                 .addOnSuccessListener(analyzerExecutor, barcodes -> {
-                    String value = barcodeResult(barcodes,
-                        recognitionWidth, recognitionHeight);
+                    String value = barcodeResult(barcodes, frameGeometry);
                     if (!value.isEmpty()) finishWithResult(value, "MLKIT_BARCODE");
                 })
                 .addOnFailureListener(analyzerExecutor, exc -> Diagnostics.append(this, "MLKit barcode failed: " + concise(exc)))
@@ -392,22 +415,27 @@ public class ScannerActivity extends ComponentActivity {
         }
         if (runText) {
             boolean manualText = manualTextSessionActive(now);
+            long recognitionGeneration = manualTextGeneration.get();
             lastTextAttemptMs = now;
             textRecognizer.process(image)
                 .addOnSuccessListener(analyzerExecutor, text -> {
-                    if (manualText && !manualTextSessionActive(
-                            System.currentTimeMillis())) return;
-                    String sn = textResult(text, recognitionWidth, recognitionHeight);
-                    if (!sn.isEmpty()) {
-                        if (manualText) manualTextSawCandidate = true;
-                        finishWithResult(sn, "MLKIT_TEXT");
+                    synchronized (manualSessionLock) {
+                        if (!textRecognitionCallbackCurrent(manualText,
+                                recognitionGeneration, System.currentTimeMillis())) return;
+                        String sn = textResult(text, frameGeometry);
+                        if (!sn.isEmpty()) {
+                            if (manualText) manualTextSawCandidate = true;
+                            finishWithResult(sn, "MLKIT_TEXT");
+                        }
                     }
                 })
                 .addOnFailureListener(analyzerExecutor, exc -> {
-                    if (manualText && !manualTextSessionActive(
-                            System.currentTimeMillis())) return;
-                    Diagnostics.append(this, "MLKit text failed: " + concise(exc));
-                    if (manualText) manualTextFailureSeen = true;
+                    synchronized (manualSessionLock) {
+                        if (!textRecognitionCallbackCurrent(manualText,
+                                recognitionGeneration, System.currentTimeMillis())) return;
+                        Diagnostics.append(this, "MLKit text failed: " + concise(exc));
+                        if (manualText) manualTextFailureSeen = true;
+                    }
                 })
                 .addOnCompleteListener(analyzerExecutor, done -> finishTask.run());
         }
@@ -429,7 +457,7 @@ public class ScannerActivity extends ComponentActivity {
             elapsed, now - lastTextAttemptMs);
     }
 
-    private String barcodeResult(List<Barcode> barcodes, int imageWidth, int imageHeight) {
+    private String barcodeResult(List<Barcode> barcodes, UprightFrameGeometry frameGeometry) {
         if (barcodes == null || barcodes.isEmpty()) return "";
         String bestValue = "";
         int bestScore = Integer.MIN_VALUE;
@@ -468,7 +496,7 @@ public class ScannerActivity extends ComponentActivity {
                     + barcode.getFormat() + " reason=" + rejection.name());
                 continue;
             }
-            int score = barcodeScore(value, barcode.getBoundingBox(), imageWidth, imageHeight);
+            int score = barcodeScore(value, barcode.getBoundingBox(), frameGeometry);
             if (score > bestScore) {
                 bestScore = score;
                 bestValue = value;
@@ -477,12 +505,12 @@ public class ScannerActivity extends ComponentActivity {
         if (!bestValue.isEmpty()) return bestValue;
         for (Barcode barcode : barcodes) {
             Rect box = barcode.getBoundingBox();
-            if (box != null) maybeZoomForBox(box, imageWidth, imageHeight);
+            if (box != null) maybeZoomForBox(box, frameGeometry);
         }
         return "";
     }
 
-    private int barcodeScore(String value, Rect box, int imageWidth, int imageHeight) {
+    private int barcodeScore(String value, Rect box, UprightFrameGeometry frameGeometry) {
         int score = 0;
         if (!scannerPolicy.requiredLengthsForSource(
                 SnScanRules.SOURCE_BARCODE).isEmpty()
@@ -490,36 +518,43 @@ public class ScannerActivity extends ComponentActivity {
                     SnScanRules.SOURCE_BARCODE, value.length())) score += 1000;
         if (isLikelyIdentifier(value, SnScanRules.SOURCE_BARCODE)) score += 300;
         if (SnScanRules.hasPreferredPrefix(value, scannerPolicy.preferredPrefixes)) score += 120;
-        if (box != null && imageWidth > 0 && imageHeight > 0) {
-            float centerX = box.centerX() / (float) imageWidth - 0.5f;
-            float centerY = box.centerY() / (float) imageHeight - 0.5f;
+        if (validTextGeometry(box, frameGeometry)) {
+            float centerX = frameGeometry.normalizedX(box.centerX()) - 0.5f;
+            float centerY = frameGeometry.normalizedY(box.centerY()) - 0.5f;
             float distance = Math.abs(centerX) + Math.abs(centerY);
             score += Math.max(0, 180 - Math.round(distance * 280));
         }
         return score;
     }
 
-    private String textResult(Text text, int imageWidth, int imageHeight) {
+    private String textResult(Text text, UprightFrameGeometry frameGeometry) {
         if (text == null) return "";
         List<LocatedTextCandidate> located = new ArrayList<>();
+        boolean hasLineGeometry = false;
         for (Text.TextBlock block : text.getTextBlocks()) {
-            for (Text.Line line : block.getLines()) {
+            List<Text.Line> lines = block.getLines();
+            for (int index = 0; index < lines.size(); index++) {
+                Text.Line line = lines.get(index);
+                if (validTextGeometry(line.getBoundingBox(), frameGeometry)) {
+                    hasLineGeometry = true;
+                }
                 addLocatedTextCandidates(located, line.getText(), 12,
                     line.getBoundingBox(), line.getAngle(), true,
-                    imageWidth, imageHeight);
+                    frameGeometry, null);
+                if (index + 1 < lines.size()) {
+                    addAdjacentLineCandidates(located, line, lines.get(index + 1),
+                        frameGeometry);
+                }
             }
-            // Keep support for a label and its value split across adjacent lines. Line candidates
-            // remain preferred because their tighter boxes receive the line geometry bonus.
-            addLocatedTextCandidates(located, block.getText(), 4,
-                block.getBoundingBox(), averageBlockAngle(block), false,
-                imageWidth, imageHeight);
         }
         String best;
-        if (located.isEmpty()) {
+        if (located.isEmpty() && !hasLineGeometry) {
             // Defensive compatibility for recognizer results without block/line geometry.
             List<SnScanRules.Candidate> fallback = new ArrayList<>();
             addTextCandidates(fallback, text.getText(), 0);
             best = SnScanRules.selectBest(fallback, scannerPolicy);
+        } else if (located.isEmpty()) {
+            best = "";
         } else {
             best = selectLocatedTextCandidate(located);
         }
@@ -537,17 +572,35 @@ public class ScannerActivity extends ComponentActivity {
     private void addLocatedTextCandidates(List<LocatedTextCandidate> located, String raw,
                                           int lineBonus, Rect box, float angle,
                                           boolean lineGeometry,
-                                          int imageWidth, int imageHeight) {
+                                          UprightFrameGeometry frameGeometry,
+                                          Boolean guideEligibility) {
         List<SnScanRules.Candidate> added = new ArrayList<>();
         addTextCandidates(added, raw, lineBonus);
         if (added.isEmpty()) return;
-        boolean inGuide = textCandidateInsideGuide(box, imageWidth, imageHeight);
+        boolean inGuide = guideEligibility == null
+            ? textCandidateInsideGuide(box, frameGeometry) : guideEligibility;
         int geometryScore = textCandidateGeometryScore(
-            box, angle, lineGeometry, imageWidth, imageHeight);
+            box, angle, lineGeometry, frameGeometry);
         for (SnScanRules.Candidate candidate : added) {
             located.add(new LocatedTextCandidate(candidate, geometryScore, inGuide,
                 located.size()));
         }
+    }
+
+    private void addAdjacentLineCandidates(List<LocatedTextCandidate> located,
+                                           Text.Line first, Text.Line second,
+                                           UprightFrameGeometry frameGeometry) {
+        if (first == null || second == null) return;
+        Rect firstBox = first.getBoundingBox();
+        Rect secondBox = second.getBoundingBox();
+        if (!adjacentLinesEligible(firstBox, secondBox, frameGeometry)) return;
+        Rect combinedBox = new Rect(firstBox);
+        combinedBox.union(secondBox);
+        String combinedText = safe(first.getText()) + "\n" + safe(second.getText());
+        float combinedAngle = Math.max(
+            absoluteTextAngle(first.getAngle()), absoluteTextAngle(second.getAngle()));
+        addLocatedTextCandidates(located, combinedText, 4, combinedBox, combinedAngle,
+            false, frameGeometry, Boolean.TRUE);
     }
 
     private String selectLocatedTextCandidate(List<LocatedTextCandidate> located) {
@@ -578,30 +631,29 @@ public class ScannerActivity extends ComponentActivity {
         return SnScanRules.selectBest(ranked, scannerPolicy);
     }
 
-    private static float averageBlockAngle(Text.TextBlock block) {
-        if (block == null) return 0f;
-        float total = 0f;
-        int count = 0;
-        for (Text.Line line : block.getLines()) {
-            float angle = line.getAngle();
-            if (Float.isNaN(angle) || Float.isInfinite(angle)) continue;
-            total += absoluteTextAngle(angle);
-            count++;
-        }
-        return count == 0 ? 0f : total / count;
-    }
-
     static boolean textCandidateInsideGuide(Rect box, int imageWidth, int imageHeight) {
-        if (!validTextGeometry(box, imageWidth, imageHeight)) return false;
-        return textCandidateInsideGuide(box.left, box.top, box.right, box.bottom,
-            imageWidth, imageHeight);
+        return textCandidateInsideGuide(box,
+            UprightFrameGeometry.fullFrame(imageWidth, imageHeight));
     }
 
     static boolean textCandidateInsideGuide(float left, float top, float right, float bottom,
                                             int imageWidth, int imageHeight) {
-        if (!validTextGeometry(left, top, right, bottom, imageWidth, imageHeight)) return false;
-        float centerX = (left + right) / (2f * imageWidth);
-        float centerY = (top + bottom) / (2f * imageHeight);
+        return textCandidateInsideGuide(left, top, right, bottom,
+            UprightFrameGeometry.fullFrame(imageWidth, imageHeight));
+    }
+
+    static boolean textCandidateInsideGuide(Rect box,
+                                            UprightFrameGeometry frameGeometry) {
+        if (!validTextGeometry(box, frameGeometry)) return false;
+        return textCandidateInsideGuide(box.left, box.top, box.right, box.bottom,
+            frameGeometry);
+    }
+
+    static boolean textCandidateInsideGuide(float left, float top, float right, float bottom,
+                                            UprightFrameGeometry frameGeometry) {
+        if (!validTextGeometry(left, top, right, bottom, frameGeometry)) return false;
+        float centerX = frameGeometry.normalizedX((left + right) / 2f);
+        float centerY = frameGeometry.normalizedY((top + bottom) / 2f);
         float guideLeft = (1f - GUIDE_WIDTH_FRACTION) / 2f;
         float guideRight = guideLeft + GUIDE_WIDTH_FRACTION;
         float guideBottom = GUIDE_TOP_FRACTION + GUIDE_HEIGHT_FRACTION;
@@ -609,19 +661,71 @@ public class ScannerActivity extends ComponentActivity {
             && centerY >= GUIDE_TOP_FRACTION && centerY <= guideBottom;
     }
 
+    static boolean textCandidateIntersectsGuide(Rect box,
+                                                UprightFrameGeometry frameGeometry) {
+        return box != null && textCandidateIntersectsGuide(
+            box.left, box.top, box.right, box.bottom, frameGeometry);
+    }
+
+    static boolean adjacentLinesEligible(Rect first, Rect second,
+                                         UprightFrameGeometry frameGeometry) {
+        return textCandidateIntersectsGuide(first, frameGeometry)
+            && textCandidateIntersectsGuide(second, frameGeometry);
+    }
+
+    static boolean adjacentLinesEligible(float firstLeft, float firstTop,
+                                         float firstRight, float firstBottom,
+                                         float secondLeft, float secondTop,
+                                         float secondRight, float secondBottom,
+                                         UprightFrameGeometry frameGeometry) {
+        return textCandidateIntersectsGuide(firstLeft, firstTop, firstRight, firstBottom,
+                frameGeometry)
+            && textCandidateIntersectsGuide(secondLeft, secondTop, secondRight, secondBottom,
+                frameGeometry);
+    }
+
+    private static boolean textCandidateIntersectsGuide(float left, float top,
+                                                        float right, float bottom,
+                                                        UprightFrameGeometry frameGeometry) {
+        if (!validTextGeometry(left, top, right, bottom, frameGeometry)) return false;
+        float guideLeft = frameGeometry.cropLeft
+            + frameGeometry.cropWidth * (1f - GUIDE_WIDTH_FRACTION) / 2f;
+        float guideRight = guideLeft + frameGeometry.cropWidth * GUIDE_WIDTH_FRACTION;
+        float guideTop = frameGeometry.cropTop
+            + frameGeometry.cropHeight * GUIDE_TOP_FRACTION;
+        float guideBottom = guideTop + frameGeometry.cropHeight * GUIDE_HEIGHT_FRACTION;
+        return right >= guideLeft && left <= guideRight
+            && bottom >= guideTop && top <= guideBottom;
+    }
+
     static int textCandidateGeometryScore(Rect box, float angle, boolean lineGeometry,
                                           int imageWidth, int imageHeight) {
-        if (!validTextGeometry(box, imageWidth, imageHeight)) return 0;
-        return textCandidateGeometryScore(box.left, box.top, box.right, box.bottom,
-            angle, lineGeometry, imageWidth, imageHeight);
+        return textCandidateGeometryScore(box, angle, lineGeometry,
+            UprightFrameGeometry.fullFrame(imageWidth, imageHeight));
     }
 
     static int textCandidateGeometryScore(float left, float top, float right, float bottom,
                                           float angle, boolean lineGeometry,
                                           int imageWidth, int imageHeight) {
-        if (!validTextGeometry(left, top, right, bottom, imageWidth, imageHeight)) return 0;
-        float centerX = (left + right) / (2f * imageWidth);
-        float centerY = (top + bottom) / (2f * imageHeight);
+        return textCandidateGeometryScore(left, top, right, bottom, angle,
+            lineGeometry, UprightFrameGeometry.fullFrame(imageWidth, imageHeight));
+    }
+
+    private static int textCandidateGeometryScore(Rect box, float angle,
+                                                  boolean lineGeometry,
+                                                  UprightFrameGeometry frameGeometry) {
+        if (!validTextGeometry(box, frameGeometry)) return 0;
+        return textCandidateGeometryScore(box.left, box.top, box.right, box.bottom,
+            angle, lineGeometry, frameGeometry);
+    }
+
+    private static int textCandidateGeometryScore(float left, float top,
+                                                  float right, float bottom,
+                                                  float angle, boolean lineGeometry,
+                                                  UprightFrameGeometry frameGeometry) {
+        if (!validTextGeometry(left, top, right, bottom, frameGeometry)) return 0;
+        float centerX = frameGeometry.normalizedX((left + right) / 2f);
+        float centerY = frameGeometry.normalizedY((top + bottom) / 2f);
         float guideHalfWidth = GUIDE_WIDTH_FRACTION / 2f;
         float guideHalfHeight = GUIDE_HEIGHT_FRACTION / 2f;
         float guideCenterY = GUIDE_TOP_FRACTION + guideHalfHeight;
@@ -629,8 +733,8 @@ public class ScannerActivity extends ComponentActivity {
         float distanceY = Math.abs(centerY - guideCenterY) / guideHalfHeight;
         float normalizedDistance = Math.min(1f, (distanceX + distanceY) / 2f);
         int centerBonus = Math.round((1f - normalizedDistance) * TEXT_CENTER_BONUS);
-        int guideBonus = textCandidateInsideGuide(left, top, right, bottom,
-            imageWidth, imageHeight) ? TEXT_GUIDE_BONUS : 0;
+        int guideBonus = textCandidateInsideGuide(left, top, right, bottom, frameGeometry)
+            ? TEXT_GUIDE_BONUS : 0;
         float boundedAngle = Math.min(45f, absoluteTextAngle(angle));
         int anglePenalty = Math.round(
             boundedAngle / 45f * TEXT_MAX_ANGLE_PENALTY);
@@ -638,14 +742,16 @@ public class ScannerActivity extends ComponentActivity {
             + (lineGeometry ? TEXT_LINE_GEOMETRY_BONUS : 0) - anglePenalty;
     }
 
-    private static boolean validTextGeometry(Rect box, int imageWidth, int imageHeight) {
+    private static boolean validTextGeometry(Rect box,
+                                             UprightFrameGeometry frameGeometry) {
         return box != null && validTextGeometry(box.left, box.top, box.right, box.bottom,
-            imageWidth, imageHeight);
+            frameGeometry);
     }
 
-    private static boolean validTextGeometry(float left, float top, float right, float bottom,
-                                             int imageWidth, int imageHeight) {
-        return imageWidth > 0 && imageHeight > 0
+    private static boolean validTextGeometry(float left, float top,
+                                             float right, float bottom,
+                                             UprightFrameGeometry frameGeometry) {
+        return frameGeometry != null && frameGeometry.valid
             && !Float.isNaN(left) && !Float.isNaN(top)
             && !Float.isNaN(right) && !Float.isNaN(bottom)
             && !Float.isInfinite(left) && !Float.isInfinite(top)
@@ -669,6 +775,49 @@ public class ScannerActivity extends ComponentActivity {
         return rotation == 90 || rotation == 270 ? width : height;
     }
 
+    static UprightFrameGeometry uprightFrameGeometry(int imageWidth, int imageHeight,
+                                                      int rotationDegrees, Rect cropRect) {
+        return cropRect == null
+            ? uprightFrameGeometry(imageWidth, imageHeight, rotationDegrees,
+                0f, 0f, imageWidth, imageHeight)
+            : uprightFrameGeometry(imageWidth, imageHeight, rotationDegrees,
+                cropRect.left, cropRect.top, cropRect.right, cropRect.bottom);
+    }
+
+    static UprightFrameGeometry uprightFrameGeometry(int imageWidth, int imageHeight,
+                                                      int rotationDegrees,
+                                                      float cropLeft, float cropTop,
+                                                      float cropRight, float cropBottom) {
+        if (imageWidth <= 0 || imageHeight <= 0) return UprightFrameGeometry.invalid();
+        float left = Math.max(0f, Math.min(imageWidth, cropLeft));
+        float top = Math.max(0f, Math.min(imageHeight, cropTop));
+        float right = Math.max(0f, Math.min(imageWidth, cropRight));
+        float bottom = Math.max(0f, Math.min(imageHeight, cropBottom));
+        if (right <= left || bottom <= top) {
+            left = 0f;
+            top = 0f;
+            right = imageWidth;
+            bottom = imageHeight;
+        }
+        int rotation = ((rotationDegrees % 360) + 360) % 360;
+        switch (rotation) {
+            case 0:
+                return new UprightFrameGeometry(left, top, right, bottom);
+            case 90:
+                return new UprightFrameGeometry(imageHeight - bottom, left,
+                    imageHeight - top, right);
+            case 180:
+                return new UprightFrameGeometry(imageWidth - right,
+                    imageHeight - bottom, imageWidth - left,
+                    imageHeight - top);
+            case 270:
+                return new UprightFrameGeometry(top, imageWidth - right,
+                    bottom, imageWidth - left);
+            default:
+                return UprightFrameGeometry.invalid();
+        }
+    }
+
     private boolean isLikelyIdentifier(String value, String source) {
         return scannerPolicy.rejectionForSource(value, source)
             == SnScanRules.Rejection.NONE;
@@ -687,9 +836,10 @@ public class ScannerActivity extends ComponentActivity {
         focusCenterSoon();
     }
 
-    private void maybeZoomForBox(Rect box, int imageWidth, int imageHeight) {
-        if (camera == null || zoomed || box == null || imageWidth <= 0 || imageHeight <= 0) return;
-        float imageArea = Math.max(1f, (float) imageWidth * (float) imageHeight);
+    private void maybeZoomForBox(Rect box, UprightFrameGeometry frameGeometry) {
+        if (camera == null || zoomed || !validTextGeometry(box, frameGeometry)) return;
+        float imageArea = Math.max(1f,
+            frameGeometry.cropWidth * frameGeometry.cropHeight);
         float boxArea = Math.max(1f, (float) box.width() * (float) box.height());
         if (boxArea / imageArea < 0.035f) {
             zoomed = true;
@@ -704,26 +854,30 @@ public class ScannerActivity extends ComponentActivity {
         long requestedDeadline = safeDeadline(now, MANUAL_TEXT_SESSION_MS);
         long activeDeadline;
         boolean newSession;
-        while (true) {
-            long current = manualTextDeadlineMs.get();
-            long next = Math.max(current, requestedDeadline);
-            if (manualTextDeadlineMs.compareAndSet(current, next)) {
-                activeDeadline = next;
-                newSession = current <= now;
-                break;
+        long generation = 0L;
+        synchronized (manualSessionLock) {
+            while (true) {
+                long current = manualTextDeadlineMs.get();
+                long next = Math.max(current, requestedDeadline);
+                if (manualTextDeadlineMs.compareAndSet(current, next)) {
+                    activeDeadline = next;
+                    newSession = current <= now;
+                    if (newSession) generation = manualTextGeneration.incrementAndGet();
+                    break;
+                }
             }
         }
-        if (newSession) beginManualTextSession();
+        if (newSession) beginManualTextSession(generation);
         scheduleManualTextTimeout(activeDeadline, now);
         setStatus(readingIdentifierMessage());
         focusCenterSoon();
     }
 
-    private void beginManualTextSession() {
+    private void beginManualTextSession(long generation) {
         try {
             analyzerExecutor.execute(() -> {
-                if (finished.get() || !manualTextSessionActive(
-                        System.currentTimeMillis())) return;
+                if (finished.get() || manualTextGeneration.get() != generation
+                        || !manualTextSessionActive(System.currentTimeMillis())) return;
                 manualTextSawCandidate = false;
                 manualTextFailureSeen = false;
                 resetConfirmationState();
@@ -749,6 +903,23 @@ public class ScannerActivity extends ComponentActivity {
     private boolean manualTextSessionActive(long now) {
         long deadline = manualTextDeadlineMs.get();
         return deadline > 0L && now <= deadline;
+    }
+
+    private boolean textRecognitionCallbackCurrent(boolean manualText,
+                                                   long recognitionGeneration,
+                                                   long now) {
+        return textRecognitionCallbackCurrent(finished.get(), manualText,
+            recognitionGeneration, manualTextGeneration.get(),
+            manualTextDeadlineMs.get(), now);
+    }
+
+    static boolean textRecognitionCallbackCurrent(boolean finished, boolean manualText,
+                                                  long recognitionGeneration,
+                                                  long currentGeneration,
+                                                  long manualDeadline,
+                                                  long now) {
+        if (finished || recognitionGeneration != currentGeneration) return false;
+        return !manualText || (manualDeadline > 0L && now <= manualDeadline);
     }
 
     static boolean manualTextSampleDue(long deadline, long now, long lastAttempt) {
@@ -1163,6 +1334,54 @@ public class ScannerActivity extends ComponentActivity {
         ScanRead(String value, long seenMs) {
             this.value = value;
             this.seenMs = seenMs;
+        }
+    }
+
+    static final class UprightFrameGeometry {
+        final float cropLeft;
+        final float cropTop;
+        final float cropRight;
+        final float cropBottom;
+        final float cropWidth;
+        final float cropHeight;
+        final boolean valid;
+
+        UprightFrameGeometry(float cropLeft, float cropTop,
+                             float cropRight, float cropBottom) {
+            this.cropLeft = cropLeft;
+            this.cropTop = cropTop;
+            this.cropRight = cropRight;
+            this.cropBottom = cropBottom;
+            this.cropWidth = cropRight - cropLeft;
+            this.cropHeight = cropBottom - cropTop;
+            this.valid = cropWidth > 0f && cropHeight > 0f;
+        }
+
+        private UprightFrameGeometry() {
+            cropLeft = 0f;
+            cropTop = 0f;
+            cropRight = 0f;
+            cropBottom = 0f;
+            cropWidth = 0f;
+            cropHeight = 0f;
+            valid = false;
+        }
+
+        static UprightFrameGeometry fullFrame(int width, int height) {
+            return width > 0 && height > 0
+                ? new UprightFrameGeometry(0f, 0f, width, height) : invalid();
+        }
+
+        static UprightFrameGeometry invalid() {
+            return new UprightFrameGeometry();
+        }
+
+        float normalizedX(float x) {
+            return (x - cropLeft) / cropWidth;
+        }
+
+        float normalizedY(float y) {
+            return (y - cropTop) / cropHeight;
         }
     }
 
