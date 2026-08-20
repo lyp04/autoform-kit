@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 
 /**
- * Publish the reviewed code-10 beta successor through the fixed `beta` channel.
+ * Publish the reviewed code-21 beta through the fixed `beta` channel.
  *
  * This is intentionally independent from the stable publisher. It performs every local and
  * remote preflight before its first write, creates a non-latest prerelease draft, verifies the
- * exact uploaded bytes, and only then makes that draft public with make_latest="false".
- * The exact published code-9 beta is first preserved under its immutable candidate tag. The fixed
- * channel tag is released only after that archive is complete, then a separately verified draft is
- * published at the new source. Every partial rotation state is fail-closed and resumable; unrelated
- * tags, Releases, assets, refs, history, and latest are never mutated.
+ * exact uploaded bytes, and only then makes that draft public with make_latest="false". The current
+ * public repository has no fixed beta channel, so this publisher accepts only an absent channel, its
+ * own exact unpublished draft, or its own exact completed Release. Existing stable and archived-beta
+ * Releases, assets, refs, history, branches, pull refs, and latest are never mutated.
  */
 
 import { spawnSync } from "node:child_process";
@@ -29,20 +28,23 @@ const RUNTIME_LOCK = path.join(HERE, "android-runtime-dependencies.lock.json");
 const SOURCE_VERIFIER = path.join(HERE, "verify-apk-third-party-sources.mjs");
 
 const CHANNEL_TAG = "beta";
-const PREVIOUS_CANDIDATE_TAG = "v1.0.8-beta.1";
-const PREVIOUS_VERSION_NAME = "1.0.8-beta.1";
-const PREVIOUS_VERSION_CODE = 9;
-const PREVIOUS_PREDECESSOR_NAME = "1.0.7";
-const PREVIOUS_PREDECESSOR_CODE = 8;
-const CANDIDATE_TAG = "v1.0.8-beta.2";
-const VERSION_NAME = "1.0.8-beta.2";
-const VERSION_CODE = 10;
+const PREVIOUS_CANDIDATE_TAG = "v1.0.16";
+const PREVIOUS_VERSION_NAME = "1.0.16";
+const PREVIOUS_VERSION_CODE = 20;
+const PREVIOUS_PREDECESSOR_NAME = "1.0.15";
+const PREVIOUS_PREDECESSOR_CODE = 19;
+const CANDIDATE_TAG = "v1.0.17-beta.1";
+const VERSION_NAME = "1.0.17-beta.1";
+const VERSION_CODE = 21;
 const PACKAGE_NAME = "com.autoformkit.app";
 const PREVIOUS_RELEASE_TITLE = `autoform-kit ${PREVIOUS_VERSION_NAME}`;
 const RELEASE_TITLE = `autoform-kit ${VERSION_NAME}`;
 const RELEASE_BODY = "Public beta build of the autoform-kit framework. "
   + "No site-specific configuration is included.";
 const RELEASE_BODY_BYTES = Buffer.from(`${RELEASE_BODY}\n`, "utf8");
+const PREVIOUS_RELEASE_BODY = "Panel controls camera, gallery, or file selection for each "
+  + "photo location; includes same-Panel draft upgrades and Panel notification/print controls.";
+const PREVIOUS_RELEASE_BODY_BYTES = Buffer.from(`${PREVIOUS_RELEASE_BODY}\n`, "utf8");
 const APK_NAME = `autoform-kit-${VERSION_NAME}.apk`;
 const PREVIOUS_APK_NAME = `autoform-kit-${PREVIOUS_VERSION_NAME}.apk`;
 const UPDATE_NAME = "update.json";
@@ -57,6 +59,89 @@ const MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const MAX_JSON_BYTES = 64 * 1024 * 1024;
 const SINGLE_WRITER_ENV = "AUTOFORM_BETA_SINGLE_WRITER_WINDOW";
 const SINGLE_WRITER_CONFIRMATION = "EXCLUSIVE_BETA_RELEASE_WRITER_CONFIRMED";
+
+const APK_CONTENT_TYPE = "application/vnd.android.package-archive";
+const JSON_CONTENT_TYPE = "application/json";
+const PRESERVED_RELEASE_SPECS = [
+  ["v1.0.0", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.0.apk", "20adce30767b76a44dbed108160a6a53a13e48a9182f3169e095d796bd931a63", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "1131339a65825c685557eda29b1785ca6d140bed23c99da113a6dc439745d6fa", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.1", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.1.apk", "aa6ae170e51d36f0a3b337670319af935513a9b20614bf5b08914381cf78beda", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "f0a1f0108cce7cff0fe4e804eb9773bf48560eda2de430f5b96e7bb07d4c09ec", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.2", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.2.apk", "7f7882a6ff8135a52ea5ce4a002140d6a795789815cda37cb552e89047d8cc7c", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "1d07437b3d1903d9fcb0516f3629d4727ba9af9dbc735a7b59def21649e81758", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.3", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.3.apk", "3bac2d0762f68d8ecbcef1cdadf9221dc4aa66419a8541ad54134fd865e2af44", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "b04b85f0f95821a9abd8ff89823eb9ef16f25e466fe8f888a7d151f930c2e77b", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.4", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.4.apk", "524e2e3553d80f2e99954279e8935aee62b87dd3d12200db6cf0127362bad750", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "61798acbbdb4853e7f253283b1dd38357ecdbc7dbc09fc95abd043a7916a903f", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.5", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.5.apk", "2584795beeacd722e422a3447a83182f9cf286c45a0eb00e83b56fd0d2127b9f", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "8926601d9409a789be6d277ab105b1de24851645ef7d8e8b28d640f6979b23e3", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.6", "47551320a1f6f612d5151dc742839f095f82a004", HISTORICAL_BODY, false, [
+    ["autoform-kit-1.0.6.apk", "fe629606358003fd74e8fdc40f46a18f2d754007024484f17154e88ae0683363", 68773320, APK_CONTENT_TYPE],
+    [UPDATE_NAME, "7ec97ee1fc92eff6de119cd2f5556aa22598308c3bcd8eeb475382f104a6518e", 336, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.8-beta.1", "8ef5466162731b8e47b67e7194f68dabde313a74", `${RELEASE_BODY}\n`, true, [
+    ["autoform-kit-1.0.8-beta.1.apk", "c60cf352aa7008ed345c3dba8ce161c47f7a8b83cf92015726049332c2aac040", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "ce6b9c0499fca9ddcad2e014a2e93d8fb901656ad751f46ec1e657cb578a2b4c", 3584, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "f28f490126f7cdb6bbe190b3ffc3a2b96788d0c6460b6200ce23513e04ed2379", 330, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.8", "1124b1ace568f5081b992ac9e7bd41cc366cf319", "Panel-driven workflow fixes, stable draft restoration, flexible scanner rules, and direct creation of configured previous steps.\n", false, [
+    ["autoform-kit-1.0.8.apk", "04fedba4564dbc3e0e813bd0bd5a1ee7a8f95201bf03cba2732511b9679cf071", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "1da8207b6ca8fc2e5b1df55103f85b5c8e156fadc2276cccaaffe9785cbf9bb2", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "871d7875221e0fefde024e9243a9da29ae83bdbaccf33fea4f187cb4283bd8ca", 353, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.9", "144566d51f407c8d9d287a5a77bbb2a1f9c07a5c", "Restore Panel-controlled material submission recovery and improve handling of explicitly rejected submissions.\n", false, [
+    ["autoform-kit-1.0.9.apk", "ec2ca35e77d240848642f998a735b4dea692628a7204413cf54a3a7f88d15809", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "85401d6a84269d80c48013329e05ed8a65833d28cb8f41d9a88cf141009f8578", 3558, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "910df113f20f0bade072c67d41b1683e148619477e32b4088371957073606e9c", 335, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.10", "8ffd1d3299b92e4cbdce456fe4d80900bf0fb7f6", "Restore automatic update prompts after Panel startup synchronization. Also allow bounded image re-upload, clear legacy upload-only locks, and keep the active Panel usable while a new pair is staged.\n", false, [
+    ["autoform-kit-1.0.10.apk", "966411e27f04d1e146db24cda70ef07b8aa6aff3b98440e0f711fe8dcb0702bd", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "a9b20ba770857bc7393f5f537ea5a9a18d570a28c480b82122ccaff0e5b8bb1d", 3562, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "173abce53ae9ffae9c3bd61e5b2b612e3411c66384adf26b85ba64ddfe53e470", 425, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.11", "c5a917726ef8aff6c2f8a8e7da8082b2a2ee88d0", "Restores bounded material removal and retry after a parsed inventory rejection, and keeps interrupted final submissions operator-retryable.\n", false, [
+    ["autoform-kit-1.0.11.apk", "c46142ea876f76b7d53efbe79beb253d89642f2fe41f4a58616f3ff66d9d00e9", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "f187290a918f08657973fec711c884de7db116bc622ee819e1c99d03e143a930", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "0a50894a50ae174d0876962413c2f0f74c83cdbec146102607389e657038957d", 366, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.12", "394a460692f2ac8d4005d357beeaaffac87e89ea", "修复新设备连接面板、打印状态与打印确认列表；恢复缺料重试兼容；已配置设备默认隐藏面板连接及诊断日志，连按五次 English 可临时显示。\n", false, [
+    ["autoform-kit-1.0.12.apk", "ff4eaad3e7db6464f7e0d1311b394747233ef84b2788e5951eddbf2adc563df4", 68773320, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "66aea2471097839282f879b0b0ebfe902b0c58d0082251fb558c5addb4c440ca", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "fde220ea25517006d9c025c05565b849c3ed7d59123318c67cdb2a582baa932b", 416, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.13", "c1678fd2b34fc261986deb04541065855105ae58", "Fix Panel synchronization blocked by an obsolete local draft, and add a hidden redacted support report with double-confirmed local-only recovery.\n", false, [
+    ["autoform-kit-1.0.13.apk", "b4a3f2c16f760441697d672d22c46c2e1d2f9134fdcf8e11bf29d4d987e7c337", 68789704, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "8f491023eca69b2abe5cc5c7a08b5961676bbdaa8babe1db1ad7e9be95e51a3b", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "b161b4c9aa7ca6d58fa658bff26a0bdd00ac97d2d34368fed183f2b239f1f2b0", 372, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.14", "2c46d5f9213cde0c5884daaa9d3d25ad5746e072", "Panel-driven independent-entry result presets, persistent draft selection, localized input hints, and safe Panel-upgrade compatibility fixes.\n", false, [
+    ["autoform-kit-1.0.14.apk", "29471dc28fef681e205c2245972e905af86be01d0b087bbe7ab7ea95f4042268", 68789704, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "354cdacf3510e3c635227f82348e095741596c63a9fbc27e46c4d7a5a12f0e52", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "67bddac731460551c01525ee35218a63955d0d5914bfdf9f1998c4c347d22896", 368, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.15", "a41cc696c7a49412a0b5fe374c2c1bb6a1822114", "Keep active uploads running when the screen is locked; normal screens may now follow the device display timeout.\n", false, [
+    ["autoform-kit-1.0.15.apk", "555a5974c33e1207fab7f51417f28984f1791267499047f2e89a9eba5e157586", 68806088, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "73fef0227005996d9332faa128cffc5c671f29f9ed2e15b2232c6c47f4f9e728", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "e860108ef195e6a4cd058a0355704a46cd63d724a469c6dbf1506da84dcf1b1e", 339, JSON_CONTENT_TYPE],
+  ]],
+  ["v1.0.16", "0394dd4233afd69cf704ab7d9e497b63f67ca889", PREVIOUS_RELEASE_BODY_BYTES.toString("utf8"), false, [
+    ["autoform-kit-1.0.16.apk", "fb6272ea47607030854ec93afc95713f39f07ad66df85ddad326a3b2bc31d75d", 68806088, APK_CONTENT_TYPE],
+    [MANIFEST_NAME, "b2568be4d9cf13c23f22b355fc3eb7994db5aa3a78b52111cd3155bdcff40513", 3563, JSON_CONTENT_TYPE],
+    [UPDATE_NAME, "782879c4578e066e30a1770dec74482580ae45d2d1a9357c732224df246e2eda", 375, JSON_CONTENT_TYPE],
+  ]],
+];
 
 let sideEffectStarted = false;
 let remoteBetaKnown = false;
@@ -174,9 +259,9 @@ function parseArguments(argv) {
 function usage() {
   process.stdout.write(`Usage: tools/publish-beta-release.mjs \\\n  --candidate PATH --previous-apk PATH \\\n  --private-wordlist PATH [--private-wordlist PATH ...] \\\n  [--resume-draft RELEASE_ID]\n\n`
   + `Publishes only ${CANDIDATE_TAG} through the fixed ${CHANNEL_TAG} tag as a non-latest `
-  + "public prerelease. An explicit Release ID may resume one exact unpublished draft; "
-  + `the exact ${PREVIOUS_CANDIDATE_TAG} predecessor is archived before the fixed channel `
-  + "ref is rotated. Exact completed and partial checkpoints are safe to re-run.\n");
+  + "public prerelease. An explicit Release ID may resume one exact unpublished draft. "
+  + `The existing fixed channel must be absent; ${PREVIOUS_CANDIDATE_TAG} is verified as `
+  + "the exact signed predecessor and all existing public history is preserved.\n");
 }
 
 function requiredString(value, maximum = 4096) {
@@ -709,106 +794,136 @@ function remoteTagCommit(state, tag) {
   return peeled?.oid || direct?.oid || "";
 }
 
-function assertExactPublicRefEnvelope(state, sourceCommit, {
-  betaRefExpected = false,
-  previousArchiveRefExpected = false,
-} = {}) {
+function preservedReleaseProjection(release) {
+  return canonical({
+    assets: release.assets.map((asset) => ({
+      contentType: asset.contentType,
+      digest: asset.digest,
+      label: asset.label,
+      name: asset.name,
+      size: asset.size,
+    })).sort((left, right) => left.name.localeCompare(right.name)),
+    body: release.body,
+    draft: release.draft,
+    immutable: release.immutable,
+    name: release.name,
+    prerelease: release.prerelease,
+    tagName: release.tagName,
+    targetCommitish: release.targetCommitish,
+  });
+}
+
+function preservedReleaseSpecProjection(spec) {
+  const [tagName, targetCommitish, body, prerelease, assets] = spec;
+  return canonical({
+    assets: assets.map(([name, sha256, size, contentType]) => ({
+      contentType,
+      digest: `sha256:${sha256}`,
+      label: "",
+      name,
+      size,
+    })).sort((left, right) => left.name.localeCompare(right.name)),
+    body,
+    draft: false,
+    immutable: false,
+    name: `autoform-kit ${tagName.slice(1)}`,
+    prerelease,
+    tagName,
+    targetCommitish,
+  });
+}
+
+function assertExactPublicRefEnvelope(state, sourceCommit, { betaRefExpected = false } = {}) {
   const defaultBranch = state.branches.find(
     (branch) => branch.name === state.repository.defaultBranch,
   );
   const head = state.remoteRefs.refs.find((entry) => entry.ref === "HEAD");
-  if (state.branches.length !== 1 || !defaultBranch || defaultBranch.commitSha !== sourceCommit
+  if (!defaultBranch || defaultBranch.commitSha !== sourceCommit
       || state.remoteRefs.symbolicHead !== `refs/heads/${state.repository.defaultBranch}`
       || head?.oid !== sourceCommit) fail("default branch is not the candidate source");
 
-  const expectedTags = new Set(state.tags.map((tag) => tag.name));
-  if (betaRefExpected !== expectedTags.has(CHANNEL_TAG)) {
+  const branchRefs = new Map(state.branches.map(
+    (branch) => [`refs/heads/${branch.name}`, branch.commitSha],
+  ));
+  const tagRefs = new Map(state.tags.map((tag) => [`refs/tags/${tag.name}`, tag.commitSha]));
+  if (branchRefs.size !== state.branches.length || tagRefs.size !== state.tags.length) fail();
+  if (betaRefExpected !== tagRefs.has(`refs/tags/${CHANNEL_TAG}`)) {
     fail("beta ref presence is not exact");
   }
-  if (previousArchiveRefExpected !== expectedTags.has(PREVIOUS_CANDIDATE_TAG)) {
-    fail("previous beta archive ref presence is not exact");
+
+  const seenBranches = new Set();
+  const seenTags = new Set();
+  for (const entry of state.remoteRefs.refs) {
+    if (entry.ref === "HEAD") continue;
+    if (branchRefs.has(entry.ref)) {
+      if (entry.oid !== branchRefs.get(entry.ref)) fail("branch API and transport ref disagree");
+      seenBranches.add(entry.ref);
+      continue;
+    }
+    const directTag = entry.ref.endsWith("^{}") ? entry.ref.slice(0, -3) : entry.ref;
+    if (tagRefs.has(directTag)) {
+      if (entry.ref.endsWith("^{}") && entry.oid !== tagRefs.get(directTag)) {
+        fail("peeled tag and tag API disagree");
+      }
+      seenTags.add(directTag);
+      continue;
+    }
+    if (/^refs\/pull\/[1-9][0-9]*\/(?:head|merge)$/u.test(entry.ref)) continue;
+    fail("unexpected branch, tag, or remote ref exists");
   }
-  const expectedRefs = new Set([
-    "HEAD",
-    `refs/heads/${state.repository.defaultBranch}`,
-    ...[...expectedTags].map((tag) => `refs/tags/${tag}`),
-  ]);
-  if (state.remoteRefs.refs.length !== expectedRefs.size
-      || state.remoteRefs.refs.some((entry) => !expectedRefs.has(entry.ref))) {
-    fail("unexpected branch, tag, or pull ref exists");
+  if (seenBranches.size !== branchRefs.size || seenTags.size !== tagRefs.size) {
+    fail("branch or tag transport ref is missing");
   }
-  const branchRef = state.remoteRefs.refs.find(
-    (entry) => entry.ref === `refs/heads/${state.repository.defaultBranch}`,
-  );
-  if (branchRef?.oid !== sourceCommit) fail("default branch transport ref changed");
-  for (const tag of state.tags) {
-    const direct = state.remoteRefs.refs.find((entry) => entry.ref === `refs/tags/${tag.name}`);
-    if (!direct || direct.oid !== tag.commitSha) fail("tag API and transport ref disagree");
+  for (const [tagRef, commitSha] of tagRefs) {
+    const direct = state.remoteRefs.refs.find((entry) => entry.ref === tagRef);
+    if (!direct || remoteTagCommit(state, tagRef.slice("refs/tags/".length)) !== commitSha) {
+      fail("tag API and transport ref disagree");
+    }
   }
 }
 
 function assertHistoryAndLatestState(state, sourceCommit, options = {}) {
   assertExactPublicRefEnvelope(state, sourceCommit, options);
-
-  let historicalCommit = "";
-
-  for (const tag of HISTORICAL_TAGS) {
-    const apiTag = state.tags.find((entry) => entry.name === tag);
-    const release = state.releases.find((entry) => entry.tagName === tag);
-    const version = tag.slice(1);
-    const expectedAssets = [`autoform-kit-${version}.apk`, UPDATE_NAME].sort();
-    if (!apiTag || remoteTagCommit(state, tag) !== apiTag.commitSha
-        || !release || release.targetCommitish !== apiTag.commitSha
-        || release.name !== `autoform-kit ${version}` || release.draft !== false
-        || release.prerelease !== false || release.body !== HISTORICAL_BODY
-        || canonicalJson(release.assets.map((asset) => asset.name).sort())
-          !== canonicalJson(expectedAssets)) fail("sanitized historical Release semantics changed");
-    if (!historicalCommit) historicalCommit = apiTag.commitSha;
-    if (historicalCommit !== apiTag.commitSha) {
-      fail("sanitized historical tags do not share one reviewed commit");
-    }
-  }
-  if (run("git", ["merge-base", "--is-ancestor", historicalCommit, sourceCommit],
-    { allowFailure: true }).status !== 0) {
-    fail("sanitized historical commit is not an ancestor of the candidate source");
+  const expected = PRESERVED_RELEASE_SPECS.map(preservedReleaseSpecProjection)
+    .sort((left, right) => left.tagName.localeCompare(right.tagName));
+  const observed = state.releases.filter((release) => release.tagName !== CHANNEL_TAG)
+    .map(preservedReleaseProjection)
+    .sort((left, right) => left.tagName.localeCompare(right.tagName));
+  if (canonicalJson(observed) !== canonicalJson(expected)) {
+    fail("preserved public Release allowlist changed");
   }
 
-  const nonHistory = state.releases.filter(
-    (release) => !HISTORICAL_TAGS.includes(release.tagName)
-      && release.tagName !== CHANNEL_TAG
-      && release.tagName !== PREVIOUS_CANDIDATE_TAG,
-  );
-  if (state.latest.kind === "absent") {
-    if (nonHistory.length !== 0) fail("unexpected non-historical Release exists without latest");
-  } else {
-    const historicalLatest = HISTORICAL_TAGS.includes(state.latest.release.tagName)
-      ? state.releases.find((release) => release.tagName === state.latest.release.tagName) : null;
-    if (historicalLatest) {
-      if (nonHistory.length !== 0
-          || canonicalJson(historicalLatest) !== canonicalJson(state.latest.release)) {
-        fail("existing latest is not one exact validated historical Release");
-      }
-    } else {
-      const stableTag = nonHistory.length === 1
-        ? state.tags.find((tag) => tag.name === nonHistory[0].tagName) : null;
-      if (nonHistory.length !== 1 || !stableTag
-          || canonicalJson(nonHistory[0]) !== canonicalJson(state.latest.release)
-          || nonHistory[0].draft !== false || nonHistory[0].prerelease !== false
-          || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:\+[0-9A-Za-z.-]+)?$/u.test(nonHistory[0].tagName)
-          || nonHistory[0].targetCommitish !== stableTag.commitSha
-          || remoteTagCommit(state, nonHistory[0].tagName) !== stableTag.commitSha) {
-        fail("existing latest is not one exact stable Release");
-      }
+  const expectedTags = new Map(expected.map(
+    (release) => [release.tagName, release.targetCommitish],
+  ));
+  for (const [tagName, commitSha] of expectedTags) {
+    const apiTag = state.tags.find((tag) => tag.name === tagName);
+    if (!apiTag || apiTag.commitSha !== commitSha
+        || remoteTagCommit(state, tagName) !== commitSha) {
+      fail("preserved public tag allowlist changed");
     }
   }
   const allowedTags = new Set([
-    ...HISTORICAL_TAGS,
-    ...nonHistory.map((release) => release.tagName),
+    ...expectedTags.keys(),
     ...(options.betaRefExpected ? [CHANNEL_TAG] : []),
-    ...(options.previousArchiveRefExpected ? [PREVIOUS_CANDIDATE_TAG] : []),
   ]);
-  if (state.tags.some((tag) => !allowedTags.has(tag.name))
-      || state.tags.length !== allowedTags.size) fail("unexpected public tag exists");
+  if (state.tags.length !== allowedTags.size
+      || state.tags.some((tag) => !allowedTags.has(tag.name))) {
+    fail("unexpected public tag exists");
+  }
+
+  const latest = state.releases.find((release) => release.tagName === PREVIOUS_CANDIDATE_TAG);
+  if (!latest || state.latest.kind !== "present"
+      || canonicalJson(latest) !== canonicalJson(state.latest.release)) {
+    fail(`${PREVIOUS_CANDIDATE_TAG} is not the exact stable latest Release`);
+  }
+  const historicalCommit = expectedTags.get(HISTORICAL_TAGS[0]);
+  for (const ancestor of [historicalCommit, expectedTags.get(PREVIOUS_CANDIDATE_TAG)]) {
+    if (!ancestor || run("git", ["merge-base", "--is-ancestor", ancestor, sourceCommit],
+      { allowFailure: true }).status !== 0) {
+      fail("preserved release history is not an ancestor of the candidate source");
+    }
+  }
   return { historicalCommit };
 }
 
@@ -817,8 +932,17 @@ function captureReachableObjectClosure(state, sourceCommit, wordlists) {
     sourceCommit,
     ...state.branches.map((branch) => branch.commitSha),
     ...state.tags.map((tag) => tag.commitSha),
+    ...state.remoteRefs.refs.map((entry) => entry.oid),
   ])].sort();
   if (roots.length === 0) fail();
+  for (const entry of state.remoteRefs.refs) {
+    if (run("git", ["cat-file", "-e", `${entry.oid}^{object}`],
+      { allowFailure: true }).status === 0) continue;
+    let fetchRef = entry.ref;
+    if (fetchRef === "HEAD") fetchRef = state.remoteRefs.symbolicHead;
+    if (fetchRef.endsWith("^{}")) fetchRef = fetchRef.slice(0, -3);
+    run("git", ["fetch", "--no-tags", "--quiet", "origin", fetchRef]);
+  }
   for (const root of roots) run("git", ["cat-file", "-e", `${root}^{object}`]);
   const objectLines = run("git", ["rev-list", "--objects", ...roots])
     .stdout.split("\n").filter(Boolean);
@@ -905,18 +1029,14 @@ function stateWithoutBetaLine(state) {
   return canonical({
     branches: state.branches,
     latest: state.latest,
-    releases: state.releases.filter((release) => release.tagName !== CHANNEL_TAG
-      && release.tagName !== PREVIOUS_CANDIDATE_TAG),
+    releases: state.releases.filter((release) => release.tagName !== CHANNEL_TAG),
     remoteRefs: {
       refs: state.remoteRefs.refs.filter((entry) => entry.ref !== `refs/tags/${CHANNEL_TAG}`
-        && entry.ref !== `refs/tags/${CHANNEL_TAG}^{}`
-        && entry.ref !== `refs/tags/${PREVIOUS_CANDIDATE_TAG}`
-        && entry.ref !== `refs/tags/${PREVIOUS_CANDIDATE_TAG}^{}`),
+        && entry.ref !== `refs/tags/${CHANNEL_TAG}^{}`),
       symbolicHead: state.remoteRefs.symbolicHead,
     },
     repository: state.repository,
-    tags: state.tags.filter((tag) => tag.name !== CHANNEL_TAG
-      && tag.name !== PREVIOUS_CANDIDATE_TAG),
+    tags: state.tags.filter((tag) => tag.name !== CHANNEL_TAG),
   });
 }
 
@@ -926,7 +1046,7 @@ function assertPreserved(before, after) {
   }
 }
 
-function previousBetaExpectedAssets() {
+function previousStableExpectedAssets() {
   return new Set([PREVIOUS_APK_NAME, UPDATE_NAME, MANIFEST_NAME]);
 }
 
@@ -946,14 +1066,14 @@ function assertPreviousPublicAudit(value, apkSha256, updateSha256, notesSha256) 
       || !sha256Value(value.apk.reportSha256)
       || !sha256Value(value.apk.zipEntryManifestSha256)
       || !exactKeys(value.releaseMetadata, ["notes", "update"])) {
-    fail("previous beta public audit shape mismatch");
+    fail("previous stable public audit shape mismatch");
   }
   const expectedMetadata = { notes: notesSha256, update: updateSha256 };
   for (const [name, inputSha256] of Object.entries(expectedMetadata)) {
     const binding = value.releaseMetadata[name];
     if (!exactKeys(binding, ["inputSha256", "reportSha256"])
         || binding.inputSha256 !== inputSha256 || !sha256Value(binding.reportSha256)) {
-      fail("previous beta public audit binding mismatch");
+      fail("previous stable public audit binding mismatch");
     }
   }
   const provenance = value.thirdPartyProvenance;
@@ -972,7 +1092,7 @@ function assertPreviousPublicAudit(value, apkSha256, updateSha256, notesSha256) 
       || !sha256Value(provenance.runtimeLockSha256)
       || !sha256Value(provenance.sourceVerifierSha256)
       || !sha256Value(provenance.sourceReportSha256)) {
-    fail("previous beta provenance shape mismatch");
+    fail("previous stable provenance shape mismatch");
   }
   for (const key of ["apkMatchedDexStringCount", "compiledOutputCount",
     "declaredDexStringCount", "dexSourceArtifactCount", "dexSourceEntryCount",
@@ -984,25 +1104,25 @@ function assertPreviousPublicAudit(value, apkSha256, updateSha256, notesSha256) 
       || provenance.declaredDexStringCount !== provenance.sourceMatchedDexStringCount
       || provenance.declaredDexStringCount !== provenance.apkMatchedDexStringCount
       || provenance.mergedSourceCount !== 1) {
-    fail("previous beta provenance binding mismatch");
+    fail("previous stable provenance binding mismatch");
   }
 }
 
-function assertPreviousBetaEnvelope(release, releaseTag) {
-  const expectedAssets = previousBetaExpectedAssets();
-  if (!release || release.tagName !== releaseTag
+function assertPreviousStableEnvelope(release) {
+  const expectedAssets = previousStableExpectedAssets();
+  if (!release || release.tagName !== PREVIOUS_CANDIDATE_TAG
       || !oidValue(release.targetCommitish)
       || release.name !== PREVIOUS_RELEASE_TITLE
-      || release.body !== RELEASE_BODY_BYTES.toString("utf8")
-      || release.draft !== false || release.prerelease !== true
+      || release.body !== PREVIOUS_RELEASE_BODY_BYTES.toString("utf8")
+      || release.draft !== false || release.prerelease !== false
       || release.immutable !== false || release.assets.length !== expectedAssets.size
       || release.assets.some((asset) => !expectedAssets.has(asset.name))) {
-    fail("previous beta Release envelope mismatch");
+    fail("previous stable Release envelope mismatch");
   }
   return release;
 }
 
-function downloadPreviousBetaAssets(slug, release, wordlists, aapt, apksigner,
+function downloadPreviousStableAssets(slug, release, wordlists, aapt, apksigner,
   expectedPrevious) {
   const downloaded = new Map();
   for (const asset of release.assets) {
@@ -1010,9 +1130,9 @@ function downloadPreviousBetaAssets(slug, release, wordlists, aapt, apksigner,
       "-H", "Accept: application/octet-stream"], { binary: true });
     if (!Buffer.isBuffer(result.stdout) || result.stdout.length !== asset.size
         || digest(result.stdout) !== asset.digest.slice("sha256:".length)) {
-      fail("downloaded previous beta asset mismatch");
+      fail("downloaded previous stable asset mismatch");
     }
-    const input = stableWriteAudit(`previous-${asset.name}`, result.stdout);
+    const input = stableWriteAudit(`previous-stable-${asset.name}`, result.stdout);
     runScanner(asset.name === PREVIOUS_APK_NAME ? "apk" : "file", input.absolute, wordlists);
     downloaded.set(asset.name, input);
   }
@@ -1027,17 +1147,17 @@ function downloadPreviousBetaAssets(slug, release, wordlists, aapt, apksigner,
   };
   if (!apk || apk.sha256 !== expectedPrevious.sha256
       || canonicalJson(apkIdentity(apk, aapt, apksigner)) !== canonicalJson(expectedIdentity)) {
-    fail("previous beta APK identity mismatch");
+    fail("previous stable APK identity mismatch");
   }
   if (!exactKeys(update.value,
     ["apkAsset", "notes", "packageName", "sha256", "versionCode", "versionName"])
       || update.value.apkAsset !== PREVIOUS_APK_NAME
-      || update.value.notes !== RELEASE_BODY
+      || update.value.notes !== PREVIOUS_RELEASE_BODY
       || update.value.packageName !== PACKAGE_NAME
       || update.value.sha256 !== apk.sha256
       || update.value.versionCode !== PREVIOUS_VERSION_CODE
       || update.value.versionName !== PREVIOUS_VERSION_NAME) {
-    fail("previous beta update manifest mismatch");
+    fail("previous stable update manifest mismatch");
   }
   const value = manifest.value;
   if (!exactKeys(value, ["app", "artifacts", "previousApk", "publicAudit", "schemaVersion",
@@ -1055,45 +1175,46 @@ function downloadPreviousBetaAssets(slug, release, wordlists, aapt, apksigner,
       || value.previousApk.signerSha256 !== expectedIdentity.signerSha256
       || !sha256Value(value.previousApk.sha256)
       || !exactKeys(value.artifacts, ["apk", "notes", "update"])) {
-    fail("previous beta candidate manifest mismatch");
+    fail("previous stable candidate manifest mismatch");
   }
   const expectedArtifacts = {
     apk: [PREVIOUS_APK_NAME, apk.sha256],
-    notes: [NOTES_NAME, digest(RELEASE_BODY_BYTES)],
+    notes: [NOTES_NAME, digest(PREVIOUS_RELEASE_BODY_BYTES)],
     update: [UPDATE_NAME, update.sha256],
   };
   for (const [key, [filename, sha256]] of Object.entries(expectedArtifacts)) {
     if (!exactKeys(value.artifacts[key], ["file", "sha256"])
         || value.artifacts[key].file !== filename || value.artifacts[key].sha256 !== sha256) {
-      fail("previous beta candidate artifact mismatch");
+      fail("previous stable candidate artifact mismatch");
     }
   }
   assertPreviousPublicAudit(
-    value.publicAudit, apk.sha256, update.sha256, digest(RELEASE_BODY_BYTES),
+    value.publicAudit, apk.sha256, update.sha256, digest(PREVIOUS_RELEASE_BODY_BYTES),
   );
   return { apk, manifest, update, sourceCommit: value.source.commit };
 }
 
-function verifyPreviousBeta(slug, state, candidate, previousApk, releaseTag, wordlists,
-  aapt, apksigner) {
-  const releases = state.releases.filter((release) => release.tagName === releaseTag);
-  if (releases.length !== 1) fail("previous beta Release is not unique");
-  const listed = assertPreviousBetaEnvelope(releases[0], releaseTag);
-  assertExactTag(slug, releaseTag, listed.targetCommitish, state);
+function verifyPreviousStable(slug, state, candidate, previousApk, wordlists, aapt, apksigner) {
+  const releases = state.releases.filter(
+    (release) => release.tagName === PREVIOUS_CANDIDATE_TAG,
+  );
+  if (releases.length !== 1) fail("previous stable Release is not unique");
+  const listed = assertPreviousStableEnvelope(releases[0]);
+  assertExactTag(slug, PREVIOUS_CANDIDATE_TAG, listed.targetCommitish, state);
   const direct = readBetaReleaseById(slug, listed.id);
-  const tagged = readReleaseByTag(slug, releaseTag);
+  const tagged = readReleaseByTag(slug, PREVIOUS_CANDIDATE_TAG);
   if (canonicalJson(listed) !== canonicalJson(direct)
       || canonicalJson(direct) !== canonicalJson(tagged)) {
-    fail("previous beta Release reads disagree");
+    fail("previous stable Release reads disagree");
   }
-  const downloaded = downloadPreviousBetaAssets(
+  const downloaded = downloadPreviousStableAssets(
     slug, listed, wordlists, aapt, apksigner, candidate.value.previousApk,
   );
   if (downloaded.apk.sha256 !== previousApk.sha256
       || downloaded.sourceCommit !== listed.targetCommitish
       || run("git", ["merge-base", "--is-ancestor", downloaded.sourceCommit,
         candidate.value.source.commit], { allowFailure: true }).status !== 0) {
-    fail("previous beta is not the exact candidate predecessor");
+    fail("previous stable is not the exact candidate predecessor");
   }
   return { release: listed, ...downloaded };
 }
@@ -1192,72 +1313,37 @@ function verifyRemoteBeta(slug, state, candidate, expectedDraft, expectedRelease
   return release;
 }
 
-function classifyBetaRotationState(state, candidate, resumeDraftId) {
+function classifyBetaState(state, candidate, resumeDraftId) {
   const channelReleases = state.releases.filter((release) => release.tagName === CHANNEL_TAG);
-  const archiveReleases = state.releases.filter(
-    (release) => release.tagName === PREVIOUS_CANDIDATE_TAG,
-  );
-  if (channelReleases.length > 1 || archiveReleases.length > 1) {
-    fail("beta rotation Release identity is ambiguous");
-  }
+  if (channelReleases.length > 1) fail("beta Release identity is ambiguous");
   const channelRelease = channelReleases[0] || null;
-  const archiveRelease = archiveReleases[0] || null;
   const betaCommit = remoteTagCommit(state, CHANNEL_TAG);
-  const archiveCommit = remoteTagCommit(state, PREVIOUS_CANDIDATE_TAG);
   const betaTagPresent = betaCommit !== "";
-  const archiveTagPresent = archiveCommit !== "";
   let phase = "";
-  let previousReleaseTag = "";
 
-  if (channelRelease?.name === PREVIOUS_RELEASE_TITLE && !archiveRelease
-      && channelRelease.draft === false && channelRelease.prerelease === true
-      && betaTagPresent && betaCommit === channelRelease.targetCommitish) {
-    if (archiveTagPresent && archiveCommit !== channelRelease.targetCommitish) {
-      fail("previous beta archive ref targets the wrong commit");
-    }
-    phase = archiveTagPresent ? "archive_ref_staged" : "initial";
-    previousReleaseTag = CHANNEL_TAG;
-  } else if (!channelRelease && archiveRelease
-      && archiveRelease.name === PREVIOUS_RELEASE_TITLE
-      && archiveRelease.draft === false && archiveRelease.prerelease === true
-      && archiveTagPresent && archiveCommit === archiveRelease.targetCommitish) {
-    previousReleaseTag = PREVIOUS_CANDIDATE_TAG;
-    if (betaTagPresent) {
-      if (betaCommit !== archiveRelease.targetCommitish) {
-        fail("fixed beta ref changed while archiving its predecessor");
-      }
-      phase = "archive_release_staged";
-    } else {
-      phase = "archived";
-    }
-  } else if (channelRelease && archiveRelease
-      && archiveRelease.name === PREVIOUS_RELEASE_TITLE
-      && archiveRelease.draft === false && archiveRelease.prerelease === true
-      && archiveTagPresent && archiveCommit === archiveRelease.targetCommitish
+  if (!channelRelease && !betaTagPresent) {
+    phase = "initial";
+  } else if (channelRelease
       && channelRelease.name === RELEASE_TITLE
       && channelRelease.targetCommitish === candidate.value.source.commit
       && channelRelease.prerelease === true) {
-    previousReleaseTag = PREVIOUS_CANDIDATE_TAG;
     if (channelRelease.draft === true && !betaTagPresent) phase = "draft";
     else if (channelRelease.draft === false && betaTagPresent
         && betaCommit === candidate.value.source.commit) phase = "complete";
   }
 
-  if (!phase) fail("public beta state is not a recognized rotation checkpoint");
+  if (!phase) fail("public beta state is not a recognized fresh-channel checkpoint");
   if (resumeDraftId !== undefined) {
     if (!["draft", "complete"].includes(phase) || channelRelease.id !== resumeDraftId) {
-      fail("resume draft does not match the exact beta rotation checkpoint");
+      fail("resume draft does not match the exact beta checkpoint");
     }
   } else if (phase === "draft") {
-    fail(`an exact beta successor draft exists; resume with --resume-draft ${channelRelease.id}`);
+    fail(`an exact beta draft exists; resume with --resume-draft ${channelRelease.id}`);
   }
   return {
-    archiveRefExpected: archiveTagPresent,
     betaRefExpected: betaTagPresent,
-    candidateRelease: channelRelease?.name === RELEASE_TITLE ? channelRelease : null,
+    candidateRelease: channelRelease,
     phase,
-    previousRelease: previousReleaseTag === CHANNEL_TAG ? channelRelease : archiveRelease,
-    previousReleaseTag,
   };
 }
 
@@ -1270,20 +1356,12 @@ function preflight(candidate, previousApk, wordlists, slug, aapt, apksigner,
   runCandidateAudits(freshCandidate, wordlists);
   assertCandidateInputsStable(candidate, previousApk, wordlists);
   const state = capturePublicState(slug, wordlists);
-  const rotation = classifyBetaRotationState(state, candidate, resumeDraftId);
+  const rotation = classifyBetaState(state, candidate, resumeDraftId);
   assertHistoryAndLatestState(state, candidate.value.source.commit, {
     betaRefExpected: rotation.betaRefExpected,
-    previousArchiveRefExpected: rotation.archiveRefExpected,
   });
-  verifyPreviousBeta(slug, state, candidate, previousApk,
-    rotation.previousReleaseTag, wordlists, aapt, apksigner);
-  if (rotation.phase === "archive_ref_staged") {
-    assertExactTag(slug, PREVIOUS_CANDIDATE_TAG,
-      rotation.previousRelease.targetCommitish, state);
-  }
-  if (rotation.phase === "archive_release_staged") {
-    assertExactTag(slug, CHANNEL_TAG, rotation.previousRelease.targetCommitish, state);
-  }
+  if (rotation.phase === "initial") assertBetaAbsent(slug, state);
+  verifyPreviousStable(slug, state, candidate, previousApk, wordlists, aapt, apksigner);
   if (["draft", "complete"].includes(rotation.phase)) {
     verifyRemoteBeta(
       slug, state, candidate, rotation.phase === "draft",
@@ -1310,21 +1388,21 @@ function githubJsonWrite(args, value) {
   }
 }
 
-function assertRotationCheckpoint(evidence, expectedPhase, preservedState, closure, latest) {
+function assertPublicationCheckpoint(evidence, expectedPhase, preservedState, closure, latest) {
   if (evidence.rotation?.phase !== expectedPhase) {
-    fail(`beta rotation did not reach ${expectedPhase}`);
+    fail(`beta publication did not reach ${expectedPhase}`);
   }
   assertPreserved(preservedState, evidence.state);
   if (canonicalJson(evidence.closure) !== canonicalJson(closure)
       || canonicalJson(evidence.state.latest) !== canonicalJson(latest)) {
-    fail("beta rotation changed source closure or latest");
+    fail("beta publication changed source closure or latest");
   }
 }
 
 function exactDraftId(state) {
   const drafts = state.releases.filter((release) => release.tagName === CHANNEL_TAG
     && release.name === RELEASE_TITLE && release.draft === true && release.prerelease === true);
-  if (drafts.length !== 1) fail("created beta successor draft is not unique");
+  if (drafts.length !== 1) fail("created beta draft is not unique");
   return drafts[0].id;
 }
 
@@ -1371,73 +1449,16 @@ function main() {
   let phase = checkpoint.rotation.phase;
 
   if (phase === "complete") {
-    info("the exact beta.2 successor is already published; verified without remote writes");
+    info("the exact beta.1 Release is already published; verified without remote writes");
     fs.rmSync(auditDirectory, { recursive: true, force: false });
     auditDirectory = "";
     return;
   }
 
-  if (phase === "initial") {
-    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
-    sideEffectStarted = true;
-    info(`creating immutable predecessor archive ref ${PREVIOUS_CANDIDATE_TAG}`);
-    githubJsonWrite([`repos/${slug}/git/refs`, "--method", "POST"], {
-      ref: `refs/tags/${PREVIOUS_CANDIDATE_TAG}`,
-      sha: previous.targetCommitish,
-    });
-    checkpoint = preflight(
-      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
-    );
-    assertRotationCheckpoint(checkpoint, "archive_ref_staged",
-      preservedState, baselineClosure, baselineLatest);
-    phase = checkpoint.rotation.phase;
-  }
-
-  if (phase === "archive_ref_staged") {
-    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
-    sideEffectStarted = true;
-    info(`binding the predecessor Release to ${PREVIOUS_CANDIDATE_TAG}`);
-    const patched = releaseProjection(githubJsonWrite([
-      `repos/${slug}/releases/${previous.id}`, "--method", "PATCH",
-    ], {
-      body: RELEASE_BODY_BYTES.toString("utf8"),
-      draft: false,
-      make_latest: "false",
-      name: PREVIOUS_RELEASE_TITLE,
-      prerelease: true,
-      tag_name: PREVIOUS_CANDIDATE_TAG,
-      target_commitish: previous.targetCommitish,
-    }));
-    if (patched.id !== previous.id || patched.tagName !== PREVIOUS_CANDIDATE_TAG) {
-      fail("previous beta archive response changed Release identity");
-    }
-    checkpoint = preflight(
-      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
-    );
-    assertRotationCheckpoint(checkpoint, "archive_release_staged",
-      preservedState, baselineClosure, baselineLatest);
-    phase = checkpoint.rotation.phase;
-  }
-
-  if (phase === "archive_release_staged") {
-    const previous = classifyBetaRotationState(checkpoint.state, candidate, undefined).previousRelease;
-    assertExactTag(slug, CHANNEL_TAG, previous.targetCommitish, checkpoint.state);
-    sideEffectStarted = true;
-    info("releasing the exact archived predecessor from the fixed beta ref");
-    run("gh", ["api", `repos/${slug}/git/refs/tags/${CHANNEL_TAG}`,
-      "--method", "DELETE"]);
-    checkpoint = preflight(
-      candidate, previousApk, wordlists, slug, aapt, apksigner, undefined,
-    );
-    assertRotationCheckpoint(checkpoint, "archived",
-      preservedState, baselineClosure, baselineLatest);
-    phase = checkpoint.rotation.phase;
-  }
-
   let draftId = args.resumeDraftId;
-  if (phase === "archived") {
+  if (phase === "initial") {
     sideEffectStarted = true;
-    info("creating fixed beta successor as a non-latest draft");
+    info("creating the fresh fixed beta channel as a non-latest draft");
     run("gh", ["release", "create", CHANNEL_TAG,
       candidate.apk.absolute,
       candidate.update.absolute,
@@ -1454,14 +1475,14 @@ function main() {
     checkpoint = preflight(
       candidate, previousApk, wordlists, slug, aapt, apksigner, draftId,
     );
-    assertRotationCheckpoint(checkpoint, "draft",
+    assertPublicationCheckpoint(checkpoint, "draft",
       preservedState, baselineClosure, baselineLatest);
     phase = checkpoint.rotation.phase;
   } else if (phase === "draft") {
-    info(`resuming exact existing beta successor draft Release ${draftId}`);
+    info(`resuming exact existing beta draft Release ${draftId}`);
   }
   if (phase !== "draft" || !Number.isSafeInteger(draftId)) {
-    fail("beta rotation did not reach an exact successor draft");
+    fail("beta publication did not reach an exact draft");
   }
 
   const draftState = checkpoint.state;
@@ -1484,7 +1505,6 @@ function main() {
   const boundaryState = capturePublicState(slug, wordlists);
   assertHistoryAndLatestState(boundaryState, candidate.value.source.commit, {
     betaRefExpected: false,
-    previousArchiveRefExpected: true,
   });
   assertPreserved(preservedState, boundaryState);
   if (canonicalJson(boundaryState) !== canonicalJson(draftState)) {
@@ -1497,8 +1517,9 @@ function main() {
   const boundaryDraft = verifyRemoteBeta(
     slug, boundaryState, candidate, true, draft.id, wordlists, aapt, apksigner,
   );
-  verifyPreviousBeta(slug, boundaryState, candidate, previousApk,
-    PREVIOUS_CANDIDATE_TAG, wordlists, aapt, apksigner);
+  verifyPreviousStable(
+    slug, boundaryState, candidate, previousApk, wordlists, aapt, apksigner,
+  );
   if (canonicalJson(boundaryDraft) !== canonicalJson(draft)
       || canonicalJson(boundaryState.latest) !== canonicalJson(before.state.latest)) fail();
   assertCandidateInputsStable(candidate, previousApk, wordlists);
@@ -1516,12 +1537,10 @@ function main() {
   assertHistoryAndLatestState(
     finalState, candidate.value.source.commit, {
       betaRefExpected: true,
-      previousArchiveRefExpected: true,
     },
   );
   assertPreserved(preservedState, finalState);
-  verifyPreviousBeta(slug, finalState, candidate, previousApk,
-    PREVIOUS_CANDIDATE_TAG, wordlists, aapt, apksigner);
+  verifyPreviousStable(slug, finalState, candidate, previousApk, wordlists, aapt, apksigner);
   verifyRemoteBeta(
     slug, finalState, candidate, false, draft.id, wordlists, aapt, apksigner,
   );
@@ -1530,7 +1549,7 @@ function main() {
   );
   if (canonicalJson(finalClosure) !== canonicalJson(baselineClosure)
       || canonicalJson(finalState.latest) !== canonicalJson(baselineLatest)) fail();
-  info("archived beta.1 and published verified beta.2 without changing latest or history");
+  info("published verified beta.1 without changing stable latest or preserved history");
   fs.rmSync(auditDirectory, { recursive: true, force: false });
   auditDirectory = "";
 }
