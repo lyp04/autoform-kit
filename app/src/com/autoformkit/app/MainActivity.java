@@ -7801,6 +7801,12 @@ public class MainActivity extends Activity {
                     "Current-process main-form operation is still pending");
                 return null;
             }
+            if (!canSafelyRetireRestoredPendingMainFormTarget()) {
+                Diagnostics.append(this,
+                    "Interrupted main-form operation has recoverable evidence; "
+                        + "explicit discard is required");
+                return null;
+            }
             if (!clearPendingMainFormTarget()) {
                 Diagnostics.append(this,
                     "Interrupted main-form operation could not be retired");
@@ -7828,18 +7834,40 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean canSafelyRetireRestoredPendingMainFormTarget() {
+        PendingFormOperationRules.Target target = pendingMainFormTarget;
+        if (!pendingMainFormTargetRestoredFromPreviousProcess || target == null) {
+            return false;
+        }
+        if (!PendingFormOperationRules.PHOTO.equals(target.kind)
+                && !PendingFormOperationRules.OCR_PHOTO.equals(target.kind)) {
+            return true;
+        }
+        String outputPath = target.outputPath == null ? "" : target.outputPath.trim();
+        if (outputPath.isEmpty()) return true;
+        try {
+            File output = new File(outputPath);
+            if (!output.exists()) return true;
+            if (output.isFile() && output.length() == 0L) return true;
+        } catch (SecurityException inaccessible) {
+            Diagnostics.append(this, "Interrupted photo evidence could not be inspected: "
+                + conciseError(inaccessible));
+        }
+        return false;
+    }
+
     private void restorePendingMainFormTarget() {
         pendingMainFormTarget = null;
         pendingMainFormTargetRestoredFromPreviousProcess = false;
         try {
             Map<String, ?> stored = prefs.getAll();
             if (!stored.containsKey(PENDING_MAIN_FORM_OPERATION_KEY)) return;
-            pendingMainFormTargetRestoredFromPreviousProcess = true;
             Object raw = stored.get(PENDING_MAIN_FORM_OPERATION_KEY);
             if (!(raw instanceof String) || ((String) raw).trim().isEmpty()) return;
             PendingFormOperationRules.Target target =
                 PendingFormOperationRules.parse((String) raw);
             pendingMainFormTarget = target;
+            pendingMainFormTargetRestoredFromPreviousProcess = true;
             applyPendingMainFormTargetToLegacyMemory(target, -1);
         } catch (RuntimeException invalid) {
             // Preserve malformed bytes for manual recovery; never fall back to the legacy mirrors.

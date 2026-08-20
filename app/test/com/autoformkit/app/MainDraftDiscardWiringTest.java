@@ -21,9 +21,12 @@ public class MainDraftDiscardWiringTest {
         int pending = prepare.indexOf("if (hasPendingMainFormOperation())");
         int restoredOnly = prepare.indexOf(
             "if (!pendingMainFormTargetRestoredFromPreviousProcess)", pending);
-        int clear = prepare.indexOf("clearPendingMainFormTarget()", restoredOnly);
+        int safeToRetire = prepare.indexOf(
+            "if (!canSafelyRetireRestoredPendingMainFormTarget())", restoredOnly);
+        int clear = prepare.indexOf("clearPendingMainFormTarget()", safeToRetire);
         int save = prepare.indexOf("saveDraft(true)", clear);
-        assertTrue(pending >= 0 && restoredOnly > pending && clear > restoredOnly);
+        assertTrue(pending >= 0 && restoredOnly > pending && safeToRetire > restoredOnly);
+        assertTrue(clear > safeToRetire);
         assertTrue(save > clear);
         assertFalse(prepare.contains("|| hasPendingMainFormOperation()) return null"));
         assertTrue(prepare.contains(
@@ -38,8 +41,18 @@ public class MainDraftDiscardWiringTest {
         String restore = section(mainActivitySource(),
             "private void restorePendingMainFormTarget()",
             "private void applyPendingMainFormTargetToLegacyMemory(");
-        assertTrue(restore.contains(
-            "pendingMainFormTargetRestoredFromPreviousProcess = true;"));
+        int parse = restore.indexOf("PendingFormOperationRules.parse((String) raw)");
+        int restored = restore.indexOf(
+            "pendingMainFormTargetRestoredFromPreviousProcess = true;", parse);
+        assertTrue(parse >= 0 && restored > parse);
+
+        String retirement = section(mainActivitySource(),
+            "private boolean canSafelyRetireRestoredPendingMainFormTarget()",
+            "private void restorePendingMainFormTarget()");
+        assertTrue(retirement.contains("target == null"));
+        assertTrue(retirement.contains("!output.exists()"));
+        assertTrue(retirement.contains("output.isFile() && output.length() == 0L"));
+        assertFalse(retirement.contains("deleteFileQuietly"));
     }
 
     @Test
