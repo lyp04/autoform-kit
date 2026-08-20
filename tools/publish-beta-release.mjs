@@ -20,8 +20,8 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { HISTORICAL_BODY, HISTORICAL_TAGS } from "./historical-release-contract.mjs";
 
-const HERE = path.dirname(fileURLToPath(import.meta.url));
-const ROOT = path.resolve(HERE, "..");
+const HERE = fs.realpathSync.native(path.dirname(fileURLToPath(import.meta.url)));
+const ROOT = fs.realpathSync.native(path.resolve(HERE, ".."));
 const SCANNER = path.join(HERE, "public-surface-audit.mjs");
 const THIRD_PARTY_POLICY = path.join(HERE, "apk-third-party-components.json");
 const RUNTIME_LOCK = path.join(HERE, "android-runtime-dependencies.lock.json");
@@ -204,23 +204,35 @@ function sameStat(left, right) {
     && left.mtimeNs === right.mtimeNs && left.ctimeNs === right.ctimeNs;
 }
 
+function pathIsWithin(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative));
+}
+
 function stableReadRegular(filename, { privateMode = false, maximum = MAX_FILE_BYTES } = {}) {
-  const absolute = path.resolve(filename);
-  const before = fs.lstatSync(absolute, { bigint: true });
+  const requestedAbsolute = path.resolve(filename);
+  const before = fs.lstatSync(requestedAbsolute, { bigint: true });
   const expectedUid = typeof process.geteuid === "function" ? BigInt(process.geteuid()) : before.uid;
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n
       || before.uid !== expectedUid || before.size <= 0n || before.size > BigInt(maximum)
       || (privateMode && (before.mode & 0o7777n) !== 0o600n)) fail();
+  const absolute = fs.realpathSync.native(requestedAbsolute);
+  const canonicalBefore = fs.lstatSync(absolute, { bigint: true });
+  if (!sameStat(before, canonicalBefore) || !canonicalBefore.isFile()
+      || canonicalBefore.isSymbolicLink()) fail("input path identity changed during canonicalization");
   const descriptor = fs.openSync(absolute, constants.O_RDONLY | (constants.O_NOFOLLOW || 0));
   try {
     const opened = fs.fstatSync(descriptor, { bigint: true });
-    if (!sameStat(before, opened)) fail();
+    if (!sameStat(canonicalBefore, opened)) fail();
     const bytes = fs.readFileSync(descriptor);
     const afterDescriptor = fs.fstatSync(descriptor, { bigint: true });
-    const afterPath = fs.lstatSync(absolute, { bigint: true });
-    if (!sameStat(opened, afterDescriptor) || !sameStat(afterDescriptor, afterPath)
+    const afterCanonical = fs.lstatSync(absolute, { bigint: true });
+    const afterRequested = fs.lstatSync(requestedAbsolute, { bigint: true });
+    if (!sameStat(opened, afterDescriptor) || !sameStat(afterDescriptor, afterCanonical)
+        || !sameStat(afterCanonical, afterRequested)
         || bytes.length !== Number(opened.size)) fail();
-    return { absolute, bytes, sha256: digest(bytes), size: bytes.length, stat: afterPath };
+    return { absolute, bytes, sha256: digest(bytes), size: bytes.length, stat: afterCanonical };
   } finally {
     fs.closeSync(descriptor);
   }
@@ -1420,7 +1432,7 @@ function main() {
   const wordlists = args.wordlists.map((filename) =>
     stableReadRegular(filename, { privateMode: true, maximum: MAX_JSON_BYTES }));
   if (new Set(wordlists.map((wordlist) => wordlist.absolute)).size !== wordlists.length
-      || wordlists.some((wordlist) => wordlist.absolute.startsWith(`${ROOT}${path.sep}`))) {
+      || wordlists.some((wordlist) => pathIsWithin(ROOT, wordlist.absolute))) {
     fail("private wordlists must be unique and outside the repository");
   }
   const aapt = findAndroidTool("aapt", process.env.AAPT);

@@ -350,7 +350,7 @@ function scannerReport(root, stateFile, mode, input) {
   if (mode === "git-tree") args.push("--git-tree", SOURCE, "--repo", root);
   else if (mode === "worktree") args.push("--worktree", "--repo", root);
   else args.push(`--${mode}`, input);
-  args.push("--private-wordlist", path.join(root, "private", "wordlist.txt"));
+  args.push("--private-wordlist", path.join(path.dirname(stateFile), "wordlist.txt"));
   const result = spawnSync(process.execPath, args, {
     cwd: root, encoding: "utf8", env: { ...process.env, BETA_FIXTURE_STATE: stateFile },
   });
@@ -399,6 +399,7 @@ function fixture({ phase = "initial", tagExists = false, existingDraft = false,
   if (existingDraft) phase = "draft";
   assert.equal(["initial", "draft", "complete"].includes(phase), true);
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "beta-publisher-selftest."));
+  const privateRoot = fs.mkdtempSync(path.join(os.tmpdir(), "beta-publisher-private."));
   const tools = path.join(root, "tools"); const bin = path.join(root, "bin");
   fs.mkdirSync(tools, { recursive: true }); fs.mkdirSync(bin, { recursive: true });
   fs.copyFileSync(PUBLISHER, path.join(tools, "publish-beta-release.mjs"));
@@ -411,9 +412,9 @@ function fixture({ phase = "initial", tagExists = false, existingDraft = false,
   write(path.join(bin, "git"), fakeGit, 0o755); write(path.join(bin, "gh"), fakeGh, 0o755);
   write(path.join(bin, "aapt"), fakeAapt, 0o755);
   write(path.join(bin, "apksigner"), fakeApksigner, 0o755);
-  write(path.join(root, "private", "wordlist.txt"),
-    `private-fixture-term\n${PRIVATE_EMAIL}\n`, 0o600);
-  const stateFile = path.join(root, "private", "state.json");
+  const wordlist = path.join(privateRoot, "wordlist.txt");
+  write(wordlist, `private-fixture-term\n${PRIVATE_EMAIL}\n`, 0o600);
+  const stateFile = path.join(privateRoot, "state.json");
   write(stateFile, JSON.stringify({ source: SOURCE, tree: TREE,
     previousSource: PREVIOUS_SOURCE, previousTree: PREVIOUS_TREE,
     extraBranchSource: EXTRA_BRANCH_SOURCE, pullHeadSource: PULL_HEAD_SOURCE,
@@ -434,7 +435,7 @@ function fixture({ phase = "initial", tagExists = false, existingDraft = false,
     writes: 0, commands: [] }), 0o600);
   const candidateDir = path.join(root, "dist", "release-candidates", "v1.0.17-beta.1");
   const apk = path.join(candidateDir, "autoform-kit-1.0.17-beta.1.apk");
-  const previous = path.join(root, "private", "previous.apk");
+  const previous = path.join(privateRoot, "previous.apk");
   const notes = path.join(candidateDir, "release-notes.txt");
   const update = path.join(candidateDir, "update.json");
   write(apk, "fixture-beta-1.0.17-apk\n", 0o644);
@@ -640,7 +641,7 @@ function fixture({ phase = "initial", tagExists = false, existingDraft = false,
   }
   fs.writeFileSync(stateFile, JSON.stringify(state));
   fs.chmodSync(stateFile, 0o600);
-  return { root, stateFile, manifestPath, previous };
+  return { manifestPath, previous, privateRoot, root, stateFile, wordlist };
 }
 
 let scenarioCount = 0;
@@ -653,7 +654,7 @@ function scenario(options) {
     AAPT: path.join(f.root, "bin", "aapt"), APKSIGNER: path.join(f.root, "bin", "apksigner"),
     GRADLE_USER_HOME: path.join(f.root, "gradle") };
   return {
-    execute({ confirmSingleWriter = true, resumeDraftId } = {}) {
+    execute({ confirmSingleWriter = true, resumeDraftId, wordlists = [f.wordlist] } = {}) {
       const env = { ...baseEnv };
       if (confirmSingleWriter) {
         env.AUTOFORM_BETA_SINGLE_WRITER_WINDOW = "EXCLUSIVE_BETA_RELEASE_WRITER_CONFIRMED";
@@ -661,8 +662,10 @@ function scenario(options) {
         delete env.AUTOFORM_BETA_SINGLE_WRITER_WINDOW;
       }
       const publisherArgs = [path.join(f.root, "tools", "publish-beta-release.mjs"),
-        "--candidate", f.manifestPath, "--previous-apk", f.previous,
-        "--private-wordlist", path.join(f.root, "private", "wordlist.txt")];
+        "--candidate", f.manifestPath, "--previous-apk", f.previous];
+      for (const wordlist of wordlists) {
+        publisherArgs.push("--private-wordlist", wordlist);
+      }
       if (resumeDraftId !== undefined) {
         publisherArgs.push("--resume-draft", String(resumeDraftId));
       }
@@ -676,8 +679,27 @@ function scenario(options) {
       mutator(state);
       write(f.stateFile, JSON.stringify(state), 0o600);
     },
+    aliasedExternalWordlist() {
+      const alias = path.join(f.privateRoot, "private-root-alias");
+      fs.symlinkSync(f.privateRoot, alias, "dir");
+      return path.join(alias, path.basename(f.wordlist));
+    },
+    externalWordlist() {
+      return f.wordlist;
+    },
+    aliasedInsideWordlist() {
+      const inside = path.join(f.root, "inside-private-wordlist.txt");
+      write(inside, "inside-repository-private-term\n", 0o600);
+      const alias = path.join(f.privateRoot, "repository-alias");
+      fs.symlinkSync(f.root, alias, "dir");
+      return path.join(alias, path.basename(inside));
+    },
     remove() {
-      fs.rmSync(f.root, { recursive: true, force: true });
+      try {
+        fs.rmSync(f.root, { recursive: true, force: true });
+      } finally {
+        fs.rmSync(f.privateRoot, { recursive: true, force: true });
+      }
     },
   };
 }
@@ -703,6 +725,26 @@ function writeKinds(state) {
     return "unexpected";
   });
 }
+
+withScenario({}, (current) => {
+  const rejected = current.execute({ wordlists: [current.aliasedInsideWordlist()] });
+  assert.equal(rejected.result.status, 1);
+  assert.equal(rejected.state.writes, 0);
+  assert.deepEqual(writeKinds(rejected.state), []);
+  assert.match(rejected.result.stderr,
+    /private wordlists must be unique and outside the repository/u);
+});
+
+withScenario({}, (current) => {
+  const rejected = current.execute({
+    wordlists: [current.externalWordlist(), current.aliasedExternalWordlist()],
+  });
+  assert.equal(rejected.result.status, 1);
+  assert.equal(rejected.state.writes, 0);
+  assert.deepEqual(writeKinds(rejected.state), []);
+  assert.match(rejected.result.stderr,
+    /private wordlists must be unique and outside the repository/u);
+});
 
 const happy = runScenario();
 assert.equal(happy.result.status, 0, happy.result.stderr);
@@ -897,6 +939,7 @@ for (const [options, writes] of [
 
 process.stdout.write(`${JSON.stringify({
   ok: true, happyPath: true, preflightZeroWrite: true,
+  canonicalPrivatePathEnforced: true, aliasedWordlistDuplicateRejected: true,
   exactStablePredecessorVerified: true, archivedBetaPreserved: true,
   checkpointRecoveryVerified: true, createFailureRecoveryVerified: true,
   patchFailureRecoveryVerified: true, patchResponseLossRecoveryVerified: true,
