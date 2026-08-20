@@ -39,7 +39,7 @@ public class MainDraftSnapshotRulesTest {
 
     private static JSONObject catalog(JSONObject profile) throws Exception {
         return new JSONObject()
-            .put("schemaVersion", 2)
+            .put("schemaVersion", 3)
             .put("version", CATALOG_VERSION)
             .put("settings", new JSONObject())
             .put("profiles", new JSONArray().put(profile));

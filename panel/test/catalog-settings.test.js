@@ -165,7 +165,7 @@ function installCatalogGitMock(files, { failRefUpdate = false } = {}) {
 test("catalog publish merges settings and preserves unknown/private configuration", async () => {
   const files = new Map();
   const initial = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     version: 7,
     settings: {
       brand: "Before",
@@ -176,7 +176,7 @@ test("catalog publish merges settings and preserves unknown/private configuratio
   };
   files.set("form-profiles.json", { text: JSON.stringify(initial), sha: "profiles-sha" });
   files.set("manifest.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 7, minAppVersionCode: 6 }),
+    text: JSON.stringify({ schemaVersion: 3, version: 7, minAppVersionCode: 6 }),
     sha: "manifest-sha"
   });
 
@@ -191,11 +191,14 @@ test("catalog publish merges settings and preserves unknown/private configuratio
       settings: { brand: "After" }
     });
     const written = JSON.parse(files.get("form-profiles.json").text);
+    assert.equal(written.schemaVersion, 3);
     assert.equal(written.version, 8);
     assert.equal(written.settings.brand, "After");
     assert.deepEqual(written.settings.futureSetting, { keep: true });
     assert.deepEqual(written.settings.backendAdapter, initial.settings.backendAdapter);
-    assert.equal(JSON.parse(files.get("manifest.json").text).minAppVersionCode, 6);
+    const manifest = JSON.parse(files.get("manifest.json").text);
+    assert.equal(manifest.schemaVersion, 3);
+    assert.equal(manifest.minAppVersionCode, 6);
     assert.deepEqual(github.commitParents, ["parent-sha"]);
     assert.ok(github.contentRefs.slice(0, 3).every((ref) => ref === "parent-sha"));
     const merged = await readProfiles({ GITHUB_REPO: "sample/catalog", GITHUB_TOKEN: "sample-token" });
@@ -218,7 +221,7 @@ test("catalog publish validates effective dailyStatsV2 even when called below th
   };
   const files = new Map([["form-profiles.json", {
     text: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: 8,
       settings: { backendAdapter: validBackendAdapter() },
       profiles: [profile]
@@ -262,7 +265,7 @@ test("catalog publish validates effective alternate-entry attribution below the 
   dailyStatsAlternateEntries.groups[0].selectors[0].entryId = "missing-entry";
   const files = new Map([["form-profiles.json", {
     text: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: 9,
       settings: { backendAdapter: validBackendAdapter() },
       profiles
@@ -288,11 +291,11 @@ test("catalog publish validates effective alternate-entry attribution below the 
 test("Panel minimum App version setting updates the derived manifest", async () => {
   const files = new Map();
   files.set("form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 3, settings: {}, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 3, settings: {}, profiles: [] }),
     sha: "profiles-sha"
   });
   files.set("manifest.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 3, minAppVersionCode: 2 }),
+    text: JSON.stringify({ schemaVersion: 3, version: 3, minAppVersionCode: 2 }),
     sha: "manifest-sha"
   });
   const github = installCatalogGitMock(files);
@@ -324,7 +327,7 @@ test("App config keeps the old and new backend contracts identical during migrat
     updatedAt: "2030-01-01T00:00:00.000Z"
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 9, settings, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 9, settings, profiles: [] }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -395,7 +398,7 @@ test("App config sends one Panel-first update source while retaining old App coo
     sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 10, settings, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 10, settings, profiles: [] }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -437,7 +440,7 @@ test("malformed stored updateSource keeps App config 200 and emits only invalid 
     sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 11, settings, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 11, settings, profiles: [] }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -474,7 +477,7 @@ test("settings API rejects malformed updateSource with 400 before catalog publis
     sessionInvalidMessagePatterns: [...adapter.auth.sessionInvalidMessagePatterns]
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 12, settings, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 12, settings, profiles: [] }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -543,7 +546,7 @@ test("settings API validates and stores App-facing dailyStats groups", async () 
     }]
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 13, settings, profiles }),
+    text: JSON.stringify({ schemaVersion: 3, version: 13, settings, profiles }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -629,7 +632,7 @@ test("settings API validates, stores and deletes App-facing dailyStatsV2", async
     }]
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 15, settings, profiles }),
+    text: JSON.stringify({ schemaVersion: 3, version: 15, settings, profiles }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -679,7 +682,7 @@ test("settings API stores, validates and deletes alternate-entry daily-stat attr
     dailyStatsAlternateEntries
   } = alternateDailyStatsCatalog();
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 18, settings, profiles }),
+    text: JSON.stringify({ schemaVersion: 3, version: 18, settings, profiles }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -750,7 +753,7 @@ test("settings API keeps alternate-only flat summaries atomic", async () => {
   const ordinaryFlatSelectors = clone(dailyStatsV2.flatSummaries[0].selectors);
   dailyStatsV2.flatSummaries[0].selectors = [];
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 30, settings, profiles }),
+    text: JSON.stringify({ schemaVersion: 3, version: 30, settings, profiles }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -824,7 +827,7 @@ test("profile publish rejects retained alternate-entry stats mappings made unrea
     dailyStatsAlternateEntries
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 20, settings, profiles }),
+    text: JSON.stringify({ schemaVersion: 3, version: 20, settings, profiles }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -869,7 +872,7 @@ test("settings API rejects dailyStatsV2 selectors outside explicit picker-visibl
     }
   };
   const files = new Map([["form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 17, settings, profiles: [profile] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 17, settings, profiles: [profile] }),
     sha: "profiles-sha"
   }]]);
   const github = installCatalogGitMock(files);
@@ -923,7 +926,7 @@ test("settings API rejects dailyStats keys not declared by a picker-visible prof
   };
   const files = new Map([["form-profiles.json", {
     text: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: 14,
       settings,
       profiles: [hiddenProfile]
@@ -973,7 +976,7 @@ test("profile upsert rejects an invalid retained profile in the merged catalog",
   const incoming = sampleProfile(1);
   const files = new Map([["form-profiles.json", {
     text: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: 20,
       settings: { backendAdapter: validBackendAdapter() },
       profiles: [retained]
@@ -1006,7 +1009,7 @@ test("settings-only publish rejects an invalid retained profile", async () => {
   delete retained.template.sku;
   const files = new Map([["form-profiles.json", {
     text: JSON.stringify({
-      schemaVersion: 2,
+      schemaVersion: 3,
       version: 21,
       settings: { backendAdapter: validBackendAdapter(), brand: "Before" },
       profiles: [retained]
@@ -1037,7 +1040,7 @@ test("settings-only publish rejects an invalid retained profile", async () => {
 test("notification provider settings are stored privately and omitted from the hash-verified App catalog", async () => {
   const files = new Map();
   files.set("form-profiles.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 2, settings: { brand: "Sample" }, profiles: [] }),
+    text: JSON.stringify({ schemaVersion: 3, version: 2, settings: { brand: "Sample" }, profiles: [] }),
     sha: "profiles-sha"
   });
   const notificationAdapter = {
@@ -1079,8 +1082,8 @@ test("notification provider settings are stored privately and omitted from the h
 
 test("catalog files become visible only after one successful branch ref update", async () => {
   const files = new Map();
-  const originalProfiles = JSON.stringify({ schemaVersion: 2, version: 4, profiles: [{ id: "before" }] });
-  const originalManifest = JSON.stringify({ schemaVersion: 2, version: 4, minAppVersionCode: 3 });
+  const originalProfiles = JSON.stringify({ schemaVersion: 3, version: 4, profiles: [{ id: "before" }] });
+  const originalManifest = JSON.stringify({ schemaVersion: 3, version: 4, minAppVersionCode: 3 });
   files.set("form-profiles.json", { text: originalProfiles, sha: "profiles-sha" });
   files.set("manifest.json", { text: originalManifest, sha: "manifest-sha" });
   const github = installCatalogGitMock(files, { failRefUpdate: true });
@@ -1103,10 +1106,10 @@ test("catalog files become visible only after one successful branch ref update",
 
 test("stale catalog version is rejected before any branch update", async () => {
   const files = new Map();
-  const originalProfiles = JSON.stringify({ schemaVersion: 2, version: 5, profiles: [{ id: "current" }] });
+  const originalProfiles = JSON.stringify({ schemaVersion: 3, version: 5, profiles: [{ id: "current" }] });
   files.set("form-profiles.json", { text: originalProfiles, sha: "profiles-sha" });
   files.set("manifest.json", {
-    text: JSON.stringify({ schemaVersion: 2, version: 5, minAppVersionCode: 0 }),
+    text: JSON.stringify({ schemaVersion: 3, version: 5, minAppVersionCode: 0 }),
     sha: "manifest-sha"
   });
   const github = installCatalogGitMock(files);

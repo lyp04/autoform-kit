@@ -37,6 +37,7 @@ public class BundledSeedTest {
     @Test
     public void seedIsExplicitlyNonOperationalAndUsesArbitraryResultKeys() throws Exception {
         JSONObject root = seed();
+        assertEquals(FormCatalog.SUPPORTED_SCHEMA_VERSION, root.getInt("schemaVersion"));
         assertTrue(root.getJSONObject("settings").getBoolean("sampleCatalog"));
         JSONArray profiles = root.getJSONArray("profiles");
         assertTrue(profiles.length() > 0);

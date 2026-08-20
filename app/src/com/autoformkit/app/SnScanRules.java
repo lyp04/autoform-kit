@@ -60,6 +60,7 @@ final class SnScanRules {
         NUMERIC_ONLY,
         MISSING_LETTER_OR_DIGIT,
         REJECTED_SUBSTRING,
+        OCR_POSITION_MISMATCH,
         INVALID_CHARACTERS
     }
 
@@ -91,6 +92,7 @@ final class SnScanRules {
         final String candidateCharacterMode;
         final String caseMode;
         final boolean removeWhitespace;
+        final Map<Integer, OcrPositionRule> ocrPositionRules;
 
         private Policy(boolean valid, int expectedLength, Set<String> applyExpectedLengthTo,
                        List<Integer> allowedLengths, Set<String> applyAllowedLengthsTo,
@@ -102,7 +104,8 @@ final class SnScanRules {
                        List<String> rejectedSubstrings, List<String> stripLabels,
                        Set<String> applyCandidateRulesTo, Set<String> stripLabelsFrom,
                        String labelMatchMode, String candidateCharacterMode,
-                       String caseMode, boolean removeWhitespace) {
+                       String caseMode, boolean removeWhitespace,
+                       Map<Integer, OcrPositionRule> ocrPositionRules) {
             this.valid = valid;
             this.expectedLength = expectedLength;
             this.applyExpectedLengthTo = applyExpectedLengthTo;
@@ -126,6 +129,7 @@ final class SnScanRules {
             this.candidateCharacterMode = candidateCharacterMode;
             this.caseMode = caseMode;
             this.removeWhitespace = removeWhitespace;
+            this.ocrPositionRules = ocrPositionRules;
         }
 
         static Policy from(JSONObject raw) {
@@ -172,9 +176,11 @@ final class SnScanRules {
             BooleanValue rejectNumeric = bool(value, "rejectNumericOnly", false);
             BooleanValue requireMixed = bool(value, "requireLetterAndDigit", false);
             BooleanValue removeWhitespace = bool(value, "removeWhitespace", true);
+            OcrPositionRulesValue ocrPositionRules = ocrPositionRules(value);
             valid &= autoText.valid && candidateMode.valid && caseMode.valid
                 && labelMatchMode.valid && candidateCharacterMode.valid
-                && rejectNumeric.valid && requireMixed.valid && removeWhitespace.valid;
+                && rejectNumeric.valid && requireMixed.valid && removeWhitespace.valid
+                && ocrPositionRules.valid;
 
             StringList prefixes = stringList(value, "preferredPrefixes", true);
             if (!prefixes.configured) prefixes = stringList(value, "preferredSnPrefixes", true);
@@ -231,6 +237,25 @@ final class SnScanRules {
                 valid = false;
             }
             if (allowedLengthScopes.configured && !allowedLengths.configured) valid = false;
+            int requiredOcrPositionLength = requiredOcrPositionLength(ocrPositionRules.rules);
+            boolean allowedLengthsConstrainOcr = !allowedLengths.values.isEmpty()
+                && normalizedAllowedLengthScopes.contains(SOURCE_OCR);
+            boolean expectedLengthConstrainsOcr = expected.value > 0
+                && normalizedExpectedLengthScopes.contains(SOURCE_OCR)
+                && !allowedLengthsConstrainOcr;
+            if (requiredOcrPositionLength > 0) {
+                if (max.configured && requiredOcrPositionLength > max.value) valid = false;
+                if (allowedLengthsConstrainOcr) {
+                    for (int allowedLength : allowedLengths.values) {
+                        if (allowedLength < requiredOcrPositionLength) valid = false;
+                    }
+                } else if (expectedLengthConstrainsOcr) {
+                    if (expected.value < requiredOcrPositionLength) valid = false;
+                } else if (requiredOcrPositionLength > max.value) {
+                    // Without a discrete OCR length, the implicit/explicit maximum is enforced.
+                    valid = false;
+                }
+            }
 
             return new Policy(
                 valid,
@@ -255,7 +280,8 @@ final class SnScanRules {
                 labelMatchMode.value,
                 candidateCharacterMode.value,
                 caseMode.value,
-                removeWhitespace.value
+                removeWhitespace.value,
+                ocrPositionRules.rules
             );
         }
 
@@ -270,7 +296,8 @@ final class SnScanRules {
                 value = stripLeadingLabel(value, stripLabels, labelMatchMode);
             }
             if (removeWhitespace) value = value.replaceAll("\\s+", "");
-            return value.trim();
+            value = value.trim();
+            return SOURCE_OCR.equals(source) ? correctOcrPositions(value) : value;
         }
 
         Rejection enteredRejection(String normalized) {
@@ -328,6 +355,9 @@ final class SnScanRules {
                 return Rejection.WRONG_LENGTH;
             }
             if (rejectNumericOnly && isPureNumeric(value)) return Rejection.NUMERIC_ONLY;
+            if (SOURCE_OCR.equals(source) && !matchesOcrPositionRules(value)) {
+                return Rejection.OCR_POSITION_MISMATCH;
+            }
             if (!applyCandidateRulesTo.contains(source)) return Rejection.NONE;
             String allowedPattern = "alphanumeric".equals(candidateCharacterMode)
                 ? "[A-Z0-9]+" : "[A-Z0-9._/-]+";
@@ -354,6 +384,48 @@ final class SnScanRules {
                 }
             }
             return Rejection.NONE;
+        }
+
+        private String correctOcrPositions(String value) {
+            if (value == null || value.isEmpty() || ocrPositionRules.isEmpty()) {
+                return value == null ? "" : value;
+            }
+            char[] corrected = value.toCharArray();
+            for (Map.Entry<Integer, OcrPositionRule> entry : ocrPositionRules.entrySet()) {
+                int index = entry.getKey();
+                if (index < 0 || index >= corrected.length) continue;
+                OcrPositionRule rule = entry.getValue();
+                char observed = Character.toUpperCase(corrected[index]);
+                if (rule.allowedCharacters.contains(observed)) continue;
+                Character replacement = rule.corrections.get(observed);
+                if (replacement != null) corrected[index] = replacement;
+            }
+            return new String(corrected);
+        }
+
+        private boolean matchesOcrPositionRules(String value) {
+            if (ocrPositionRules.isEmpty()) return true;
+            for (Map.Entry<Integer, OcrPositionRule> entry : ocrPositionRules.entrySet()) {
+                int index = entry.getKey();
+                if (value == null || index < 0 || index >= value.length()
+                        || !entry.getValue().allowedCharacters.contains(
+                            Character.toUpperCase(value.charAt(index)))) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    /** One-based profile positions are stored as zero-based keys after strict parsing. */
+    private static final class OcrPositionRule {
+        final Set<Character> allowedCharacters;
+        final Map<Character, Character> corrections;
+
+        OcrPositionRule(Set<Character> allowedCharacters,
+                        Map<Character, Character> corrections) {
+            this.allowedCharacters = allowedCharacters;
+            this.corrections = corrections;
         }
     }
 
@@ -396,10 +468,26 @@ final class SnScanRules {
 
         String compact = compactOcrLine(line);
         if (enabled.contains(SOURCE_PREFIX)) {
-            for (String prefix : policy.preferredPrefixes) {
-                Matcher matcher = prefixedCandidatePattern(policy, prefix).matcher(compact);
+            if (policy.ocrPositionRules.isEmpty()) {
+                for (String prefix : policy.preferredPrefixes) {
+                    Matcher matcher = prefixedCandidatePattern(policy, prefix).matcher(compact);
+                    while (matcher.find()) {
+                        addCandidate(candidates, matcher.group(1), SOURCE_PREFIX,
+                            58 + lineBonus, policy);
+                    }
+                }
+            } else {
+                // A raw OCR token may not yet have the configured prefix because a constrained
+                // position was confused (for example, a letter was read where the profile permits
+                // only a digit). Normalize the whole token before testing its prefix. This path is
+                // enabled only by an explicit position policy, preserving legacy candidate replay.
+                Matcher matcher = candidateTokenPattern(policy).matcher(compact);
                 while (matcher.find()) {
-                    addCandidate(candidates, matcher.group(1), SOURCE_PREFIX, 58 + lineBonus, policy);
+                    String normalized = normalizeCandidate(matcher.group(1), policy);
+                    if (hasPreferredPrefix(normalized, policy.preferredPrefixes)) {
+                        addNormalizedCandidate(candidates, normalized, SOURCE_PREFIX,
+                            58 + lineBonus, policy);
+                    }
                 }
             }
         }
@@ -521,6 +609,11 @@ final class SnScanRules {
     private static void addCandidate(List<Candidate> candidates, String raw, String source,
                                      int bonus, Policy policy) {
         String value = normalizeCandidate(raw, policy);
+        addNormalizedCandidate(candidates, value, source, bonus, policy);
+    }
+
+    private static void addNormalizedCandidate(List<Candidate> candidates, String value,
+                                               String source, int bonus, Policy policy) {
         if (!policy.acceptsCapture(value)) return;
         int score = bonus + Math.min(24, value.length());
         if (hasPreferredPrefix(value, policy.preferredPrefixes)) score += 60;
@@ -606,7 +699,22 @@ final class SnScanRules {
         if (policy != null && policy.appliesAllowedLengthsTo(SOURCE_OCR)) {
             for (int allowed : policy.allowedLengths) maximum = Math.max(maximum, allowed);
         }
+        if (policy != null && policy.appliesExpectedLengthTo(SOURCE_OCR)) {
+            maximum = Math.max(maximum, policy.expectedLength);
+        }
+        if (policy != null) {
+            maximum = Math.max(maximum, requiredOcrPositionLength(policy.ocrPositionRules));
+        }
         return maximum;
+    }
+
+    private static int requiredOcrPositionLength(Map<Integer, OcrPositionRule> rules) {
+        int required = 0;
+        if (rules == null) return required;
+        for (Integer position : rules.keySet()) {
+            if (position != null) required = Math.max(required, position + 1);
+        }
+        return required;
     }
 
     private static boolean isPureNumeric(String value) {
@@ -636,6 +744,131 @@ final class SnScanRules {
             result.add(item);
         }
         return Collections.unmodifiableList(new ArrayList<>(result));
+    }
+
+    /**
+     * Parses deployment-owned, one-based OCR position rules. A rule constrains one or more exact
+     * positions to an explicit character set and may map explicitly listed OCR confusions into that
+     * set. The App never invents mappings: malformed, overlapping, ambiguous rules or no-op
+     * correction mappings make the whole scanner policy invalid.
+     */
+    private static OcrPositionRulesValue ocrPositionRules(JSONObject value) {
+        if (!value.has("ocrPositionRules")) {
+            return new OcrPositionRulesValue(Collections.emptyMap(), true);
+        }
+        Object raw = value.opt("ocrPositionRules");
+        if (!(raw instanceof JSONArray)) {
+            return new OcrPositionRulesValue(Collections.emptyMap(), false);
+        }
+        JSONArray array = (JSONArray) raw;
+        boolean valid = array.length() > 0 && array.length() <= 256;
+        Map<Integer, OcrPositionRule> result = new LinkedHashMap<>();
+        for (int ruleIndex = 0; ruleIndex < array.length(); ruleIndex++) {
+            Object item = array.opt(ruleIndex);
+            if (!(item instanceof JSONObject)) {
+                valid = false;
+                continue;
+            }
+            JSONObject rule = (JSONObject) item;
+            JSONArray names = rule.names();
+            for (int nameIndex = 0; names != null && nameIndex < names.length(); nameIndex++) {
+                String name = names.optString(nameIndex);
+                if (!("positions".equals(name) || "allowedCharacters".equals(name)
+                        || "corrections".equals(name))) {
+                    valid = false;
+                }
+            }
+
+            List<Integer> positions = new ArrayList<>();
+            Set<Integer> localPositions = new LinkedHashSet<>();
+            Object positionsRaw = rule.opt("positions");
+            if (!(positionsRaw instanceof JSONArray)) {
+                valid = false;
+            } else {
+                JSONArray configuredPositions = (JSONArray) positionsRaw;
+                if (configuredPositions.length() == 0
+                        || configuredPositions.length() > 256) valid = false;
+                for (int index = 0; index < configuredPositions.length(); index++) {
+                    Object configured = configuredPositions.opt(index);
+                    if (!(configured instanceof Byte || configured instanceof Short
+                            || configured instanceof Integer || configured instanceof Long)) {
+                        valid = false;
+                        continue;
+                    }
+                    long oneBased = ((Number) configured).longValue();
+                    if (oneBased < 1L || oneBased > 256L
+                            || !localPositions.add((int) oneBased)) {
+                        valid = false;
+                        continue;
+                    }
+                    positions.add((int) oneBased - 1);
+                }
+            }
+
+            Set<Character> allowedCharacters = new LinkedHashSet<>();
+            Object allowedRaw = rule.opt("allowedCharacters");
+            if (!(allowedRaw instanceof String)) {
+                valid = false;
+            } else {
+                String configured = (String) allowedRaw;
+                if (configured.isEmpty() || configured.length() > 36
+                        || !configured.matches("[A-Za-z0-9]+")) {
+                    valid = false;
+                } else {
+                    for (int index = 0; index < configured.length(); index++) {
+                        char character = Character.toUpperCase(configured.charAt(index));
+                        if (!allowedCharacters.add(character)) valid = false;
+                    }
+                }
+            }
+
+            Map<Character, Character> corrections = new LinkedHashMap<>();
+            if (rule.has("corrections")) {
+                Object correctionsRaw = rule.opt("corrections");
+                if (!(correctionsRaw instanceof JSONObject)) {
+                    valid = false;
+                } else {
+                    JSONObject configured = (JSONObject) correctionsRaw;
+                    JSONArray correctionNames = configured.names();
+                    if (configured.length() == 0 || configured.length() > 36) valid = false;
+                    Set<Character> correctionSources = new LinkedHashSet<>();
+                    for (int index = 0; correctionNames != null
+                            && index < correctionNames.length(); index++) {
+                        String sourceText = correctionNames.optString(index);
+                        Object targetRaw = configured.opt(sourceText);
+                        if (sourceText.length() != 1 || !sourceText.matches("[A-Za-z0-9]")
+                                || !(targetRaw instanceof String)
+                                || ((String) targetRaw).length() != 1
+                                || !((String) targetRaw).matches("[A-Za-z0-9]")) {
+                            valid = false;
+                            continue;
+                        }
+                        char source = Character.toUpperCase(sourceText.charAt(0));
+                        char target = Character.toUpperCase(((String) targetRaw).charAt(0));
+                        if (!correctionSources.add(source) || source == target
+                                || allowedCharacters.contains(source)
+                                || !allowedCharacters.contains(target)) {
+                            valid = false;
+                            continue;
+                        }
+                        corrections.put(source, target);
+                    }
+                }
+            }
+
+            OcrPositionRule parsed = new OcrPositionRule(
+                Collections.unmodifiableSet(allowedCharacters),
+                Collections.unmodifiableMap(corrections));
+            for (int position : positions) {
+                if (result.containsKey(position)) {
+                    valid = false;
+                } else {
+                    result.put(position, parsed);
+                }
+            }
+        }
+        return new OcrPositionRulesValue(
+            Collections.unmodifiableMap(result), valid);
     }
 
     private static IntValue positiveInteger(JSONObject value, String key, int fallback) {
@@ -771,6 +1004,16 @@ final class SnScanRules {
         IntegerList(List<Integer> values, boolean configured, boolean valid) {
             this.values = values;
             this.configured = configured;
+            this.valid = valid;
+        }
+    }
+
+    private static final class OcrPositionRulesValue {
+        final Map<Integer, OcrPositionRule> rules;
+        final boolean valid;
+
+        OcrPositionRulesValue(Map<Integer, OcrPositionRule> rules, boolean valid) {
+            this.rules = rules;
             this.valid = valid;
         }
     }

@@ -1712,7 +1712,7 @@ function validateScannerPolicy(value, path, errors) {
     "requireLetterAndDigit", "rejectedSubstrings", "stripLabels", "caseMode",
     "removeWhitespace", "labelMatchMode", "candidateCharacterMode",
     "applyCandidateRulesTo", "applyExpectedLengthTo", "applyAllowedLengthsTo",
-    "stripLabelsFrom", "prompt", "promptI18n"
+    "stripLabelsFrom", "ocrPositionRules", "prompt", "promptI18n"
   ]);
   for (const key of Object.keys(value)) {
     if (!allowedKeys.has(key)) errors.push(`${path}.${key} is not a supported scanner setting`);
@@ -1828,6 +1828,37 @@ function validateScannerPolicy(value, path, errors) {
       && (!Array.isArray(prefixes) || prefixes.length === 0)) {
     errors.push(`${path}.preferredPrefixes must be non-empty when ordered candidateOrder includes prefix`);
   }
+  const requiredOcrPositionLength = validateOcrPositionRules(
+    value.ocrPositionRules, `${path}.ocrPositionRules`, errors);
+  const allowedLengthsConstrainOcr = Array.isArray(value.allowedLengths)
+    && value.allowedLengths.length > 0
+    && (value.applyAllowedLengthsTo === undefined
+      || (Array.isArray(value.applyAllowedLengthsTo)
+        && value.applyAllowedLengthsTo.includes("ocr")));
+  const expectedLengthConstrainsOcr = Number.isInteger(value.expectedLength)
+    && value.expectedLength > 0
+    && (value.applyExpectedLengthTo === undefined
+      || (Array.isArray(value.applyExpectedLengthTo)
+        && value.applyExpectedLengthTo.includes("ocr")))
+    && !allowedLengthsConstrainOcr;
+  if (requiredOcrPositionLength > 0) {
+    if (Number.isInteger(value.maxLength) && value.maxLength < requiredOcrPositionLength) {
+      errors.push(`${path}.maxLength must include every configured OCR position`);
+    }
+    if (allowedLengthsConstrainOcr) {
+      value.allowedLengths.forEach((length, index) => {
+        if (Number.isInteger(length) && length < requiredOcrPositionLength) {
+          errors.push(`${path}.allowedLengths[${index}] must include every configured OCR position`);
+        }
+      });
+    } else if (expectedLengthConstrainsOcr) {
+      if (value.expectedLength < requiredOcrPositionLength) {
+        errors.push(`${path}.expectedLength must include every configured OCR position`);
+      }
+    } else if (value.maxLength === undefined && requiredOcrPositionLength > 64) {
+      errors.push(`${path}.ocrPositionRules positions must not exceed the default maxLength of 64`);
+    }
+  }
   if (value.candidateCharacterMode === "alphanumeric" && Array.isArray(prefixes)) {
     prefixes.forEach((prefix, index) => {
       if (typeof prefix === "string" && !/^[A-Za-z0-9]+$/.test(prefix)) {
@@ -1835,6 +1866,102 @@ function validateScannerPolicy(value, path, errors) {
       }
     });
   }
+}
+
+function validateOcrPositionRules(value, path, errors) {
+  if (value === undefined) return 0;
+  if (!Array.isArray(value)) {
+    errors.push(`${path} must be an array`);
+    return 0;
+  }
+  if (value.length === 0) errors.push(`${path} must not be empty`);
+  if (value.length > 256) errors.push(`${path} must contain at most 256 items`);
+  const claimedPositions = new Set();
+  let requiredLength = 0;
+  value.forEach((rule, ruleIndex) => {
+    const rulePath = `${path}[${ruleIndex}]`;
+    if (!isPlainObject(rule)) {
+      errors.push(`${rulePath} must be an object`);
+      return;
+    }
+    const allowedKeys = new Set(["positions", "allowedCharacters", "corrections"]);
+    for (const key of Object.keys(rule)) {
+      if (!allowedKeys.has(key)) errors.push(`${rulePath}.${key} is not supported`);
+    }
+
+    if (!Array.isArray(rule.positions)) {
+      errors.push(`${rulePath}.positions must be an array`);
+    } else {
+      if (rule.positions.length === 0) errors.push(`${rulePath}.positions must not be empty`);
+      if (rule.positions.length > 256) {
+        errors.push(`${rulePath}.positions must contain at most 256 items`);
+      }
+      const localPositions = new Set();
+      rule.positions.forEach((position, positionIndex) => {
+        const positionPath = `${rulePath}.positions[${positionIndex}]`;
+        if (!Number.isInteger(position) || position < 1 || position > 256) {
+          errors.push(`${positionPath} must be an integer from 1 to 256`);
+          return;
+        }
+        requiredLength = Math.max(requiredLength, position);
+        if (localPositions.has(position)) errors.push(`${positionPath} must be unique`);
+        localPositions.add(position);
+        if (claimedPositions.has(position)) {
+          errors.push(`${positionPath} must not overlap another OCR position rule`);
+        }
+        claimedPositions.add(position);
+      });
+    }
+
+    const allowedCharacters = new Set();
+    if (typeof rule.allowedCharacters !== "string"
+        || rule.allowedCharacters.length < 1 || rule.allowedCharacters.length > 36
+        || !/^[A-Za-z0-9]+$/.test(rule.allowedCharacters)) {
+      errors.push(`${rulePath}.allowedCharacters must contain 1 to 36 letters or digits`);
+    } else {
+      for (const character of rule.allowedCharacters) {
+        const canonical = character.toUpperCase();
+        if (allowedCharacters.has(canonical)) {
+          errors.push(`${rulePath}.allowedCharacters must be unique (case-insensitive)`);
+        }
+        allowedCharacters.add(canonical);
+      }
+    }
+
+    if (rule.corrections === undefined) return;
+    if (!isPlainObject(rule.corrections)) {
+      errors.push(`${rulePath}.corrections must be an object`);
+      return;
+    }
+    const corrections = Object.entries(rule.corrections);
+    if (corrections.length === 0) errors.push(`${rulePath}.corrections must not be empty`);
+    if (corrections.length > 36) errors.push(`${rulePath}.corrections must contain at most 36 items`);
+    const correctionSources = new Set();
+    corrections.forEach(([source, target]) => {
+      const correctionPath = `${rulePath}.corrections.${source}`;
+      if (!/^[A-Za-z0-9]$/.test(source)
+          || typeof target !== "string" || !/^[A-Za-z0-9]$/.test(target)) {
+        errors.push(`${correctionPath} must map one letter or digit to one letter or digit`);
+        return;
+      }
+      const canonicalSource = source.toUpperCase();
+      const canonicalTarget = target.toUpperCase();
+      if (correctionSources.has(canonicalSource)) {
+        errors.push(`${correctionPath} source must be unique (case-insensitive)`);
+      }
+      correctionSources.add(canonicalSource);
+      if (canonicalSource === canonicalTarget) {
+        errors.push(`${correctionPath} must not be a no-op correction`);
+      }
+      if (allowedCharacters.has(canonicalSource)) {
+        errors.push(`${correctionPath} source must not already be allowed`);
+      }
+      if (!allowedCharacters.has(canonicalTarget)) {
+        errors.push(`${correctionPath} target must be listed in allowedCharacters`);
+      }
+    });
+  });
+  return requiredLength;
 }
 
 function validateScannerStringList(value, path, errors, options = {}) {

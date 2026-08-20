@@ -436,6 +436,170 @@ public class SnScanRulesTest {
     }
 
     @Test
+    public void configuredOcrPositionsCorrectOnlyExplicitConfusions() throws Exception {
+        SnScanRules.Policy policy = SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 8)
+            .put("preferredPrefixes", new JSONArray().put("AB00"))
+            .put("candidateMode", "ordered")
+            .put("candidateOrder", new JSONArray().put("prefix"))
+            .put("candidateCharacterMode", "alphanumeric")
+            .put("ocrPositionRules", new JSONArray().put(digitRule(3, 4))));
+
+        assertTrue(policy.valid);
+        // Positions are one-based. Only the two configured numeric positions are corrected; the
+        // legitimate letter O at position 7 remains untouched.
+        assertEquals("AB0012O4",
+            policy.normalizeForSource("ABOO12O4", SnScanRules.SOURCE_OCR));
+        assertEquals(SnScanRules.Rejection.NONE,
+            policy.captureRejection("AB0012O4"));
+
+        // The same bytes from a barcode or keyboard are never rewritten by an OCR-only rule.
+        assertEquals("ABOO12O4",
+            policy.normalizeForSource("ABOO12O4", SnScanRules.SOURCE_BARCODE));
+        assertEquals("ABOO12O4",
+            policy.normalizeForSource("ABOO12O4", SnScanRules.SOURCE_ENTERED));
+        assertEquals(SnScanRules.Rejection.NONE, policy.barcodeRejection("ABOO12O4"));
+        assertEquals(SnScanRules.Rejection.NONE, policy.enteredRejection("ABOO12O4"));
+
+        // Prefix-only ordered policies must consider the corrected token, not only its raw OCR
+        // spelling, or an explicitly recoverable prefix would still be discarded.
+        assertEquals("AB001234", SnScanRules.selectTextCandidate(
+            Arrays.asList("ABOO1234"), policy));
+
+        // The direction is profile-owned too: a letter position may repair 0 to O without changing
+        // any zero outside that exact position.
+        JSONObject letterRule = new JSONObject()
+            .put("positions", new JSONArray().put(3))
+            .put("allowedCharacters", "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+            .put("corrections", new JSONObject().put("0", "O"));
+        SnScanRules.Policy letterPolicy = SnScanRules.Policy.from(new JSONObject()
+            .put("ocrPositionRules", new JSONArray().put(letterRule)));
+        assertTrue(letterPolicy.valid);
+        assertEquals("ABOD1204",
+            letterPolicy.normalizeForSource("AB0D1204", SnScanRules.SOURCE_OCR));
+    }
+
+    @Test
+    public void ocrPositionFormatRejectsUnmappedOrMissingCharacters() throws Exception {
+        SnScanRules.Policy correcting = SnScanRules.Policy.from(new JSONObject()
+            .put("ocrPositionRules", new JSONArray().put(digitRule(3, 4))));
+        assertTrue(correcting.valid);
+        String unresolved = correcting.normalizeForSource(
+            "ABQO1234", SnScanRules.SOURCE_OCR);
+        assertEquals("ABQ01234", unresolved);
+        assertEquals(SnScanRules.Rejection.OCR_POSITION_MISMATCH,
+            correcting.captureRejection(unresolved));
+        assertEquals(SnScanRules.Rejection.OCR_POSITION_MISMATCH,
+            correcting.captureRejection("AB"));
+
+        JSONObject formatOnlyRule = new JSONObject()
+            .put("positions", new JSONArray().put(3).put(4))
+            .put("allowedCharacters", "0123456789");
+        SnScanRules.Policy formatOnly = SnScanRules.Policy.from(new JSONObject()
+            .put("ocrPositionRules", new JSONArray().put(formatOnlyRule)));
+        assertTrue(formatOnly.valid);
+        assertEquals("ABOO1234",
+            formatOnly.normalizeForSource("ABOO1234", SnScanRules.SOURCE_OCR));
+        assertEquals(SnScanRules.Rejection.OCR_POSITION_MISMATCH,
+            formatOnly.captureRejection("ABOO1234"));
+        assertEquals(SnScanRules.Rejection.NONE,
+            formatOnly.captureRejection("AB001234"));
+    }
+
+    @Test
+    public void malformedOrAmbiguousOcrPositionRulesFailClosed() throws Exception {
+        JSONObject validRule = digitRule(3, 4);
+        JSONObject overlapping = digitRule(4, 5);
+        JSONObject unknownKey = digitRule(3).put("guess", true);
+        JSONObject duplicateAllowed = new JSONObject()
+            .put("positions", new JSONArray().put(3))
+            .put("allowedCharacters", "00");
+        JSONObject allowedSource = new JSONObject()
+            .put("positions", new JSONArray().put(3))
+            .put("allowedCharacters", "O0")
+            .put("corrections", new JSONObject().put("O", "0"));
+        JSONObject targetNotAllowed = new JSONObject()
+            .put("positions", new JSONArray().put(3))
+            .put("allowedCharacters", "0123456789")
+            .put("corrections", new JSONObject().put("O", "A"));
+
+        JSONObject[] malformed = new JSONObject[]{
+            new JSONObject().put("ocrPositionRules", "positions"),
+            new JSONObject().put("ocrPositionRules", new JSONArray()),
+            new JSONObject().put("ocrPositionRules", new JSONArray()
+                .put(new JSONObject().put("allowedCharacters", "0123456789"))),
+            new JSONObject().put("ocrPositionRules", new JSONArray()
+                .put(new JSONObject()
+                    .put("positions", new JSONArray().put(0))
+                    .put("allowedCharacters", "0123456789"))),
+            new JSONObject().put("ocrPositionRules", new JSONArray()
+                .put(new JSONObject()
+                    .put("positions", new JSONArray().put(3.0d))
+                    .put("allowedCharacters", "0123456789"))),
+            new JSONObject().put("ocrPositionRules", new JSONArray()
+                .put(validRule).put(overlapping)),
+            new JSONObject().put("ocrPositionRules", new JSONArray().put(unknownKey)),
+            new JSONObject().put("ocrPositionRules", new JSONArray().put(duplicateAllowed)),
+            new JSONObject().put("ocrPositionRules", new JSONArray().put(allowedSource)),
+            new JSONObject().put("ocrPositionRules", new JSONArray().put(targetNotAllowed)),
+            new JSONObject().put("ocrPositionRules", new JSONArray()
+                .put(new JSONObject()
+                    .put("positions", new JSONArray().put(3))
+                    .put("allowedCharacters", "0123456789")
+                    .put("corrections", new JSONObject())))
+        };
+        for (JSONObject configured : malformed) {
+            SnScanRules.Policy policy = SnScanRules.Policy.from(configured);
+            assertFalse(configured.toString(), policy.valid);
+            assertEquals(SnScanRules.Rejection.INVALID_POLICY,
+                policy.captureRejection("AB001234"));
+        }
+    }
+
+    @Test
+    public void ocrPositionRulesRejectContradictoryLengthsButHonorSourceScopes() throws Exception {
+        JSONObject[] contradictory = new JSONObject[]{
+            new JSONObject()
+                .put("expectedLength", 2)
+                .put("ocrPositionRules", new JSONArray().put(digitRule(3))),
+            new JSONObject()
+                .put("allowedLengths", new JSONArray().put(2).put(8))
+                .put("ocrPositionRules", new JSONArray().put(digitRule(3))),
+            new JSONObject()
+                .put("minLength", 1)
+                .put("maxLength", 2)
+                .put("ocrPositionRules", new JSONArray().put(digitRule(3)))
+        };
+        for (JSONObject configured : contradictory) {
+            assertFalse(configured.toString(), SnScanRules.Policy.from(configured).valid);
+        }
+
+        // Length settings scoped away from OCR do not contradict an OCR position. OCR continues
+        // to use its ordinary candidate bounds while barcode keeps the two-character fallback.
+        SnScanRules.Policy barcodeLengthOnly = SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 2)
+            .put("applyExpectedLengthTo", new JSONArray().put("barcode"))
+            .put("ocrPositionRules", new JSONArray().put(digitRule(3))));
+        assertTrue(barcodeLengthOnly.valid);
+        assertEquals(SnScanRules.Rejection.NONE,
+            barcodeLengthOnly.captureRejection("AB0DEF"));
+        assertEquals(SnScanRules.Rejection.NONE,
+            barcodeLengthOnly.barcodeRejection("AB"));
+
+        // A discrete OCR length may intentionally exceed legacy implicit token bounds; candidate
+        // extraction must expand to that declared length instead of silently truncating it.
+        String longRaw = repeat('A', 64) + "O";
+        String longCorrected = repeat('A', 64) + "0";
+        SnScanRules.Policy longPolicy = SnScanRules.Policy.from(new JSONObject()
+            .put("expectedLength", 65)
+            .put("candidateCharacterMode", "alphanumeric")
+            .put("ocrPositionRules", new JSONArray().put(digitRule(65))));
+        assertTrue(longPolicy.valid);
+        assertEquals(longCorrected,
+            SnScanRules.selectTextCandidate(Arrays.asList(longRaw), longPolicy));
+    }
+
+    @Test
     public void absentPolicyPreservesGenericDefaultsButMalformedPolicyFailsClosed() throws Exception {
         SnScanRules.Policy absentLegacyPolicy = SnScanRules.Policy.from(new JSONObject());
         assertTrue(absentLegacyPolicy.valid);
@@ -465,5 +629,14 @@ public class SnScanRulesTest {
         char[] chars = new char[count];
         Arrays.fill(chars, value);
         return new String(chars);
+    }
+
+    private static JSONObject digitRule(int... oneBasedPositions) throws Exception {
+        JSONArray positions = new JSONArray();
+        for (int position : oneBasedPositions) positions.put(position);
+        return new JSONObject()
+            .put("positions", positions)
+            .put("allowedCharacters", "0123456789")
+            .put("corrections", new JSONObject().put("O", "0"));
     }
 }

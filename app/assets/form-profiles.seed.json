@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "settings": {
     "sampleCatalog": true,
     "dailyStats": {
