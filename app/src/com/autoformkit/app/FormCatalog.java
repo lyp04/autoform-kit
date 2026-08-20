@@ -36,10 +36,9 @@ final class FormCatalog {
      * decline a catalog they couldn't render correctly.
      *
      * <p>v1: basic uploads and result mapping. v2: optional result mapping and
-     * {@code photoSlots} (N upload boxes, each with min/max photos). v3: optional
-     * scanner {@code ocrPositionRules} for profile-owned positional OCR constraints.
+     * {@code photoSlots} (N upload boxes, each with min/max photos).
      */
-    static final int SUPPORTED_SCHEMA_VERSION = 3;
+    static final int SUPPORTED_SCHEMA_VERSION = 2;
 
     private FormCatalog() {}
 

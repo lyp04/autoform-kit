@@ -168,7 +168,7 @@ test("an explicit alternate allowed-length scope survives publish and App catalo
   assert.deepEqual(validateFormProfile(source), []);
   assert.deepEqual(validateProfilesForPublish([source, target]), []);
   const delivered = clientCatalog({
-    schemaVersion: 3,
+    schemaVersion: 2,
     version: 8,
     settings: {},
     profiles: [source, target]

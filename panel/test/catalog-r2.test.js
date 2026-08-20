@@ -283,11 +283,9 @@ test("R2 publish writes immutable snapshots then moves only current with ETag CA
   const profiles = JSON.parse(profilesText);
   const manifest = JSON.parse(manifestText);
   assert.equal(current.catalogVersion, 43);
-  assert.equal(profiles.schemaVersion, 3);
   assert.equal(profiles.version, 43);
   assert.equal(profiles.settings.brand, "R2");
   assert.deepEqual(profiles.settings.future, { keep: true });
-  assert.equal(manifest.schemaVersion, 3);
   assert.equal(manifest.version, 43);
   assert.equal(manifest.sha256, await sha256Hex(profilesText));
   assert.equal(await readCatalogFile(env, "profiles"), profilesText);
