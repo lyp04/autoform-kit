@@ -288,12 +288,12 @@ tools/publish-release.sh \
 ```
 
 **当前发布策略继续 fail closed。** `tools/private-release-gate-policy.json` 只启用一份经审查并固定
-SHA-256 的外部 gate。该 gate 是一次性的 v1.0.16 maintenance gate：它只接受公开 v1.0.15
-（versionCode 19）到 v1.0.16（versionCode 20）的同 package/同 signer 升级、精确内容哈希绑定的
-source diff、部署后仍与 App 成对的 private R2 authority，以及下述 schema-v5 当前升级证据。
-它额外要求 Panel 的 source-tag/runtime provenance、dry-run bundle 证据、签名覆盖升级、fresh install
-和 `gallery` Photo Picker 回填证据。v1.0.16 tag/Release 存在后不可复用；任何其他版本、基线、
-changed-path 集合、catalog revision 或 authority 都会停止。
+SHA-256 的外部 gate。该 gate 是一次性的 v1.0.17 maintenance gate：它只接受公开 v1.0.16
+（versionCode 20）到 v1.0.17（versionCode 30）的同 package/同 signer 升级、排除 scanner/SN beta
+改动后的精确相机与草稿修复树、部署后仍与 App 成对的 catalog-v76 private R2 authority，以及
+下述 schema-v5 当前升级证据。它额外要求 Panel 的 source-tag/runtime provenance、独立 dry-run
+bundle 证据、签名覆盖升级、fresh install 与相机/草稿设备回归。v1.0.17 tag/Release 存在后不可复用；
+任何其他版本、基线、source tree、changed-path 集合、catalog revision 或 authority 都会停止。
 后续版本必须重新审查真实 gate、更新其 exact SHA-256 并提交 policy，不能沿用、临时关闭或绕过。
 
 原 gate 必须是可执行、非符号链接且 group/other 不可写的普通文件。发布脚本不会从该可变路径直接
