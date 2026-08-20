@@ -255,6 +255,9 @@ public class MainActivity extends Activity {
     // silently replacing a valid rollback edit or reassigning it to another Panel.
     private final Set<String> blockedRollbackMirrors =
         Collections.synchronizedSet(new HashSet<>());
+    // A failed SharedPreferences commit can leave process memory ahead of disk. Keep all main
+    // draft mutations closed across Activity recreation until a process restart reloads AtomicFile.
+    private static volatile boolean mainDraftStorageAmbiguous;
     /** Separate from mirror-shape conflicts so a later successful transaction recovery can clear it. */
     private volatile boolean manualQueueDeleteRecoveryBlocked;
     static final ThreadLocal<DnsContext> currentDnsContext = new ThreadLocal<>();
@@ -353,10 +356,14 @@ public class MainActivity extends Activity {
     private String pendingPhotoField = "";
     private String pendingOutputPhotoPath = "";
     private Uri pendingOutputPhotoUri;
+    private String nextCameraOpeningNotice = "";
     private String pendingOcrPhotoPath = "";
     private Uri pendingOcrPhotoUri;
     private int pendingRescanUnitSequence = -1;
     private PendingFormOperationRules.Target pendingMainFormTarget;
+    // True only for a durable target loaded by this process at startup. A new user action may
+    // retire that interrupted local round trip; it must never replace one started in this process.
+    private boolean pendingMainFormTargetRestoredFromPreviousProcess = false;
 
     // Panel-configured alternate-entry state. It is intentionally separate from the main draft:
     // the old dedicated page kept one serial and a small photo list in memory until submission.
@@ -1263,6 +1270,21 @@ public class MainActivity extends Activity {
             // An unreadable new-format target is itself a lock. Do not let a profile switch make it
             // still harder to recover. Legacy index/path keys are intentionally ignored here.
             return true;
+        }
+    }
+
+    /** A record delete may retire only the local target bound to that exact profile + sequence. */
+    private boolean pendingMainFormOperationTargetsUnit(UnitRecord unit) {
+        if (unit == null) return false;
+        try {
+            Object raw = prefs.getAll().get(PENDING_MAIN_FORM_OPERATION_KEY);
+            if (!(raw instanceof String)) return false;
+            PendingFormOperationRules.Target target =
+                PendingFormOperationRules.parse((String) raw);
+            return currentProfileId().equals(target.profileId)
+                && target.unitSequence == unit.sequence;
+        } catch (RuntimeException invalid) {
+            return false;
         }
     }
 
@@ -2187,6 +2209,10 @@ public class MainActivity extends Activity {
     }
 
     private boolean blockDraftMutationForPreviousStepJournal() {
+        if (mainDraftStorageAmbiguous) {
+            alert(t("draft_save_failed"), t("draft_storage_uncertain"));
+            return true;
+        }
         UploadReplayBarrier.RestoreResult uploadBarrier =
             blockingUploadReplayBarrier();
         if (uploadBarrier != null) {
@@ -4656,28 +4682,14 @@ public class MainActivity extends Activity {
                 startActivityForResult(picker, requestCode);
                 return;
             }
-            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingAlternateEntryPhotoUri);
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            List<ResolveInfo> cameraApps = getPackageManager().queryIntentActivities(
-                intent, PackageManager.MATCH_DEFAULT_ONLY);
-            if (intent.resolveActivity(getPackageManager()) != null
-                    && !cameraApps.isEmpty()) {
-                for (ResolveInfo cameraApp : cameraApps) {
-                    grantUriPermission(cameraApp.activityInfo.packageName,
-                        pendingAlternateEntryPhotoUri,
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION
-                            | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                }
-                startActivityForResult(intent, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);
-                return;
-            }
-            Intent fallback = new Intent(this, CaptureActivity.class);
-            fallback.putExtra("fileName", outputFile.getName());
-            fallback.putExtra("label", t("alternate_entry_photo"));
-            fallback.putExtra("lang", lang);
-            startActivityForResult(fallback, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);
+            Intent capture = new Intent(this, CaptureActivity.class);
+            capture.putExtra("fileName", outputFile.getName());
+            capture.putExtra(MediaStore.EXTRA_OUTPUT, pendingAlternateEntryPhotoUri);
+            capture.putExtra("label", t("alternate_entry_photo"));
+            capture.putExtra("lang", lang);
+            Diagnostics.append(this,
+                "Starting internal camera for alternate-entry photo bytes");
+            startActivityForResult(capture, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);
         } catch (Exception error) {
             clearPendingAlternateEntryPhoto();
             alert(t("camera_open_failed"), conciseError(error));
@@ -6485,22 +6497,6 @@ public class MainActivity extends Activity {
                 alert(t("draft_save_failed"), t("draft_binding_locked_detail"));
                 return;
             }
-            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingOcrPhotoUri);
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            List<ResolveInfo> cameraApps = getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
-            if (intent.resolveActivity(getPackageManager()) != null && !cameraApps.isEmpty()) {
-                for (ResolveInfo cameraApp : cameraApps) {
-                    grantUriPermission(
-                        cameraApp.activityInfo.packageName,
-                        pendingOcrPhotoUri,
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    );
-                }
-                Diagnostics.append(this, "Starting system camera for OCR role=" + (baseSn ? "secondary" : "primary"));
-                startActivityForResult(intent, baseSn ? REQ_OCR_BASE : REQ_OCR_SN);
-                return;
-            }
             startInternalOcrCamera(outputFile, baseSn);
         } catch (Exception exc) {
             clearPendingOcrOutput();
@@ -6511,9 +6507,10 @@ public class MainActivity extends Activity {
     private void startInternalOcrCamera(File outputFile, boolean baseSn) {
         Intent intent = new Intent(this, CaptureActivity.class);
         intent.putExtra("fileName", outputFile.getName());
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingOcrPhotoUri);
         intent.putExtra("label", inputLabel(baseSn));
         intent.putExtra("lang", lang);
-        Diagnostics.append(this, "Starting internal camera fallback for OCR role=" + (baseSn ? "secondary" : "primary"));
+        Diagnostics.append(this, "Starting internal camera for OCR role=" + (baseSn ? "secondary" : "primary"));
         startActivityForResult(intent, baseSn ? REQ_OCR_BASE : REQ_OCR_SN);
     }
 
@@ -6929,22 +6926,6 @@ public class MainActivity extends Activity {
             File outputFile = preparePendingPhotoOutput();
             if (outputFile == null) return;
             pendingOutputPhotoUri = SimplePhotoProvider.uriForFile(this, outputFile);
-            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-            intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingOutputPhotoUri);
-            intent.addFlags(Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            List<ResolveInfo> cameraApps = getPackageManager().queryIntentActivities(intent, PackageManager.MATCH_DEFAULT_ONLY);
-            if (intent.resolveActivity(getPackageManager()) != null && !cameraApps.isEmpty()) {
-                for (ResolveInfo cameraApp : cameraApps) {
-                    grantUriPermission(
-                        cameraApp.activityInfo.packageName,
-                        pendingOutputPhotoUri,
-                        Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION
-                    );
-                }
-                Diagnostics.append(this, "Starting system camera for original photo file");
-                startActivityForResult(intent, REQ_CAPTURE_PHOTO);
-                return;
-            }
             startInternalCamera(outputFile);
         } catch (Exception exc) {
             clearPendingPhotoOutput();
@@ -7001,10 +6982,60 @@ public class MainActivity extends Activity {
     private void startInternalCamera(File outputFile) {
         Intent intent = new Intent(this, CaptureActivity.class);
         intent.putExtra("fileName", outputFile.getName());
+        intent.putExtra(MediaStore.EXTRA_OUTPUT, pendingOutputPhotoUri);
         intent.putExtra("label", photoCaptureLabel());
         intent.putExtra("lang", lang);
-        Diagnostics.append(this, "Starting internal camera fallback for original photo bytes");
+        intent.putExtra(CaptureActivity.EXTRA_CONTINUOUS_CAPTURE,
+            pendingPhotoIsRequiredNextStep());
+        if (!nextCameraOpeningNotice.isEmpty()) {
+            intent.putExtra(CaptureActivity.EXTRA_OPENING_NOTICE,
+                nextCameraOpeningNotice);
+        }
+        Diagnostics.append(this, "Starting internal camera for original photo bytes");
         startActivityForResult(intent, REQ_CAPTURE_PHOTO);
+        overridePendingTransition(0, 0);
+    }
+
+    private boolean pendingPhotoIsRequiredNextStep() {
+        if (isSlotMode()) {
+            int[] next = nextSlotStep();
+            JSONArray slots = photoSlots();
+            JSONObject slot = next == null || slots == null
+                ? null : slots.optJSONObject(next[1]);
+            return slot != null && next[0] == pendingPhotoIndex
+                && "slot".equals(pendingPhotoSide)
+                && slot.optString("field").equals(pendingPhotoField);
+        }
+        PhotoStep next = nextPhotoStep();
+        return next != null && next.index == pendingPhotoIndex
+            && next.side.equals(pendingPhotoSide)
+            && ("front".equals(pendingPhotoSide) || "back".equals(pendingPhotoSide));
+    }
+
+    private boolean nextRequiredPhotoUsesCamera() {
+        try {
+            if (isSlotMode()) {
+                int[] next = nextSlotStep();
+                JSONArray slots = photoSlots();
+                JSONObject slot = next == null || slots == null
+                    ? null : slots.optJSONObject(next[1]);
+                return slot != null && PhotoInputSourceRules.CAMERA.equals(
+                    PhotoInputSourceRules.from(slot));
+            }
+            return nextPhotoStep() != null && PhotoInputSourceRules.CAMERA.equals(
+                PhotoInputSourceRules.from(workflowPhotoPolicy()));
+        } catch (IllegalArgumentException invalid) {
+            return false;
+        }
+    }
+
+    private void continueRequiredPhotoCapture(String openingNotice) {
+        nextCameraOpeningNotice = openingNotice == null ? "" : openingNotice;
+        try {
+            captureNextPhoto();
+        } finally {
+            nextCameraOpeningNotice = "";
+        }
     }
 
     @Override
@@ -7087,7 +7118,12 @@ public class MainActivity extends Activity {
             ? new ArrayList<>(unit.slotPhotos.get(target.field)) : null;
         String oldArtifact = unit.workflowArtifacts.get(target.field);
         String oldLegacyArtifact = unit.legacyWorkflowArtifactPath;
+        boolean continuousCameraResult = requestCode == REQ_CAPTURE_PHOTO
+            && data != null
+            && data.getBooleanExtra(CaptureActivity.EXTRA_CONTINUOUS_CAPTURE, false);
+        boolean photoCommitted = false;
         try {
+            String transitionNotice = "";
             int[] slotStepBeforeSave = "slot".equals(target.side) ? nextSlotStep() : null;
             if ("front".equals(target.side)) {
                 unit.frontPhoto = path;
@@ -7108,7 +7144,7 @@ public class MainActivity extends Activity {
                     profileWorkflow(), target.field, path,
                     unit.legacyWorkflowArtifactPath);
             }
-            if (!saveDraft(true)) {
+            if (!saveDraft(true, true)) {
                 unit.frontPhoto = oldFront;
                 unit.backPhoto = oldBack;
                 unit.supplementalPhotos.clear();
@@ -7122,11 +7158,11 @@ public class MainActivity extends Activity {
                 alert(t("photo_save_failed"), t("draft_binding_locked_detail"));
                 return;
             }
+            photoCommitted = true;
             if ("artifact".equals(target.side) && oldArtifact != null
                     && !oldArtifact.equals(path)) {
                 deleteFileQuietly(oldArtifact);
             }
-            clearPendingMainFormTarget();
             Diagnostics.append(this, "Photo saved for SN=" + unit.sn + " side="
                 + target.side + " path=" + path + " bytes=" + photoFile.length());
             if ("slot".equals(target.side)) {
@@ -7135,21 +7171,39 @@ public class MainActivity extends Activity {
                     && slotHasAnyPhotos(slotStepAfterSave[1]);
                 if (PhotoTransitionRules.shouldShowSlotTransitionNotice(
                     photoOrder, slotStepBeforeSave, slotStepAfterSave, nextSlotAlreadyStarted)) {
-                    alert(t("photo_notice"), photoSlotTransitionNotice(
+                    transitionNotice = photoSlotTransitionNotice(
                         slotTitleForStep(slotStepBeforeSave),
-                        slotTitleForStep(slotStepAfterSave)));
+                        slotTitleForStep(slotStepAfterSave));
                 }
             } else if (!isSlotMode() && !"supplemental".equals(target.side)
                     && !"artifact".equals(target.side)) {
                 PhotoStep next = nextPhotoStep();
                 if (next != null && next.frontsCompleteTransition) {
-                    alert(t("photo_notice"), photoSlotTransitionNotice(
+                    transitionNotice = photoSlotTransitionNotice(
                         legacyPhotoSlotTitle(0, "front"),
-                        legacyPhotoSlotTitle(1, "back")));
+                        legacyPhotoSlotTitle(1, "back"));
                 }
             }
             refreshFormUi();
+            if (continuousCameraResult && nextRequiredPhotoUsesCamera()) {
+                continueRequiredPhotoCapture(transitionNotice);
+            } else if (!transitionNotice.isEmpty()) {
+                alert(t("photo_notice"), transitionNotice);
+            }
         } catch (Exception exc) {
+            if (photoCommitted) {
+                Diagnostics.append(this,
+                    "Confirmed photo kept after continuation failure: " + conciseError(exc));
+                try {
+                    refreshFormUi();
+                } catch (Exception refreshFailure) {
+                    Diagnostics.append(this,
+                        "Photo form refresh failed after durable save: "
+                            + conciseError(refreshFailure));
+                }
+                alert(t("photo_notice"), t("photo_saved_continue_failed"));
+                return;
+            }
             unit.frontPhoto = oldFront;
             unit.backPhoto = oldBack;
             unit.supplementalPhotos.clear();
@@ -7720,6 +7774,7 @@ public class MainActivity extends Activity {
         }
         if (!editor.commit()) return false;
         pendingMainFormTarget = target;
+        pendingMainFormTargetRestoredFromPreviousProcess = false;
         applyPendingMainFormTargetToLegacyMemory(target, legacyIndex);
         Diagnostics.append(this, "Bound main-form operation started kind=" + target.kind
             + " profile=" + target.profileId + " sequence=" + target.unitSequence);
@@ -7730,8 +7785,36 @@ public class MainActivity extends Activity {
             String kind, int unitSequence, String role, String side, String field,
             String outputPath, String grade, int legacyIndex) {
         if (hasStoredUploadReplayBarrier()
-                || hasStoredPreviousStepSubmissionAttempt()
-                || hasPendingMainFormOperation()) return null;
+                || hasStoredPreviousStepSubmissionAttempt()) return null;
+        if (mainFormBoundWorkerActive()) {
+            Diagnostics.append(this,
+                "Main-form operation not replaced while a bound worker is active");
+            return null;
+        }
+        // A new foreground action explicitly supersedes an interrupted local scanner/camera
+        // action. Android can kill our task while the external camera owns the output URI, leaving
+        // this durable target behind without ever delivering an Activity result. It has no remote
+        // side effect, so keeping it as a permanent lock only strands the next scan/photo attempt.
+        if (hasPendingMainFormOperation()) {
+            if (!pendingMainFormTargetRestoredFromPreviousProcess) {
+                Diagnostics.append(this,
+                    "Current-process main-form operation is still pending");
+                return null;
+            }
+            if (!canSafelyRetireRestoredPendingMainFormTarget()) {
+                Diagnostics.append(this,
+                    "Interrupted main-form operation has recoverable evidence; "
+                        + "explicit discard is required");
+                return null;
+            }
+            if (!clearPendingMainFormTarget()) {
+                Diagnostics.append(this,
+                    "Interrupted main-form operation could not be retired");
+                return null;
+            }
+            Diagnostics.append(this,
+                "Interrupted main-form operation retired before new " + kind);
+        }
         if (!saveDraft(true)) return null;
         try {
             MainDraftSnapshotRules.Binding draftBinding =
@@ -7751,14 +7834,40 @@ public class MainActivity extends Activity {
         }
     }
 
+    private boolean canSafelyRetireRestoredPendingMainFormTarget() {
+        PendingFormOperationRules.Target target = pendingMainFormTarget;
+        if (!pendingMainFormTargetRestoredFromPreviousProcess || target == null) {
+            return false;
+        }
+        if (!PendingFormOperationRules.PHOTO.equals(target.kind)
+                && !PendingFormOperationRules.OCR_PHOTO.equals(target.kind)) {
+            return true;
+        }
+        String outputPath = target.outputPath == null ? "" : target.outputPath.trim();
+        if (outputPath.isEmpty()) return true;
+        try {
+            File output = new File(outputPath);
+            if (!output.exists()) return true;
+            if (output.isFile() && output.length() == 0L) return true;
+        } catch (SecurityException inaccessible) {
+            Diagnostics.append(this, "Interrupted photo evidence could not be inspected: "
+                + conciseError(inaccessible));
+        }
+        return false;
+    }
+
     private void restorePendingMainFormTarget() {
         pendingMainFormTarget = null;
+        pendingMainFormTargetRestoredFromPreviousProcess = false;
         try {
-            Object raw = prefs.getAll().get(PENDING_MAIN_FORM_OPERATION_KEY);
+            Map<String, ?> stored = prefs.getAll();
+            if (!stored.containsKey(PENDING_MAIN_FORM_OPERATION_KEY)) return;
+            Object raw = stored.get(PENDING_MAIN_FORM_OPERATION_KEY);
             if (!(raw instanceof String) || ((String) raw).trim().isEmpty()) return;
             PendingFormOperationRules.Target target =
                 PendingFormOperationRules.parse((String) raw);
             pendingMainFormTarget = target;
+            pendingMainFormTargetRestoredFromPreviousProcess = true;
             applyPendingMainFormTargetToLegacyMemory(target, -1);
         } catch (RuntimeException invalid) {
             // Preserve malformed bytes for manual recovery; never fall back to the legacy mirrors.
@@ -7811,31 +7920,35 @@ public class MainActivity extends Activity {
         }
     }
 
-    private boolean clearPendingMainFormTarget() {
-        if (!prefs.edit()
+    private SharedPreferences.Editor removePendingMainFormTargetKeys(
+            SharedPreferences.Editor editor) {
+        return editor
                 .remove(PENDING_MAIN_FORM_OPERATION_KEY)
                 .remove(PENDING_PHOTO_INDEX_KEY)
                 .remove(PENDING_PHOTO_SIDE_KEY)
                 .remove(PENDING_PHOTO_FIELD_KEY)
                 .remove(PENDING_PHOTO_PATH_KEY)
                 .remove(PENDING_OCR_PHOTO_PATH_KEY)
-                .remove(PENDING_RESCAN_SEQUENCE_KEY)
-                .commit()) {
-            return false;
-        }
-        if (pendingOutputPhotoUri != null) {
+                .remove(PENDING_RESCAN_SEQUENCE_KEY);
+    }
+
+    private void resetPendingMainFormTargetAfterDurableClear() {
+        Uri outputUri = pendingMainFormPhotoUri(pendingOutputPhotoUri,
+            pendingOutputPhotoPath);
+        if (outputUri != null) {
             try {
                 revokeUriPermission(
-                    pendingOutputPhotoUri,
+                    outputUri,
                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION
                 );
             } catch (Exception ignored) {
             }
         }
-        if (pendingOcrPhotoUri != null) {
+        Uri ocrUri = pendingMainFormPhotoUri(pendingOcrPhotoUri, pendingOcrPhotoPath);
+        if (ocrUri != null) {
             try {
                 revokeUriPermission(
-                    pendingOcrPhotoUri,
+                    ocrUri,
                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION
                 );
             } catch (Exception ignored) {
@@ -7844,12 +7957,31 @@ public class MainActivity extends Activity {
         pendingOutputPhotoUri = null;
         pendingOcrPhotoUri = null;
         pendingMainFormTarget = null;
+        pendingMainFormTargetRestoredFromPreviousProcess = false;
         pendingPhotoIndex = -1;
         pendingPhotoSide = "";
         pendingPhotoField = "";
         pendingOutputPhotoPath = "";
         pendingOcrPhotoPath = "";
         pendingRescanUnitSequence = -1;
+    }
+
+    /** Rebuilds the provider URI after process death so an interrupted camera grant is revoked. */
+    private Uri pendingMainFormPhotoUri(Uri inMemory, String path) {
+        if (inMemory != null) return inMemory;
+        if (path == null || path.isEmpty()) return null;
+        try {
+            return SimplePhotoProvider.uriForFile(this, new File(path));
+        } catch (RuntimeException invalidPath) {
+            Diagnostics.append(this, "Pending photo URI recovery failed: "
+                + conciseError(invalidPath));
+            return null;
+        }
+    }
+
+    private boolean clearPendingMainFormTarget() {
+        if (!removePendingMainFormTargetKeys(prefs.edit()).commit()) return false;
+        resetPendingMainFormTargetAfterDurableClear();
         return true;
     }
 
@@ -13055,10 +13187,28 @@ public class MainActivity extends Activity {
 
     private void deleteUnit(UnitRecord unit) {
         if (blockDraftMutationForPreviousStepJournal()) return;
-        if (unit == null || !units.remove(unit)) return;
+        if (unit == null) return;
+        int index = units.indexOf(unit);
+        if (index < 0) return;
+        boolean pendingOperationPresent = hasPendingMainFormOperation();
+        boolean clearPendingOperation = pendingOperationPresent
+            && pendingMainFormOperationTargetsUnit(unit);
+        if (pendingOperationPresent && !clearPendingOperation) {
+            alert(t("pending_main_form_operation_title"),
+                t("pending_main_form_operation_detail"));
+            return;
+        }
+        units.remove(index);
+        // The queue update and exact matching local target are one SharedPreferences commit.
+        if (!saveDraft(true, clearPendingOperation)) {
+            units.add(Math.min(index, units.size()), unit);
+            refreshFormUi();
+            alert(t("draft_discard_failed"), t("draft_discard_failed_detail"));
+            return;
+        }
+        // Files are irreversible; delete them only after the queue mutation is durable.
         deleteUnitFiles(unit);
         refreshFormUi();
-        saveDraft();
         refocusSnInput();
     }
 
@@ -13398,14 +13548,8 @@ public class MainActivity extends Activity {
 
     private Bitmap decodeBitmapForDisplay(String path, int maxWidth, int maxHeight) {
         try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, bounds);
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxWidth, maxHeight);
-            options.inPreferredConfig = Bitmap.Config.RGB_565;
-            return BitmapFactory.decodeFile(path, options);
+            return PrivateJpegImporter.decodeOrientedBitmap(
+                new File(path), Math.max(maxWidth, maxHeight));
         } catch (OutOfMemoryError error) {
             Diagnostics.append(this, "Photo preview out of memory: " + error.getMessage());
             return null;
@@ -13552,7 +13696,12 @@ public class MainActivity extends Activity {
 
     private void discardAllDraftsAndResetForm() {
         if (blockDraftMutationForPreviousStepJournal()) return;
-        clearAllDrafts();
+        if (!clearAllDrafts(true)) {
+            alert(t("draft_discard_failed"), t("draft_discard_failed_detail"));
+            return;
+        }
+        // The durable delete is the commit point. Photo files remain because an explicit manual
+        // queue backup may still reference the same paths and must stay independently restorable.
         photoOrder = PhotoOrderRules.profileDefault(profile);
         units.clear();
         clearProfileScopedState();
@@ -13920,6 +14069,11 @@ public class MainActivity extends Activity {
     }
 
     private boolean saveDraft(boolean durable) {
+        return saveDraft(durable, false);
+    }
+
+    private boolean saveDraft(boolean durable, boolean clearPendingLocalOperation) {
+        if (mainDraftStorageAmbiguous) return false;
         try {
             String profileId = currentProfileId();
             if (profileId.isEmpty()) return false;
@@ -13951,11 +14105,11 @@ public class MainActivity extends Activity {
                 (previousStepReceiptPresent || uploadBarrierPresent) && !units.isEmpty();
             if (!hasUnsubmittedUnits() && !retainTerminalForRemoteRecovery) {
                 drafts.remove(profileId);
-                writeDraftStore(store, durable);
+                writeDraftStore(store, durable, clearPendingLocalOperation);
                 return true;
             }
             drafts.put(profileId, buildDraftJson(profileId, current));
-            writeDraftStore(store, durable);
+            writeDraftStore(store, durable, clearPendingLocalOperation);
             return true;
         } catch (Exception exc) {
             appendLog(t("draft_save_failed") + exc.getMessage());
@@ -14392,17 +14546,34 @@ public class MainActivity extends Activity {
     }
 
     private boolean clearAllDrafts() {
+        return clearAllDrafts(false);
+    }
+
+    private boolean clearAllDrafts(boolean clearPendingLocalOperation) {
         if (hasStoredUploadReplayBarrier()
                 || hasStoredPreviousStepSubmissionAttempt()) {
             Diagnostics.append(this,
                 "All-draft clear blocked by remote safety journal");
             return false;
         }
-        boolean cleared = prefs.edit().remove(DRAFT_KEY).remove(DRAFT_STORE_KEY)
+        SharedPreferences.Editor editor = prefs.edit()
+            .remove(DRAFT_KEY).remove(DRAFT_STORE_KEY)
             .remove(draftStorePreferenceKey())
-            .remove(rollbackMirrorReceiptPreferenceKey(DRAFT_STORE_KEY)).commit();
-        if (cleared) blockedRollbackMirrors.remove(DRAFT_STORE_KEY);
-        else blockedRollbackMirrors.add(DRAFT_STORE_KEY);
+            .remove(rollbackMirrorReceiptPreferenceKey(DRAFT_STORE_KEY));
+        if (clearPendingLocalOperation) {
+            // Drafts and their purely local scanner/camera target share one commit point. A crash
+            // can therefore leave either both recoverable or neither able to block the next action.
+            editor = removePendingMainFormTargetKeys(editor);
+        }
+        boolean cleared = editor.commit();
+        if (cleared) {
+            blockedRollbackMirrors.remove(DRAFT_STORE_KEY);
+            if (clearPendingLocalOperation) {
+                resetPendingMainFormTargetAfterDurableClear();
+            }
+        } else {
+            blockedRollbackMirrors.add(DRAFT_STORE_KEY);
+        }
         return cleared;
     }
 
@@ -14555,8 +14726,32 @@ public class MainActivity extends Activity {
     }
 
     private void writeDraftStore(JSONObject store, boolean durable) throws JSONException {
-        if (blockedRollbackMirrors.contains(DRAFT_STORE_KEY)) {
+        writeDraftStore(store, durable, false);
+    }
+
+    private void writeDraftStore(JSONObject store, boolean durable,
+                                 boolean clearPendingLocalOperation) throws JSONException {
+        if (mainDraftStorageAmbiguous
+                || blockedRollbackMirrors.contains(DRAFT_STORE_KEY)) {
             throw new JSONException("draft rollback mirror is unresolved");
+        }
+        boolean commitRequired = durable || clearPendingLocalOperation;
+        Map<String, ?> preferencesBeforeCommit = commitRequired
+            ? PanelConnectionPreferenceTransaction.snapshot(prefs) : null;
+        Set<String> touchedPreferenceKeys = new HashSet<>();
+        touchedPreferenceKeys.add(draftStorePreferenceKey());
+        touchedPreferenceKeys.add(DRAFT_STORE_KEY);
+        touchedPreferenceKeys.add(DRAFT_KEY);
+        touchedPreferenceKeys.add(ROLLBACK_GLOBAL_OWNER_KEY);
+        touchedPreferenceKeys.add(rollbackMirrorReceiptPreferenceKey(DRAFT_STORE_KEY));
+        if (clearPendingLocalOperation) {
+            touchedPreferenceKeys.add(PENDING_MAIN_FORM_OPERATION_KEY);
+            touchedPreferenceKeys.add(PENDING_PHOTO_INDEX_KEY);
+            touchedPreferenceKeys.add(PENDING_PHOTO_SIDE_KEY);
+            touchedPreferenceKeys.add(PENDING_PHOTO_FIELD_KEY);
+            touchedPreferenceKeys.add(PENDING_PHOTO_PATH_KEY);
+            touchedPreferenceKeys.add(PENDING_OCR_PHOTO_PATH_KEY);
+            touchedPreferenceKeys.add(PENDING_RESCAN_SEQUENCE_KEY);
         }
         JSONObject drafts = draftMap(store);
         String storeKey = draftStorePreferenceKey();
@@ -14573,9 +14768,39 @@ public class MainActivity extends Activity {
             editor = putMirroredRollbackPreference(
                 prefs.edit(), DRAFT_STORE_KEY, serialized).remove(DRAFT_KEY);
         }
-        if (durable) {
-            if (!editor.commit()) {
-                throw new IllegalStateException("draft SharedPreferences commit failed");
+        if (clearPendingLocalOperation) {
+            editor = removePendingMainFormTargetKeys(editor);
+        }
+        if (commitRequired) {
+            boolean committed;
+            RuntimeException commitFailure = null;
+            try {
+                committed = editor.commit();
+            } catch (RuntimeException failure) {
+                committed = false;
+                commitFailure = failure;
+            }
+            if (!committed) {
+                boolean restored = false;
+                try {
+                    restored = PanelConnectionPreferenceTransaction.restore(
+                        prefs, preferencesBeforeCommit, touchedPreferenceKeys);
+                } catch (RuntimeException restoreFailure) {
+                    Diagnostics.append(this,
+                        "Draft preference snapshot restore threw: "
+                            + conciseError(restoreFailure));
+                }
+                if (!restored) {
+                    mainDraftStorageAmbiguous = true;
+                    blockedRollbackMirrors.add(DRAFT_STORE_KEY);
+                    Diagnostics.append(this,
+                        "Draft commit failed and old preference snapshot restore was not durable");
+                }
+                throw new IllegalStateException("draft SharedPreferences commit failed",
+                    commitFailure);
+            }
+            if (clearPendingLocalOperation) {
+                resetPendingMainFormTargetAfterDurableClear();
             }
         } else {
             editor.apply();
@@ -18468,6 +18693,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "拍照没有返回文件";
             case "photo_full_file_missing": return "系统相机没有保存原图，请重拍或更换系统相机。";
             case "photo_notice": return "拍照提示";
+            case "photo_saved_continue_failed": return "照片已经保存，但无法自动继续拍下一张。请返回表单后重试。";
             case "photo_slot_transition": return "%1$s已拍完，开始拍%2$s。";
             case "choose_photo_slot": return "选择照片框";
             case "photo_save_failed": return "照片保存失败";
@@ -18667,6 +18893,11 @@ public class MainActivity extends Activity {
             case "draft_found_detail": return "本机保存了未提交记录，是否继续录入？数量: ";
             case "continue_draft": return "继续录入";
             case "discard_draft": return "丢弃";
+            case "draft_discard_failed": return "草稿删除失败";
+            case "draft_discard_failed_detail": return "本地草稿没有完整删除，原数据仍保留。请重试。";
+            case "draft_storage_uncertain": return "本地保存状态不确定。为避免覆盖已经拍下的照片，请完全关闭并重新打开应用。";
+            case "pending_main_form_operation_title": return "拍照或扫码尚未结束";
+            case "pending_main_form_operation_detail": return "当前还有一项本地拍照或扫码操作，请先返回完成；如已中断，请丢弃全部草稿后重试。";
             case "draft_restore_failed": return "恢复草稿失败";
             case "draft_binding_locked_detail": return "该草稿与当前面板连接、目录版本或提交配置不一致。为防止传错位置，系统已禁止恢复和上传，并完整保留草稿；请恢复原面板配置，或确认后手动丢弃。";
             case "legacy_a_step_upgrade_blocked_detail": return "检测到旧版本尚未完成的上一工序拍照返回状态。为保留原照片路径并避免套用到错误工序，当前版本不会切换面板或安装更新；请先使用兼容旧版本完成或恢复该拍照流程。";
@@ -18890,6 +19121,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "Camera returned no file";
             case "photo_full_file_missing": return "The camera did not save the full-size photo. Retake it or switch camera apps.";
             case "photo_notice": return "Photo notice";
+            case "photo_saved_continue_failed": return "The photo was saved, but the next camera could not open automatically. Return to the form and retry.";
             case "photo_slot_transition": return "%1$s is complete. Start %2$s.";
             case "choose_photo_slot": return "Choose a photo box";
             case "photo_save_failed": return "Photo save failed";
@@ -19089,6 +19321,11 @@ public class MainActivity extends Activity {
             case "draft_found_detail": return "Saved unsubmitted records were found on this device. Continue? Count: ";
             case "continue_draft": return "Continue";
             case "discard_draft": return "Discard";
+            case "draft_discard_failed": return "Draft deletion failed";
+            case "draft_discard_failed_detail": return "The local draft was not completely deleted. The original data was kept; retry.";
+            case "draft_storage_uncertain": return "Local storage is uncertain. To avoid overwriting captured photos, fully close and reopen the app.";
+            case "pending_main_form_operation_title": return "Photo or scan still in progress";
+            case "pending_main_form_operation_detail": return "A local photo or scan is still active. Finish or return from it first; if it was interrupted, discard all drafts and retry.";
             case "draft_restore_failed": return "Draft restore failed";
             case "draft_binding_locked_detail": return "This draft does not match the current Panel connection, catalog revision, or submission contract. To prevent a wrong destination, restore and upload are blocked and the draft is preserved. Restore the original Panel configuration or discard it explicitly.";
             case "legacy_a_step_upgrade_blocked_detail": return "An unfinished previous-step camera return from an older app version was found. To preserve its original photo path and avoid assigning it to the wrong step, this version will not switch Panels or install another update. Finish or recover that camera flow with a compatible older version first.";
@@ -19312,6 +19549,7 @@ public class MainActivity extends Activity {
             case "photo_no_file": return "La cámara no devolvió archivo";
             case "photo_full_file_missing": return "La cámara no guardó la foto completa. Repítala o cambie la app de cámara.";
             case "photo_notice": return "Aviso de foto";
+            case "photo_saved_continue_failed": return "La foto se guardó, pero no se pudo abrir automáticamente la siguiente cámara. Vuelva al formulario e inténtelo de nuevo.";
             case "photo_slot_transition": return "%1$s completado. Empiece con %2$s.";
             case "choose_photo_slot": return "Elija un cuadro de foto";
             case "photo_save_failed": return "Error al guardar foto";
@@ -19511,6 +19749,11 @@ public class MainActivity extends Activity {
             case "draft_found_detail": return "Hay registros guardados sin enviar en este dispositivo. ¿Continuar? Cantidad: ";
             case "continue_draft": return "Continuar";
             case "discard_draft": return "Descartar";
+            case "draft_discard_failed": return "No se pudo borrar el borrador";
+            case "draft_discard_failed_detail": return "El borrador local no se eliminó por completo. Se conservaron los datos originales; inténtelo de nuevo.";
+            case "draft_storage_uncertain": return "El estado del almacenamiento local es incierto. Para no sobrescribir las fotos capturadas, cierre completamente y vuelva a abrir la app.";
+            case "pending_main_form_operation_title": return "La foto o el escaneo siguen en curso";
+            case "pending_main_form_operation_detail": return "Hay una operación local de foto o escaneo activa. Termine o vuelva de ella; si se interrumpió, descarte todos los borradores y vuelva a intentarlo.";
             case "draft_restore_failed": return "Error al restaurar borrador";
             case "draft_binding_locked_detail": return "Este borrador no coincide con la conexión, revisión del catálogo o contrato de envío actuales del Panel. Para evitar un destino incorrecto, se bloquearon la restauración y la carga, y el borrador se conservó. Restaure la configuración original del Panel o descártelo explícitamente.";
             case "legacy_a_step_upgrade_blocked_detail": return "Se encontró un retorno de cámara de una operación previa sin terminar, creado por una versión anterior. Para conservar la ruta original de la foto y evitar asignarla al paso equivocado, esta versión no cambiará de Panel ni instalará otra actualización. Termine o recupere primero ese flujo con una versión anterior compatible.";

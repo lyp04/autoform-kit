@@ -63,7 +63,8 @@
         <activity
             android:name=".CaptureActivity"
             android:configChanges="keyboard|keyboardHidden|navigation|orientation|screenSize"
-            android:screenOrientation="portrait"
+            android:screenOrientation="locked"
+            android:theme="@style/CaptureTheme"
             android:exported="false" />
         <activity
             android:name=".ScannerActivity"

@@ -3,6 +3,7 @@ package com.autoformkit.app;
 import android.graphics.Insets;
 import android.os.Build;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.WindowInsets;
 
 import java.util.Collections;
@@ -12,6 +13,8 @@ import java.util.WeakHashMap;
 /** Applies Android 15+ edge-to-edge insets to full-page programmatic content. */
 final class SystemBarInsets {
     private static final Map<View, InitialPadding> INITIAL_PADDING =
+        Collections.synchronizedMap(new WeakHashMap<>());
+    private static final Map<View, CameraOverlayInsets> CAMERA_OVERLAY_INSETS =
         Collections.synchronizedMap(new WeakHashMap<>());
 
     private SystemBarInsets() {
@@ -50,6 +53,99 @@ final class SystemBarInsets {
         });
     }
 
+    /** Keeps camera controls clear of Android 15 system bars while preview stays edge-to-edge. */
+    static void reserveCameraBars(
+            View root, View topOverlay, View bottomOverlay, View... rotatingOverlays) {
+        if (root == null || topOverlay == null || bottomOverlay == null
+                || rotatingOverlays == null || rotatingOverlays.length == 0
+                || Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return;
+        for (View overlay : rotatingOverlays) {
+            if (overlay == null) return;
+            CAMERA_OVERLAY_INSETS.put(overlay, new CameraOverlayInsets(
+                new InitialPadding(
+                    overlay.getPaddingLeft(), overlay.getPaddingTop(),
+                    overlay.getPaddingRight(), overlay.getPaddingBottom())));
+        }
+
+        InitialPadding topPadding = new InitialPadding(
+            topOverlay.getPaddingLeft(), topOverlay.getPaddingTop(),
+            topOverlay.getPaddingRight(), topOverlay.getPaddingBottom());
+        InitialPadding bottomPadding = new InitialPadding(
+            bottomOverlay.getPaddingLeft(), bottomOverlay.getPaddingTop(),
+            bottomOverlay.getPaddingRight(), bottomOverlay.getPaddingBottom());
+        int topHeight = topOverlay.getLayoutParams().height;
+        int bottomHeight = bottomOverlay.getLayoutParams().height;
+        root.setOnApplyWindowInsetsListener((view, insets) -> {
+            Insets systemBars = insets.getInsets(
+                WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            topOverlay.setPadding(
+                padded(topPadding.left, systemBars.left),
+                padded(topPadding.top, systemBars.top),
+                padded(topPadding.right, systemBars.right),
+                topPadding.bottom);
+            bottomOverlay.setPadding(
+                padded(bottomPadding.left, systemBars.left),
+                bottomPadding.top,
+                padded(bottomPadding.right, systemBars.right),
+                padded(bottomPadding.bottom, systemBars.bottom));
+            for (View overlay : rotatingOverlays) {
+                CameraOverlayInsets state = CAMERA_OVERLAY_INSETS.get(overlay);
+                if (state == null) continue;
+                state.left = systemBars.left;
+                state.top = systemBars.top;
+                state.right = systemBars.right;
+                state.bottom = systemBars.bottom;
+                applyCameraOverlayInsets(overlay, state);
+            }
+            setHeight(topOverlay, padded(topHeight, systemBars.top));
+            setHeight(bottomOverlay, padded(bottomHeight, systemBars.bottom));
+            return insets;
+        });
+    }
+
+    /** Maps physical window insets into a chrome layer's rotated local coordinates. */
+    static void rotateCameraOverlayInsets(View overlay, int rotationDegrees) {
+        CameraOverlayInsets state = CAMERA_OVERLAY_INSETS.get(overlay);
+        if (state == null) return;
+        state.rotationDegrees = rotationDegrees == 90 || rotationDegrees == 180
+            || rotationDegrees == 270 ? rotationDegrees : 0;
+        applyCameraOverlayInsets(overlay, state);
+    }
+
+    private static void applyCameraOverlayInsets(View overlay, CameraOverlayInsets state) {
+        int left = state.left;
+        int top = state.top;
+        int right = state.right;
+        int bottom = state.bottom;
+        if (state.rotationDegrees == 90) {
+            left = state.top;
+            top = state.right;
+            right = state.bottom;
+            bottom = state.left;
+        } else if (state.rotationDegrees == 180) {
+            left = state.right;
+            top = state.bottom;
+            right = state.left;
+            bottom = state.top;
+        } else if (state.rotationDegrees == 270) {
+            left = state.bottom;
+            top = state.left;
+            right = state.top;
+            bottom = state.right;
+        }
+        InitialPadding baseline = state.baseline;
+        overlay.setPadding(
+            padded(baseline.left, left), padded(baseline.top, top),
+            padded(baseline.right, right), padded(baseline.bottom, bottom));
+    }
+
+    private static void setHeight(View view, int height) {
+        ViewGroup.LayoutParams params = view.getLayoutParams();
+        if (params.height == height) return;
+        params.height = height;
+        view.setLayoutParams(params);
+    }
+
     /** Requests a fresh dispatch after the page has joined the window hierarchy. */
     static void requestWhenAttached(View root) {
         if (root == null
@@ -75,6 +171,19 @@ final class SystemBarInsets {
             this.top = top;
             this.right = right;
             this.bottom = bottom;
+        }
+    }
+
+    private static final class CameraOverlayInsets {
+        final InitialPadding baseline;
+        int left;
+        int top;
+        int right;
+        int bottom;
+        int rotationDegrees;
+
+        CameraOverlayInsets(InitialPadding baseline) {
+            this.baseline = baseline;
         }
     }
 }

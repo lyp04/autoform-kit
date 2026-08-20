@@ -23,6 +23,38 @@ final class PrivateJpegImporter {
 
     private PrivateJpegImporter() {}
 
+    /** Decodes an app-owned JPEG for an on-device confirmation preview without loading it full-size. */
+    static Bitmap decodePreview(File source) throws IOException {
+        return decodeOrientedBitmap(source, MAX_EDGE);
+    }
+
+    /** Decodes app-owned JPEG pixels in their EXIF-normalized orientation. */
+    static Bitmap decodeOrientedBitmap(File source, int maxEdge) throws IOException {
+        if (source == null || !source.isFile() || source.length() <= 0L) {
+            throw new IOException("Captured image is unavailable");
+        }
+        if (maxEdge <= 0) throw new IOException("Invalid image decode size");
+        try {
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeFile(source.getAbsolutePath(), bounds);
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0
+                    || bounds.outWidth > 100_000 || bounds.outHeight > 100_000) {
+                throw new IOException("Captured image cannot be decoded");
+            }
+            BitmapFactory.Options options = new BitmapFactory.Options();
+            options.inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, maxEdge);
+            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap bitmap = BitmapFactory.decodeFile(source.getAbsolutePath(), options);
+            if (bitmap == null) throw new IOException("Captured image cannot be decoded");
+            Bitmap transformed = orientAndScale(bitmap, source, maxEdge);
+            if (transformed != bitmap) bitmap.recycle();
+            return transformed;
+        } catch (OutOfMemoryError error) {
+            throw new IOException("Captured image is too large to preview", error);
+        }
+    }
+
     static void importImage(Context context, Uri source, File destination) throws IOException {
         if (context == null || source == null || destination == null
                 || !"content".equals(source.getScheme())) {
@@ -109,16 +141,25 @@ final class PrivateJpegImporter {
     }
 
     private static int sampleSize(int width, int height) {
+        return sampleSize(width, height, MAX_EDGE);
+    }
+
+    private static int sampleSize(int width, int height, int maxEdge) {
         int sample = 1;
         int longest = Math.max(width, height);
-        while (longest / sample > MAX_EDGE && sample <= 512) sample *= 2;
+        while (longest / sample > maxEdge && sample <= 512) sample *= 2;
         return sample;
     }
 
     private static Bitmap orientAndScale(Bitmap source, File raw) throws IOException {
+        return orientAndScale(source, raw, MAX_EDGE);
+    }
+
+    private static Bitmap orientAndScale(Bitmap source, File raw, int maxEdge)
+            throws IOException {
         ExifTransform exif = exifTransform(raw);
         float scale = Math.min(1f,
-            (float) MAX_EDGE / Math.max(source.getWidth(), source.getHeight()));
+            (float) maxEdge / Math.max(source.getWidth(), source.getHeight()));
         if (exif.rotation == 0 && !exif.flipped && scale >= 1f) return source;
         Matrix matrix = new Matrix();
         if (scale < 1f) matrix.postScale(scale, scale);

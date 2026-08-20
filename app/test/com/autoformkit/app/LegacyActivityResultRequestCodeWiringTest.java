@@ -74,8 +74,11 @@ public class LegacyActivityResultRequestCodeWiringTest {
         assertTrue(source.contains(
             "startActivityForResult(intent, REQ_SCAN_ALTERNATE_ENTRY_SN);"));
         assertTrue(source.contains(
-            "startActivityForResult(intent, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);"));
-        assertTrue(source.contains(
-            "startActivityForResult(fallback, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);"));
+            "startActivityForResult(capture, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);"));
+        String alternateCapture = section(source,
+            "private void captureAlternateEntryPhoto()",
+            "private File createAlternateEntryPhotoOutputFile()");
+        assertFalse(alternateCapture.contains("MediaStore.ACTION_IMAGE_CAPTURE"));
+        assertFalse(alternateCapture.contains("Intent fallback"));
     }
 }
