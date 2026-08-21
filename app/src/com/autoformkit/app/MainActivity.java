@@ -1195,7 +1195,12 @@ public class MainActivity extends Activity {
         photoPrompt = text("", 14, true);
         photoPrompt.setTextColor(0xFF334155);
         capturePanel.addView(photoPrompt);
-        capturePanel.addView(button(t("take_next_photo"), v -> captureNextPhoto()));
+        LinearLayout photoActions = row();
+        photoActions.addView(equalActionButton(t("take_next_photo"),
+            v -> captureNextPhoto()));
+        photoActions.addView(equalActionButton(t("choose_gallery_photo"),
+            v -> pickNextPhotoFromGallery()));
+        capturePanel.addView(photoActions);
         root.addView(capturePanel);
 
         LinearLayout submitPanel = panel();
@@ -3887,8 +3892,12 @@ public class MainActivity extends Activity {
         alternateEntryPhotoList = new LinearLayout(this);
         alternateEntryPhotoList.setOrientation(LinearLayout.VERTICAL);
         capturePanel.addView(alternateEntryPhotoList);
-        capturePanel.addView(button(t("alternate_entry_add_photo"),
+        LinearLayout alternatePhotoActions = row();
+        alternatePhotoActions.addView(equalActionButton(t("alternate_entry_add_photo"),
             v -> captureAlternateEntryPhoto()));
+        alternatePhotoActions.addView(equalActionButton(t("choose_gallery_photo"),
+            v -> pickAlternateEntryPhotoFromGallery()));
+        capturePanel.addView(alternatePhotoActions);
         root.addView(capturePanel);
 
         LinearLayout submitPanel = panel();
@@ -4606,6 +4615,14 @@ public class MainActivity extends Activity {
     }
 
     private void captureAlternateEntryPhoto() {
+        captureAlternateEntryPhoto("");
+    }
+
+    private void pickAlternateEntryPhotoFromGallery() {
+        captureAlternateEntryPhoto(PhotoInputSourceRules.GALLERY);
+    }
+
+    private void captureAlternateEntryPhoto(String inputSourceOverride) {
         if (!ensurePanelReadyForUse()) return;
         if (alternateEntryEditingBlocked()) return;
         if (hasPendingAlternateEntryAsyncReservationEvidence()) {
@@ -4622,13 +4639,20 @@ public class MainActivity extends Activity {
             toast(t("alternate_entry_photo_limit"));
             return;
         }
-        final String inputSource;
+        final String configuredInputSource;
         try {
-            inputSource = AlternateEntryRules.photoInputSource(alternateEntryConfig);
+            configuredInputSource = AlternateEntryRules.photoInputSource(alternateEntryConfig);
         } catch (IllegalArgumentException invalid) {
             alert(t("panel_required_title"), t("alternate_entry_invalid"));
             return;
         }
+        if (!inputSourceOverride.isEmpty()
+                && !PhotoInputSourceRules.GALLERY.equals(inputSourceOverride)) {
+            alert(t("panel_required_title"), t("alternate_entry_invalid"));
+            return;
+        }
+        final String inputSource = inputSourceOverride.isEmpty()
+            ? configuredInputSource : inputSourceOverride;
         if (!ensurePhotoInputSourceReady(inputSource)) return;
         String operationGuard = alternateEntryOperationGuard();
         if (operationGuard.isEmpty()) {
@@ -4692,7 +4716,9 @@ public class MainActivity extends Activity {
             startActivityForResult(capture, REQ_CAPTURE_ALTERNATE_ENTRY_PHOTO);
         } catch (Exception error) {
             clearPendingAlternateEntryPhoto();
-            alert(t("camera_open_failed"), conciseError(error));
+            alert(t(PhotoInputSourceRules.CAMERA.equals(inputSource)
+                    ? "camera_open_failed" : "photo_picker_failed"),
+                conciseError(error));
         }
     }
 
@@ -6816,10 +6842,18 @@ public class MainActivity extends Activity {
     }
 
     private void captureNextPhoto() {
+        captureNextPhoto("");
+    }
+
+    private void pickNextPhotoFromGallery() {
+        captureNextPhoto(PhotoInputSourceRules.GALLERY);
+    }
+
+    private void captureNextPhoto(String inputSourceOverride) {
         if (blockDraftMutationForPreviousStepJournal()) return;
         if (!ensurePanelReadyForUse()) return;
         if (isSlotMode()) {
-            captureNextSlotPhoto();
+            captureNextSlotPhoto(inputSourceOverride);
             return;
         }
         PhotoStep step = nextPhotoStep();
@@ -6827,7 +6861,8 @@ public class MainActivity extends Activity {
             toast(t("no_photo_needed"));
             return;
         }
-        String inputSource = configuredPhotoInputSource(workflowPhotoPolicy());
+        String inputSource = actionPhotoInputSource(
+            workflowPhotoPolicy(), inputSourceOverride);
         if (inputSource.isEmpty() || !ensurePhotoInputSourceReady(inputSource)) return;
         pendingPhotoIndex = step.index;
         pendingPhotoSide = step.side;
@@ -6836,12 +6871,16 @@ public class MainActivity extends Activity {
     }
 
     private void captureNextSlotPhoto() {
+        captureNextSlotPhoto("");
+    }
+
+    private void captureNextSlotPhoto(String inputSourceOverride) {
         int[] next = nextSlotStep();
         if (next == null) {
             toast(t("no_photo_needed"));
             return;
         }
-        beginSlotCapture(next[0], next[1]);
+        beginSlotCapture(next[0], next[1], inputSourceOverride);
     }
 
     private void captureSlotPhotoFor(UnitRecord unit, int slotIndex) {
@@ -6853,10 +6892,15 @@ public class MainActivity extends Activity {
     }
 
     private void beginSlotCapture(int unitIndex, int slotIndex) {
+        beginSlotCapture(unitIndex, slotIndex, "");
+    }
+
+    private void beginSlotCapture(int unitIndex, int slotIndex,
+                                  String inputSourceOverride) {
         JSONArray slots = photoSlots();
         JSONObject slot = slots == null ? null : slots.optJSONObject(slotIndex);
         if (slot == null) return;
-        String inputSource = configuredPhotoInputSource(slot);
+        String inputSource = actionPhotoInputSource(slot, inputSourceOverride);
         if (inputSource.isEmpty() || !ensurePhotoInputSourceReady(inputSource)) return;
         pendingPhotoIndex = unitIndex;
         pendingPhotoSide = "slot";
@@ -6890,6 +6934,15 @@ public class MainActivity extends Activity {
                 + PhotoInputSourceRules.KEY);
             return "";
         }
+    }
+
+    private String actionPhotoInputSource(JSONObject owner, String inputSourceOverride) {
+        String configuredInputSource = configuredPhotoInputSource(owner);
+        if (configuredInputSource.isEmpty() || inputSourceOverride.isEmpty()) {
+            return configuredInputSource;
+        }
+        return PhotoInputSourceRules.GALLERY.equals(inputSourceOverride)
+            ? inputSourceOverride : "";
     }
 
     private boolean ensurePhotoInputSourceReady(String inputSource) {
@@ -18254,6 +18307,15 @@ public class MainActivity extends Activity {
         bg.setCornerRadius(dp(8));
         button.setBackground(bg);
         button.setOnClickListener(listener);
+        return button;
+    }
+
+    private Button equalActionButton(String title, View.OnClickListener listener) {
+        Button button = button(title, listener);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+            0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        params.setMargins(dp(3), dp(4), dp(3), dp(4));
+        button.setLayoutParams(params);
         return button;
     }
 
