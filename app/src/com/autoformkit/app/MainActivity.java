@@ -10244,10 +10244,15 @@ public class MainActivity extends Activity {
     private void beginScreenAwakeUpload() {
         synchronized (uploadPowerLock) {
             activeScreenAwakeUploads++;
-            if (activeScreenAwakeUploads == 1) {
-                acquireUploadCpuWakeLockLocked();
-                startUploadForegroundProtectionLocked();
-            }
+            // Re-arm on every lease, not only the 0->1 transition. Both guards are one-shot
+            // (the WakeLock auto-releases after UPLOAD_CPU_WAKE_LOCK_TIMEOUT_MS and the service
+            // stops itself after its own lifetime cap), so a batch whose submit lease outlives
+            // them would keep uploading with no screen-off protection at all: the next lock of
+            // the screen freezes the process mid-transfer. Re-acquiring a held non-reference-
+            // counted WakeLock and re-starting a running service are cheap and merely reset the
+            // two safety timers.
+            acquireUploadCpuWakeLockLocked();
+            startUploadForegroundProtectionLocked();
         }
         refreshUploadScreenAwakeFlag();
     }
@@ -10284,9 +10289,10 @@ public class MainActivity extends Activity {
                     getPackageName() + ":upload-in-progress");
                 uploadCpuWakeLock.setReferenceCounted(false);
             }
-            if (!uploadCpuWakeLock.isHeld()) {
-                uploadCpuWakeLock.acquire(UPLOAD_CPU_WAKE_LOCK_TIMEOUT_MS);
-            }
+            // Acquire unconditionally: on a non-reference-counted lock a repeat acquire does not
+            // stack leases, it re-arms the auto-release timer. Guarding this behind isHeld() would
+            // let the timer lapse mid-batch even though begin/end calls keep arriving.
+            uploadCpuWakeLock.acquire(UPLOAD_CPU_WAKE_LOCK_TIMEOUT_MS);
         } catch (RuntimeException error) {
             Diagnostics.append(this,
                 "Upload CPU wake lock acquire failed: " + conciseError(error));
