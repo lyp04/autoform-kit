@@ -1140,6 +1140,11 @@ try {
   "a declared runtime-profile output under a protected prefix is not unlisted");
   assert.ok(!declaredRuntimeProfile.trustedEntries.has("assets/example-dependency/baseline.prof"),
     "a declared runtime-profile output must stay scanned, never trusted");
+  assert.ok(declaredRuntimeProfile.declaredRuntimeProfilePaths
+    .has("assets/example-dependency/baseline.prof"),
+  "a declared runtime-profile output must be reported as a declared path");
+  assert.equal(declaredRuntimeProfile.trustedEntries.size, 1,
+    "only the reviewed entry may be trusted");
 
   const missingRuntimeProfile = selectApkThirdPartyProfile({ entries: [
     provenanceEntry("assets/example-dependency/model.bin", modelContent, 0),

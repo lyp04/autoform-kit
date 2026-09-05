@@ -804,6 +804,7 @@ export function selectApkThirdPartyProfile(surface, policy, privateTerms) {
     return {
       profile: null,
       trustedEntries: new Map(),
+      declaredRuntimeProfilePaths: new Set(),
       trustedDexStringSha256: new Set(),
       findings: [],
     };
@@ -857,6 +858,7 @@ export function selectApkThirdPartyProfile(surface, policy, privateTerms) {
     return {
       profile: null,
       trustedEntries,
+      declaredRuntimeProfilePaths: new Set(),
       trustedDexStringSha256: new Set(),
       findings,
     };
@@ -906,7 +908,13 @@ export function selectApkThirdPartyProfile(surface, policy, privateTerms) {
       trustedEntries.delete(expected.path);
     }
   }
-  return { profile, trustedEntries, trustedDexStringSha256, findings };
+  return {
+    profile,
+    trustedEntries,
+    declaredRuntimeProfilePaths: runtimeProfilePaths,
+    trustedDexStringSha256,
+    findings,
+  };
 }
 
 export function dexTypeDescriptors(buffer) {
@@ -1383,6 +1391,7 @@ function auditSurface(surface, mode, privateTerms, apkThirdPartyPolicy) {
     : {
       profile: null,
       trustedEntries: new Map(),
+      declaredRuntimeProfilePaths: new Set(),
       trustedDexStringSha256: new Set(),
       findings: [],
     };
@@ -1390,7 +1399,8 @@ function auditSurface(surface, mode, privateTerms, apkThirdPartyPolicy) {
 
   for (const entry of surface.entries) {
     const trustedThirdParty = thirdParty.trustedEntries.has(entry.path);
-    auditPath(entry, mode, privateTerms, add, trustedThirdParty);
+    auditPath(entry, mode, privateTerms, add,
+      trustedThirdParty || thirdParty.declaredRuntimeProfilePaths.has(entry.path));
     if (entry.kind === "gitlink") {
       add(entry, "unscanned-git-submodule");
       continue;
@@ -1444,7 +1454,7 @@ function auditSurface(surface, mode, privateTerms, apkThirdPartyPolicy) {
   };
 }
 
-function auditPath(entry, mode, privateTerms, add, trustedThirdParty = false) {
+function auditPath(entry, mode, privateTerms, add, declaredThirdPartyPath = false) {
   const value = entry.path;
   const originalValue = entry.originalPath;
   const lower = value.toLowerCase();
@@ -1452,7 +1462,8 @@ function auditPath(entry, mode, privateTerms, add, trustedThirdParty = false) {
   if (mode === "apk" && isUnsafeArchivePath(originalValue)) add(entry, "unsafe-apk-entry-path");
   if (isDeploymentSpecificPath(lower)) add(entry, "deployment-specific-path");
   if (mode === "apk") {
-    if (!trustedThirdParty && ((lower.startsWith("assets/") && !POLICY.allowedApkAssets.includes(lower))
+    if (!declaredThirdPartyPath
+        && ((lower.startsWith("assets/") && !POLICY.allowedApkAssets.includes(lower))
         || /^res\/raw(?:-[^/]+)?\//.test(lower))) {
       add(entry, "unknown-first-party-asset");
     }
