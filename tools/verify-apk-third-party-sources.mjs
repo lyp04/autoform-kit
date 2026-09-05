@@ -268,16 +268,19 @@ function verify(options) {
     }
   }
 
-  const matchingProfiles = policy.profiles.filter((profile) => {
-    const runtimeEntries = profile.entries.filter((entry) => entry.kind === "runtime-profile");
-    return runtimeEntries.length > 0 && runtimeEntries.every((entry) =>
-      apkRecords.has(entry.path) && sha256(apkRecords.get(entry.path)) === entry.sha256);
-  });
+  const matchingProfiles = policy.profiles.filter((profile) =>
+    profile.runtimeProfile !== undefined
+      && Array.isArray(profile.entries) && profile.entries.length > 0
+      && profile.entries.every((entry) => apkRecords.has(entry.path)
+        && sha256(apkRecords.get(entry.path)) === entry.sha256));
   if (matchingProfiles.length !== 1) {
-    throw new Error("runtime-profile output profile was absent or ambiguous");
+    throw new Error("reviewed component profile was absent or ambiguous");
   }
   const profile = matchingProfiles[0];
-  const runtimeEntries = profile.entries.filter((entry) => entry.kind === "runtime-profile");
+  const runtimeEntries = profile.runtimeProfile.paths.map((entryPath) => ({
+    path: entryPath,
+    component: profile.runtimeProfile.component,
+  }));
   const usedComponents = new Set(runtimeEntries.map((entry) => entry.component));
   if ([...usedComponents].some((id) =>
     components.get(id)?.runtimeProfileSources === undefined)) {
@@ -305,7 +308,7 @@ function verify(options) {
       profile.buildType,
       path.posix.basename(entry.path),
     ));
-    if (sha256(compiled) !== entry.sha256 || !compiled.equals(apkRecords.get(entry.path))) {
+    if (!apkRecords.has(entry.path) || !compiled.equals(apkRecords.get(entry.path))) {
       throw new Error("compiled runtime-profile output disagreed with APK");
     }
   }

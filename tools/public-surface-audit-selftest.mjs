@@ -474,27 +474,25 @@ try {
   const releaseProfiles = publicThirdPartyPolicy.profiles.filter(
     (profile) => profile.buildType === "release");
   assert.ok(releaseProfiles.length > 0);
-  const runtimeProfileFingerprints = new Set();
   for (const releaseProfile of releaseProfiles) {
     assert.ok(!releaseProfile.entries.some((entry) => entry.path === "classes.dex"),
       `${releaseProfile.id}: the mixed first-party release DEX must never become a trusted whole-entry`);
-    const runtimeEntries = releaseProfile.entries
-      .filter((entry) => entry.kind === "runtime-profile");
-    assert.ok(runtimeEntries.length > 0,
-      `${releaseProfile.id}: release profiles must bind runtime-profile outputs`);
-    assert.ok(runtimeEntries.every((entry) => publicThirdPartyPolicy.components.some((component) =>
-      component.id === entry.component
+    assert.ok(!releaseProfile.entries.some((entry) => entry.kind === "runtime-profile"),
+      `${releaseProfile.id}: a rebuilt runtime profile must never be recorded as a trusted entry`);
+    const runtime = releaseProfile.runtimeProfile;
+    assert.ok(runtime !== undefined && runtime.paths.length > 0,
+      `${releaseProfile.id}: release profiles must declare their runtime-profile outputs`);
+    assert.ok(publicThirdPartyPolicy.components.some((component) =>
+      component.id === runtime.component
         && component.runtimeProfileSources?.mergedTextSha256 === component.sourceArtifactSha256
-        && component.runtimeProfileSources.artifacts.length > 0)),
-      `${releaseProfile.id}: every runtime-profile output must retain exact source provenance`);
-    const fingerprint = JSON.stringify(runtimeEntries
-      .map((entry) => [entry.path, entry.sha256])
-      .sort(([left], [right]) => left.localeCompare(right)));
-    assert.ok(!runtimeProfileFingerprints.has(fingerprint),
-      `${releaseProfile.id}: release runtime-profile fingerprints must be unique`);
-    runtimeProfileFingerprints.add(fingerprint);
+        && component.runtimeProfileSources.artifacts.length > 0),
+      `${releaseProfile.id}: the runtime-profile output must retain exact source provenance`);
+    // Declaring a path only exempts it from "unlisted"; it must still fall under a protected
+    // prefix so the private-term scan keeps reading it.
+    assert.ok(runtime.paths.every((entryPath) =>
+      publicThirdPartyPolicy.protectedEntryPrefixes.some((prefix) => entryPath.startsWith(prefix))),
+      `${releaseProfile.id}: declared runtime-profile outputs must stay under a protected prefix`);
   }
-  assert.equal(runtimeProfileFingerprints.size, releaseProfiles.length);
 
   const ignoreRepo = path.join(temporary, "ignore-repo");
   fs.mkdirSync(ignoreRepo);
@@ -1115,6 +1113,40 @@ try {
   assert.equal(extraProtectedEntry.profile.id, "safe-fixture");
   assert.ok(extraProtectedEntry.findings.some(
     (finding) => finding.ruleId === "third-party-provenance-entry-unlisted"));
+
+  const runtimeProfilePolicy = structuredClone({
+    ...provenancePolicy,
+    dexStringSources: undefined,
+  });
+  runtimeProfilePolicy.dexStringSources = provenancePolicy.dexStringSources;
+  runtimeProfilePolicy.profiles = [{
+    id: "runtime-fixture",
+    dexStringComponents: ["selected-component"],
+    runtimeProfile: {
+      component: "runtime-component",
+      paths: ["assets/example-dependency/baseline.prof"],
+    },
+    entries: [
+      { path: "assets/example-dependency/model.bin", sha256: sha256(modelContent), kind: "model" },
+    ],
+  }];
+  const declaredRuntimeProfile = selectApkThirdPartyProfile({ entries: [
+    provenanceEntry("assets/example-dependency/model.bin", modelContent, 0),
+    provenanceEntry("assets/example-dependency/baseline.prof", Buffer.from("rebuilt each time"), 1),
+  ] }, runtimeProfilePolicy, []);
+  assert.equal(declaredRuntimeProfile.profile.id, "runtime-fixture");
+  assert.ok(!declaredRuntimeProfile.findings.some(
+    (finding) => finding.ruleId === "third-party-provenance-entry-unlisted"),
+  "a declared runtime-profile output under a protected prefix is not unlisted");
+  assert.ok(!declaredRuntimeProfile.trustedEntries.has("assets/example-dependency/baseline.prof"),
+    "a declared runtime-profile output must stay scanned, never trusted");
+
+  const missingRuntimeProfile = selectApkThirdPartyProfile({ entries: [
+    provenanceEntry("assets/example-dependency/model.bin", modelContent, 0),
+  ] }, runtimeProfilePolicy, []);
+  assert.ok(missingRuntimeProfile.findings.some(
+    (finding) => finding.ruleId === "third-party-provenance-runtime-profile-absent"),
+  "a declared runtime-profile output that the APK does not carry must be reported");
 
   const applicationDexRejected = selectApkThirdPartyProfile({ entries: [
     provenanceEntry("classes.dex", applicationDex, 0),

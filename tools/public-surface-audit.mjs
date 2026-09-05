@@ -240,6 +240,7 @@ function loadApkThirdPartyPolicy() {
   for (const profile of parsed.profiles) {
     const profileKeys = [
       "id", "buildType", "generatedBy", "entries",
+      ...(profile.runtimeProfile === undefined ? [] : ["runtimeProfile"]),
       ...(profile.dexStringComponents === undefined ? [] : ["dexStringComponents"]),
     ];
     if (!exactKeys(profile, profileKeys)
@@ -257,19 +258,32 @@ function loadApkThirdPartyPolicy() {
           || typeof entry.path !== "string" || isUnsafeArchivePath(entry.path)
           || !/^[0-9a-f]{64}$/.test(entry.sha256)
           || !components.has(entry.component)
-          || !["audio", "compiled-resource", "dex", "model", "native-library",
-            "runtime-profile"].includes(entry.kind)
+          || !["audio", "compiled-resource", "dex", "model",
+            "native-library"].includes(entry.kind)
           || paths.has(entry.path)) {
         throw new Error("invalid APK provenance entry");
       }
       if ((entry.kind === "dex") !== /^classes(?:\d+)?\.dex$/.test(entry.path)) {
         throw new Error("APK provenance dex kind/path mismatch");
       }
-      if (entry.kind === "runtime-profile"
-          && components.get(entry.component).runtimeProfileSources === undefined) {
-        throw new Error("APK runtime profile is missing exact source provenance");
-      }
       paths.add(entry.path);
+    }
+    // The runtime profile is rebuilt from scratch on every build, so a recorded per-version
+    // digest could only ever be transcribed by hand and proved nothing. The profile now
+    // declares the paths and their source component: the bytes are verified against Gradle's
+    // own compiler output by verify-apk-third-party-sources.mjs, and the content is scanned
+    // for private terms like any other entry.
+    if (profile.runtimeProfile !== undefined) {
+      const runtime = profile.runtimeProfile;
+      if (!exactKeys(runtime, ["component", "paths"])
+          || !components.has(runtime.component)
+          || components.get(runtime.component).runtimeProfileSources === undefined
+          || !Array.isArray(runtime.paths) || runtime.paths.length === 0
+          || new Set(runtime.paths).size !== runtime.paths.length
+          || runtime.paths.some((value) => typeof value !== "string"
+            || isUnsafeArchivePath(value) || paths.has(value))) {
+        throw new Error("invalid APK runtime profile declaration");
+      }
     }
     if (profile.dexStringComponents !== undefined
         && (!Array.isArray(profile.dexStringComponents)
@@ -850,6 +864,17 @@ export function selectApkThirdPartyProfile(surface, policy, privateTerms) {
 
   const profile = exactProfiles[0];
   const trustedEntries = new Map(profile.entries.map((entry) => [entry.path, entry]));
+  // A declared runtime-profile output is expected under a protected prefix, but it is
+  // deliberately kept out of trustedEntries: nothing here reviewed those bytes, so the
+  // ordinary content scan below must still read them. Their provenance is established by
+  // verify-apk-third-party-sources.mjs against Gradle's own compiler output.
+  const runtimeProfilePaths = new Set(profile.runtimeProfile?.paths ?? []);
+  for (const runtimePath of runtimeProfilePaths) {
+    const actual = byPath.get(runtimePath);
+    if (actual === undefined || actual.content === null) {
+      add(actual ?? null, "third-party-provenance-runtime-profile-absent");
+    }
+  }
   const selectedDexStringComponents = new Set(profile.dexStringComponents ?? []);
   const trustedDexStringSha256 = new Set(
     [...(policy.dexStringSources?.entries() ?? [])]
@@ -859,7 +884,8 @@ export function selectApkThirdPartyProfile(surface, policy, privateTerms) {
   for (const entry of surface.entries) {
     const protectedEntry = policy.protectedEntryPrefixes.some((prefix) => entry.path.startsWith(prefix))
       || policy.protectedEntryBasenames.includes(path.posix.basename(entry.path));
-    if (protectedEntry && !trustedEntries.has(entry.path)) {
+    if (protectedEntry && !trustedEntries.has(entry.path)
+        && !runtimeProfilePaths.has(entry.path)) {
       add(entry, "third-party-provenance-entry-unlisted");
     }
   }

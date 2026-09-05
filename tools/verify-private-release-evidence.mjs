@@ -92,7 +92,7 @@ function parseArguments(argv) {
   const allowed = new Set([
     "migration-report", "panel-config", "panel-catalog", "deployment-evidence",
     "source-commit", "candidate-manifest-sha256", "apk-sha256",
-    "previous-apk-sha256", "private-gate-sha256", "public-repository",
+    "previous-apk-sha256", "public-repository",
     "public-history-remote-refs-input-sha256",
     "public-history-ref-api-input-sha256",
     "public-history-ref-api-snapshot-sha256",
@@ -833,7 +833,7 @@ const args = parseArguments(argv);
 if (!GIT_OID.test(args["source-commit"])) fail("source commit binding is invalid");
 for (const name of [
   "candidate-manifest-sha256", "apk-sha256", "previous-apk-sha256",
-  "private-gate-sha256", "public-history-remote-refs-input-sha256",
+  "public-history-remote-refs-input-sha256",
   "public-history-ref-api-input-sha256",
   "public-history-ref-api-snapshot-sha256",
   "public-history-remote-refs-raw-snapshot-sha256",
@@ -1230,7 +1230,6 @@ const expectedBindings = {
   candidateManifestSha256: args["candidate-manifest-sha256"],
   apkSha256: args["apk-sha256"],
   previousApkSha256: args["previous-apk-sha256"],
-  privateGateSha256: args["private-gate-sha256"],
   migrationReportSha256: migrationFile.sha256,
   panelConfigSha256: configFile.sha256,
   panelCatalogSha256: catalogFile.sha256,

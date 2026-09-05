@@ -184,9 +184,11 @@ try {
   const aarPath = path.join(sourceDirectory, "example-1.0.0.aar");
   const appDescriptor = "Lcom/autoformkit/app/Fixture;";
   const dex = syntheticDexStrings([appDescriptor, trustedDexString], [0]);
+  const reviewedModel = Buffer.from("synthetic reviewed model payload", "utf8");
   const apk = storedZip([
     { name: "assets/dexopt/baseline.prof", content: compiledProfile },
     { name: "assets/dexopt/baseline.profm", content: compiledMetadata },
+    { name: "assets/mlkit-google-ocr-models/fixture.binarypb", content: reviewedModel },
     { name: "classes.dex", content: dex },
   ]);
   const apkPath = path.join(temporary, "fixture.apk");
@@ -222,18 +224,16 @@ try {
       id: "fixture-release",
       buildType: "release",
       dexStringComponents: ["fixture-dex-source"],
+      runtimeProfile: {
+        component: "fixture-profile-source",
+        paths: ["assets/dexopt/baseline.prof", "assets/dexopt/baseline.profm"],
+      },
       entries: [
         {
-          path: "assets/dexopt/baseline.prof",
-          sha256: sha256(compiledProfile),
+          path: "assets/mlkit-google-ocr-models/fixture.binarypb",
+          sha256: sha256(reviewedModel),
           component: "fixture-profile-source",
-          kind: "runtime-profile",
-        },
-        {
-          path: "assets/dexopt/baseline.profm",
-          sha256: sha256(compiledMetadata),
-          component: "fixture-profile-source",
-          kind: "runtime-profile",
+          kind: "model",
         },
       ],
     }],
@@ -245,6 +245,7 @@ try {
     fs.writeFileSync(apkPath, storedZip([
       { name: "assets/dexopt/baseline.prof", content: profileBytes },
       { name: "assets/dexopt/baseline.profm", content: compiledMetadata },
+      { name: "assets/mlkit-google-ocr-models/fixture.binarypb", content: reviewedModel },
       { name: "classes.dex", content: dexBytes },
     ]));
   };
@@ -345,6 +346,27 @@ try {
   writePolicy(changedPolicy);
   assert.notEqual(execute(apkPath, policyPath, buildDir, gradleHome).status, 0,
     "a changed component-selection policy must fail closed");
+  writePolicy();
+
+  const emptyEntryPolicy = structuredClone(basePolicy);
+  emptyEntryPolicy.profiles[0].entries = [];
+  writePolicy(emptyEntryPolicy);
+  assert.notEqual(execute(apkPath, policyPath, buildDir, gradleHome).status, 0,
+    "a profile with no reviewed entries must not match every APK");
+  writePolicy();
+
+  const changedEntryPolicy = structuredClone(basePolicy);
+  changedEntryPolicy.profiles[0].entries[0].sha256 = sha256(Buffer.from("other", "utf8"));
+  writePolicy(changedEntryPolicy);
+  assert.notEqual(execute(apkPath, policyPath, buildDir, gradleHome).status, 0,
+    "a reviewed entry that no longer matches the APK must fail closed");
+  writePolicy();
+
+  const missingRuntimePolicy = structuredClone(basePolicy);
+  delete missingRuntimePolicy.profiles[0].runtimeProfile;
+  writePolicy(missingRuntimePolicy);
+  assert.notEqual(execute(apkPath, policyPath, buildDir, gradleHome).status, 0,
+    "a profile that declares no runtime profile must not be selected");
   writePolicy();
 
   process.stdout.write("APK third-party source verifier self-test: passed\n");

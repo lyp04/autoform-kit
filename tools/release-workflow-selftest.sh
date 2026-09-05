@@ -75,7 +75,6 @@ fi
 BIN_DIR="${FIXTURE_ROOT}/bin"
 CANDIDATE_DIR="${FIXTURE_ROOT}/candidate"
 PREVIOUS_APK="${FIXTURE_ROOT}/previous.apk"
-GATE_PROGRAM="${FIXTURE_ROOT}/private-release-gate"
 PRIVATE_MIGRATION_REPORT="${FIXTURE_ROOT}/private-migration-report.json"
 PANEL_CONFIG_EVIDENCE="${FIXTURE_ROOT}/panel-config.json"
 PANEL_CATALOG_EVIDENCE="${FIXTURE_ROOT}/panel-catalog.json"
@@ -85,7 +84,6 @@ PRIVATE_WORDLIST="${FIXTURE_ROOT}/private-wordlist.json"
 GH_LOG="${FIXTURE_ROOT}/gh.log"
 GH_RELEASE_STATE="${FIXTURE_ROOT}/gh-release-state"
 GH_ASSET_DOWNLOAD_LOG="${FIXTURE_ROOT}/gh-asset-download.log"
-GATE_LOG="${FIXTURE_ROOT}/gate.log"
 SCANNER_HASH_COUNT="${FIXTURE_ROOT}/scanner-hash-count"
 SOURCE_PROVENANCE_REPORT="${FIXTURE_ROOT}/source-provenance-report.json"
 STALE_SOURCE_PROVENANCE_REPORT="${FIXTURE_ROOT}/stale-source-provenance-report.json"
@@ -116,7 +114,6 @@ STALE_HISTORY_COMMIT_REPORT="${FIXTURE_ROOT}/stale-source-commit-object-report.j
 mkdir -p "${BIN_DIR}" "${CANDIDATE_DIR}"
 : > "${GH_LOG}"
 : > "${GH_ASSET_DOWNLOAD_LOG}"
-: > "${GATE_LOG}"
 printf '["fictional-private-selftest-marker"]\n' > "${PRIVATE_WORDLIST}"
 
 SOURCE_COMMIT="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -132,7 +129,6 @@ NORMALIZER_BLOB_OID="8888888888888888888888888888888888888888"
 SOURCE_VERIFIER_BLOB_OID="4444444444444444444444444444444444444444"
 HISTORICAL_CONTRACT_BLOB_OID="9999999999999999999999999999999999999999"
 PRIVATE_EVIDENCE_VERIFIER_BLOB_OID="6666666666666666666666666666666666666666"
-PRIVATE_GATE_POLICY_BLOB_OID="7777777777777777777777777777777777777777"
 POLICY_SHA256="dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
 TREE_INPUT_SHA256="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
 STALE_TREE_INPUT_SHA256="ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
@@ -770,8 +766,6 @@ case "${1:-}" in
       printf '%s\n' "${AUTOFORM_SELFTEST_HISTORICAL_CONTRACT_BLOB_OID}"
     elif [[ "${last_argument}" == *':tools/verify-private-release-evidence.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}"
-    elif [[ "${last_argument}" == *':tools/private-release-gate-policy.json' ]]; then
-      printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_GATE_POLICY_BLOB_OID}"
     else
       printf '%s\n' "${AUTOFORM_SELFTEST_SOURCE_COMMIT}"
     fi
@@ -790,8 +784,6 @@ case "${1:-}" in
       printf '%s\n' "${AUTOFORM_SELFTEST_HISTORICAL_CONTRACT_BLOB_OID}"
     elif [[ "${last_argument}" == *'/verify-private-release-evidence.mjs' ]]; then
       printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}"
-    elif [[ "${last_argument}" == *'/private-release-gate-policy.json' ]]; then
-      printf '%s\n' "${AUTOFORM_SELFTEST_PRIVATE_GATE_POLICY_BLOB_OID}"
     else
       printf '%s\n' "${AUTOFORM_SELFTEST_SCANNER_BLOB_OID}"
     fi
@@ -1303,215 +1295,6 @@ case "${1:-}" in
 esac
 EOF
 
-cat > "${GATE_PROGRAM}" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-printf 'called\n' >> "${AUTOFORM_SELFTEST_GATE_LOG}"
-fresh_install="${AUTOFORM_SELFTEST_GATE_FRESH_INSTALL:-true}"
-automatic_update="${AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE:-true}"
-commit_object_input="${AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_INPUT_SHA256}"
-if [[ "${AUTOFORM_SELFTEST_GATE_HISTORY_BINDING:-true}" != true ]]; then
-  commit_object_input="0000000000000000000000000000000000000000000000000000000000000000"
-fi
-if [[ "${AUTOFORM_SELFTEST_GATE_MUTATE_HISTORY:-false}" == true ]]; then
-  printf 'mutated-by-private-gate\n' >> "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_FILE}"
-fi
-jq -n \
-  --arg manifest "${AUTOFORM_RELEASE_CANDIDATE_MANIFEST_SHA256}" \
-  --arg apk "${AUTOFORM_RELEASE_APK_SHA256}" \
-  --arg update "${AUTOFORM_RELEASE_UPDATE_SHA256}" \
-  --arg notes "${AUTOFORM_RELEASE_NOTES_SHA256}" \
-  --arg previousApk "${AUTOFORM_RELEASE_PREVIOUS_APK_SHA256}" \
-  --arg sourceCommit "${AUTOFORM_RELEASE_SOURCE_COMMIT}" \
-  --arg auditScanner "${AUTOFORM_RELEASE_PUBLIC_AUDIT_SCANNER_SHA256}" \
-  --arg auditPolicy "${AUTOFORM_RELEASE_PUBLIC_AUDIT_POLICY_SHA256}" \
-  --arg treeOid "${AUTOFORM_RELEASE_PUBLIC_TREE_OID}" \
-  --arg treeInput "${AUTOFORM_RELEASE_PUBLIC_TREE_INPUT_SHA256}" \
-  --arg treeReport "${AUTOFORM_RELEASE_PUBLIC_TREE_REPORT_SHA256}" \
-  --arg worktreeInput "${AUTOFORM_RELEASE_PUBLIC_WORKTREE_INPUT_SHA256}" \
-  --arg worktreeReport "${AUTOFORM_RELEASE_PUBLIC_WORKTREE_REPORT_SHA256}" \
-  --arg apkInput "${AUTOFORM_RELEASE_PUBLIC_APK_INPUT_SHA256}" \
-  --arg apkReport "${AUTOFORM_RELEASE_PUBLIC_APK_REPORT_SHA256}" \
-  --arg apkZipEntryManifest "${AUTOFORM_RELEASE_PUBLIC_APK_ZIP_ENTRY_MANIFEST_SHA256}" \
-  --arg thirdPartyPolicy "${AUTOFORM_RELEASE_APK_THIRD_PARTY_POLICY_SHA256}" \
-  --arg thirdPartyProfile "${AUTOFORM_RELEASE_APK_THIRD_PARTY_PROFILE_ID}" \
-  --argjson thirdPartyEntryCount "${AUTOFORM_RELEASE_APK_THIRD_PARTY_MATCHED_ENTRY_COUNT}" \
-  --arg runtimeLock "${AUTOFORM_RELEASE_ANDROID_RUNTIME_LOCK_SHA256}" \
-  --arg sourceVerifier "${AUTOFORM_RELEASE_APK_SOURCE_VERIFIER_SHA256}" \
-  --arg sourceReport "${AUTOFORM_RELEASE_APK_SOURCE_REPORT_SHA256}" \
-  --argjson sourceArtifactCount "${AUTOFORM_RELEASE_APK_SOURCE_ARTIFACT_COUNT}" \
-  --argjson sourceEntryCount "${AUTOFORM_RELEASE_APK_SOURCE_ENTRY_COUNT}" \
-  --argjson mergedSourceCount "${AUTOFORM_RELEASE_APK_MERGED_SOURCE_COUNT}" \
-  --argjson compiledOutputCount "${AUTOFORM_RELEASE_APK_COMPILED_OUTPUT_COUNT}" \
-  --argjson dexSourceArtifactCount "${AUTOFORM_RELEASE_APK_DEX_SOURCE_ARTIFACT_COUNT}" \
-  --argjson dexSourceEntryCount "${AUTOFORM_RELEASE_APK_DEX_SOURCE_ENTRY_COUNT}" \
-  --argjson declaredDexStringCount "${AUTOFORM_RELEASE_APK_DECLARED_DEX_STRING_COUNT}" \
-  --argjson sourceMatchedDexStringCount "${AUTOFORM_RELEASE_APK_SOURCE_MATCHED_DEX_STRING_COUNT}" \
-  --argjson apkMatchedDexStringCount "${AUTOFORM_RELEASE_APK_MATCHED_DEX_STRING_COUNT}" \
-  --arg updateInput "${AUTOFORM_RELEASE_PUBLIC_UPDATE_INPUT_SHA256}" \
-  --arg updateReport "${AUTOFORM_RELEASE_PUBLIC_UPDATE_REPORT_SHA256}" \
-  --arg notesInput "${AUTOFORM_RELEASE_PUBLIC_NOTES_INPUT_SHA256}" \
-  --arg notesReport "${AUTOFORM_RELEASE_PUBLIC_NOTES_REPORT_SHA256}" \
-  --arg manifestInput "${AUTOFORM_RELEASE_PUBLIC_MANIFEST_INPUT_SHA256}" \
-  --arg manifestReport "${AUTOFORM_RELEASE_PUBLIC_MANIFEST_REPORT_SHA256}" \
-  --arg commitObjectInput "${commit_object_input}" \
-  --arg commitObjectReport "${AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_REPORT_SHA256}" \
-  --arg remoteRefsInput "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256}" \
-  --arg remoteRefsReport "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256}" \
-  --arg refApiInput "${AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256}" \
-  --arg refApiReport "${AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256}" \
-  --arg releasesInput "${AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256}" \
-  --arg releasesReport "${AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256}" \
-  --arg refIdentity "${AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256}" \
-  --arg pullRefIdentity "${AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256}" \
-  --arg remoteRefsRawSnapshot "${AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
-  --arg refApiSnapshot "${AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256}" \
-  --arg releaseApiSnapshot "${AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256}" \
-  --arg repositoryBinding "${AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256}" \
-  --arg metadataBinding "${AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256}" \
-  --arg privateVerifier "${AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
-  --arg privateEvidenceReport "${AUTOFORM_RELEASE_PRIVATE_EVIDENCE_REPORT_SHA256}" \
-  --arg privateMigrationReport "${AUTOFORM_RELEASE_PRIVATE_MIGRATION_REPORT_SHA256}" \
-  --arg privatePanelConfig "${AUTOFORM_RELEASE_PRIVATE_PANEL_CONFIG_SHA256}" \
-  --arg privatePanelCatalog "${AUTOFORM_RELEASE_PRIVATE_PANEL_CATALOG_SHA256}" \
-  --arg privatePanelPair "${AUTOFORM_RELEASE_PRIVATE_PANEL_PAIR_SHA256}" \
-  --arg privateDeploymentEvidence "${AUTOFORM_RELEASE_PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" \
-  --arg privatePanelWorkerVersion "${AUTOFORM_RELEASE_PRIVATE_PANEL_WORKER_VERSION_ID}" \
-  --arg privateAuthorityType "${AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_TYPE}" \
-  --arg privateAuthorityIdentity "${AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256}" \
-  --arg privateAuthorityRevision "${AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_REVISION}" \
-  --arg privateAuthorityWorkerBinding "${AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256}" \
-  --arg privateCatalogManifest "${AUTOFORM_RELEASE_PRIVATE_CATALOG_MANIFEST_SHA256}" \
-  --arg privatePanelSettings "${AUTOFORM_RELEASE_PRIVATE_PANEL_SETTINGS_SHA256}" \
-  --argjson privatePanelSettingsPresent "${AUTOFORM_RELEASE_PRIVATE_PANEL_SETTINGS_PRESENT}" \
-  --arg privateGate "${AUTOFORM_RELEASE_PRIVATE_GATE_SHA256}" \
-  --argjson privateCatalogVersion "${AUTOFORM_RELEASE_PRIVATE_CATALOG_VERSION}" \
-  --argjson freshInstall "${fresh_install}" \
-  --argjson automaticUpdate "${automatic_update}" \
-  '{
-    schemaVersion: 5,
-    releaseReady: true,
-    bindings: {
-      candidateManifestSha256: $manifest,
-      apkSha256: $apk,
-      updateSha256: $update,
-      notesSha256: $notes,
-      previousApkSha256: $previousApk,
-      sourceCommit: $sourceCommit,
-      publicAudit: {
-        scannerSha256: $auditScanner,
-        policySha256: $auditPolicy,
-        sourceTree: {
-          gitTreeOid: $treeOid,
-          inputSha256: $treeInput,
-          reportSha256: $treeReport
-        },
-        worktree: {
-          inputSha256: $worktreeInput,
-          reportSha256: $worktreeReport
-        },
-        apk: {
-          inputSha256: $apkInput,
-          reportSha256: $apkReport,
-          zipEntryManifestSha256: $apkZipEntryManifest
-        },
-        thirdPartyProvenance: {
-          manifestFile: "tools/apk-third-party-components.json",
-          manifestSha256: $thirdPartyPolicy,
-          runtimeLockFile: "tools/android-runtime-dependencies.lock.json",
-          runtimeLockSha256: $runtimeLock,
-          profileId: $thirdPartyProfile,
-          matchedEntryCount: $thirdPartyEntryCount,
-          applicationDexStrict: true,
-          sourceVerifierFile: "tools/verify-apk-third-party-sources.mjs",
-          sourceVerifierSha256: $sourceVerifier,
-          sourceReportSha256: $sourceReport,
-          sourceArtifactCount: $sourceArtifactCount,
-          sourceEntryCount: $sourceEntryCount,
-          mergedSourceCount: $mergedSourceCount,
-          compiledOutputCount: $compiledOutputCount,
-          dexSourceArtifactCount: $dexSourceArtifactCount,
-          dexSourceEntryCount: $dexSourceEntryCount,
-          declaredDexStringCount: $declaredDexStringCount,
-          sourceMatchedDexStringCount: $sourceMatchedDexStringCount,
-          apkMatchedDexStringCount: $apkMatchedDexStringCount
-        },
-        releaseMetadata: {
-          update: {
-            inputSha256: $updateInput,
-            reportSha256: $updateReport
-          },
-          notes: {
-            inputSha256: $notesInput,
-            reportSha256: $notesReport
-          },
-          candidateManifest: {
-            inputSha256: $manifestInput,
-            reportSha256: $manifestReport
-          }
-        },
-        publicHistory: {
-          sourceCommitObject: {
-            inputSha256: $commitObjectInput,
-            reportSha256: $commitObjectReport
-          },
-          remoteRefs: {
-            inputSha256: $remoteRefsInput,
-            reportSha256: $remoteRefsReport
-          },
-          refsApi: {
-            inputSha256: $refApiInput,
-            reportSha256: $refApiReport
-          },
-          releases: {
-            inputSha256: $releasesInput,
-            reportSha256: $releasesReport
-          },
-          refIdentitySha256: $refIdentity,
-          pullRefIdentitySha256: $pullRefIdentity,
-          remoteRefsRawSnapshotSha256: $remoteRefsRawSnapshot,
-          refApiSnapshotSha256: $refApiSnapshot,
-          releaseApiSnapshotSha256: $releaseApiSnapshot,
-          repositoryBindingSha256: $repositoryBinding,
-          metadataBindingSha256: $metadataBinding
-        }
-      },
-      privateEvidence: {
-        verifierFile: "tools/verify-private-release-evidence.mjs",
-        verifierSha256: $privateVerifier,
-        verificationReportSha256: $privateEvidenceReport,
-        migrationReportSha256: $privateMigrationReport,
-        panelConfigSha256: $privatePanelConfig,
-        panelCatalogSha256: $privatePanelCatalog,
-        panelPairSha256: $privatePanelPair,
-        deploymentEvidenceSha256: $privateDeploymentEvidence,
-        catalogVersion: $privateCatalogVersion,
-        panelWorkerVersionId: $privatePanelWorkerVersion,
-        catalogAuthorityType: $privateAuthorityType,
-        catalogAuthorityIdentitySha256: $privateAuthorityIdentity,
-        catalogAuthorityRevision: $privateAuthorityRevision,
-        catalogAuthorityWorkerBindingSha256: $privateAuthorityWorkerBinding,
-        catalogManifestSha256: $privateCatalogManifest,
-        panelSettingsPresent: $privatePanelSettingsPresent,
-        panelSettingsSha256: $privatePanelSettings,
-        privateGateSha256: $privateGate
-      }
-    },
-    checks: {
-      privateUpgradeEvidence: true,
-      privateDeployment: true,
-      publicWorktree: true,
-      publicHistory: true,
-      candidateApk: true,
-      signedCurrentUpgrade: true,
-      freshInstall: $freshInstall,
-      liveCatalogCompatibility: true,
-      automaticUpdateProtocol: $automaticUpdate,
-      productionMutationFree: true
-    }
-  }' > "${AUTOFORM_RELEASE_ATTESTATION_OUT}"
-EOF
-
 chmod 700 \
   "${BIN_DIR}/git" \
   "${BIN_DIR}/node" \
@@ -1519,8 +1302,7 @@ chmod 700 \
   "${BIN_DIR}/aapt" \
   "${BIN_DIR}/apksigner" \
   "${BIN_DIR}/zipalign" \
-  "${BIN_DIR}/gh" \
-  "${GATE_PROGRAM}"
+  "${BIN_DIR}/gh"
 
 write_private_deployment_evidence() {
   jq -n '{
@@ -1548,7 +1330,6 @@ run_publish() {
   AUTOFORM_SELFTEST_NORMALIZER_BLOB_OID="${NORMALIZER_BLOB_OID}" \
   AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_OID="${SOURCE_VERIFIER_BLOB_OID}" \
   AUTOFORM_SELFTEST_PRIVATE_EVIDENCE_VERIFIER_BLOB_OID="${PRIVATE_EVIDENCE_VERIFIER_BLOB_OID}" \
-  AUTOFORM_SELFTEST_PRIVATE_GATE_POLICY_BLOB_OID="${PRIVATE_GATE_POLICY_BLOB_OID}" \
   AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_MISMATCH="${AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_MISMATCH:-false}" \
   AUTOFORM_SELFTEST_SIGNER="${SIGNER_SHA256}" \
   AUTOFORM_SELFTEST_PACKAGE="${PACKAGE_NAME}" \
@@ -1567,11 +1348,6 @@ run_publish() {
   AUTOFORM_SELFTEST_LATEST_EXTRA_ASSET="${AUTOFORM_SELFTEST_LATEST_EXTRA_ASSET:-false}" \
   AUTOFORM_SELFTEST_ASSET_TAMPER_ID="${AUTOFORM_SELFTEST_ASSET_TAMPER_ID:-}" \
   AUTOFORM_SELFTEST_APK_PATH="${APK_PATH}" \
-  AUTOFORM_SELFTEST_GATE_LOG="${GATE_LOG}" \
-  AUTOFORM_SELFTEST_GATE_FRESH_INSTALL="${AUTOFORM_SELFTEST_GATE_FRESH_INSTALL:-true}" \
-  AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE="${AUTOFORM_SELFTEST_GATE_AUTOMATIC_UPDATE:-true}" \
-  AUTOFORM_SELFTEST_GATE_HISTORY_BINDING="${AUTOFORM_SELFTEST_GATE_HISTORY_BINDING:-true}" \
-  AUTOFORM_SELFTEST_GATE_MUTATE_HISTORY="${AUTOFORM_SELFTEST_GATE_MUTATE_HISTORY:-false}" \
   AUTOFORM_SELFTEST_PRIVATE_WORDLIST="${PRIVATE_WORDLIST}" \
   AUTOFORM_SELFTEST_TREE_REPORT="${TREE_REPORT}" \
   AUTOFORM_SELFTEST_STALE_TREE_REPORT="${STALE_TREE_REPORT}" \
@@ -1627,7 +1403,6 @@ run_publish() {
     bash "${PUBLISH_SCRIPT}" \
       --candidate "${MANIFEST_PATH}" \
       --previous-apk "${PREVIOUS_APK}" \
-      --gate "${GATE_PROGRAM}" \
       --private-migration-report "${PRIVATE_MIGRATION_REPORT}" \
       --panel-config-evidence "${PANEL_CONFIG_EVIDENCE}" \
       --panel-catalog-evidence "${PANEL_CATALOG_EVIDENCE}" \
@@ -2021,10 +1796,9 @@ grep -q 'reserved historical versions require the inventory-bound historical mod
   "${FIXTURE_ROOT}/reserved-standard-build.log" || \
   die "release.sh did not explain the reserved historical version boundary"
 
-# The normal stable publisher rejects schema 4 before its private gate or GitHub command.
+# The normal stable publisher rejects schema 4 before any GitHub command.
 cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.schema2.backup"
 cp "${HISTORICAL_MANIFEST}" "${MANIFEST_PATH}"
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if run_publish >"${FIXTURE_ROOT}/historical-publisher-v4-rejection.log" 2>&1; then
   die "standard publisher accepted a historical schema-4 candidate"
@@ -2032,8 +1806,8 @@ fi
 grep -q 'historical or explicitly routed candidates cannot be published' \
   "${FIXTURE_ROOT}/historical-publisher-v4-rejection.log" || \
   die "standard publisher did not explain the historical routing rejection"
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "historical schema 4 reached the private gate or GitHub command"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "historical schema 4 reached a GitHub command"
 mv "${FIXTURE_ROOT}/candidate-manifest.schema2.backup" "${MANIFEST_PATH}"
 
 # Alternate schema numbers, explicit historical routing, reserved tags, and a
@@ -2042,44 +1816,40 @@ cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.standard.backup"
 for rejected_schema in 3 4; do
   jq --argjson schema "${rejected_schema}" '.schemaVersion = $schema' \
     "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
-  : > "${GATE_LOG}"
-  : > "${GH_LOG}"
+    : > "${GH_LOG}"
   if run_publish >"${FIXTURE_ROOT}/standard-schema-${rejected_schema}-rejection.log" 2>&1; then
     die "standard publisher accepted historical schema ${rejected_schema}"
   fi
-  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-    die "historical schema ${rejected_schema} reached a gate or GitHub command"
+  [[ ! -s "${GH_LOG}" ]] || \
+    die "historical schema ${rejected_schema} reached a GitHub command"
 done
 jq '.publicationMode = "historical-rewrite-non-latest"' \
   "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if run_publish >"${FIXTURE_ROOT}/standard-publication-mode-rejection.log" 2>&1; then
   die "standard publisher accepted an explicitly historical publication mode"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "historical publication mode reached a gate or GitHub command"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "historical publication mode reached a GitHub command"
 for reserved_version in 1.0.0 1.0.1 1.0.2 1.0.3 1.0.4 1.0.5 1.0.6; do
   jq --arg tag "v${reserved_version}" --arg version "${reserved_version}" \
     '.tag = $tag | .app.versionName = $version' \
     "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
-  : > "${GATE_LOG}"
-  : > "${GH_LOG}"
+    : > "${GH_LOG}"
   if run_publish >"${FIXTURE_ROOT}/reserved-${reserved_version}-rejection.log" 2>&1; then
     die "standard publisher accepted reserved tag v${reserved_version}"
   fi
-  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-    die "reserved tag v${reserved_version} reached a gate or GitHub command"
+  [[ ! -s "${GH_LOG}" ]] || \
+    die "reserved tag v${reserved_version} reached a GitHub command"
 done
 jq '.app.versionName = "1.0.6"' \
   "${FIXTURE_ROOT}/candidate-manifest.standard.backup" > "${MANIFEST_PATH}"
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if run_publish >"${FIXTURE_ROOT}/reserved-version-disguise-rejection.log" 2>&1; then
   die "standard publisher accepted a reserved versionName behind another tag"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "reserved versionName disguise reached a gate or GitHub command"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "reserved versionName disguise reached a GitHub command"
 mv "${FIXTURE_ROOT}/candidate-manifest.standard.backup" "${MANIFEST_PATH}"
 
 # The block below retains obsolete fixture cases only as inert documentation while the new
@@ -2349,10 +2119,9 @@ jq -e '
   die "standard upgrade manifest changed from the schema-2 previousApk contract"
 
 # The normal stable publisher must reject the historical schema before the
-# private gate or GitHub can be reached, even if all standard arguments exist.
+# any GitHub side effect can be reached, even if all standard arguments exist.
 cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.schema2.backup"
 cp "${HISTORICAL_MANIFEST}" "${MANIFEST_PATH}"
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if run_publish >"${FIXTURE_ROOT}/historical-publisher-rejection.log" 2>&1; then
   die "standard publisher accepted a historical-initial schema-3 candidate"
@@ -2360,8 +2129,8 @@ fi
 grep -q 'historical-initial schema version 3 candidates cannot be published' \
   "${FIXTURE_ROOT}/historical-publisher-rejection.log" || \
   die "standard publisher did not explicitly explain the schema-3 rejection"
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "historical schema reached the private gate or GitHub release command"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "historical schema reached a GitHub release command"
 mv "${FIXTURE_ROOT}/candidate-manifest.schema2.backup" "${MANIFEST_PATH}"
 fi
 
@@ -2369,14 +2138,14 @@ fi
 if PATH="${BIN_DIR}:${PATH}" bash "${PUBLISH_SCRIPT}" \
   --candidate "${MANIFEST_PATH}" \
   --previous-apk "${PREVIOUS_APK}" \
-  --gate "${GATE_PROGRAM}" >"${FIXTURE_ROOT}/missing-wordlist.log" 2>&1; then
+  >"${FIXTURE_ROOT}/missing-wordlist.log" 2>&1; then
   die "publisher accepted a missing private wordlist"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached a side-effect gate without a private wordlist"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect without a private wordlist"
 
 # This publisher owns only the stable /releases/latest route. A prerelease
-# candidate must stop before repository access, the private gate, or release creation;
+# candidate must stop before repository access or release creation;
 # the device beta channel uses the separate fixed tag "beta" and must never become latest.
 cp "${MANIFEST_PATH}" "${FIXTURE_ROOT}/candidate-manifest.stable.backup"
 jq '.tag = "v1.2.4-beta.1" | .app.versionName = "1.2.4-beta.1"' \
@@ -2387,8 +2156,8 @@ if run_publish >"${FIXTURE_ROOT}/prerelease-candidate.log" 2>&1; then
 fi
 grep -q 'only publishes stable candidates' "${FIXTURE_ROOT}/prerelease-candidate.log" || \
   die "stable publisher did not explain the beta/prerelease boundary"
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "prerelease candidate reached the private gate or release creation"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "prerelease candidate reached release creation"
 mv "${FIXTURE_ROOT}/candidate-manifest.stable.backup" "${MANIFEST_PATH}"
 
 # Authenticated access is insufficient: the installed Apps read Releases anonymously.
@@ -2399,40 +2168,40 @@ fi
 grep -q 'source update repository must be confirmed public' \
   "${FIXTURE_ROOT}/private-source-repository.log" || \
   die "publisher did not explain the public update repository requirement"
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "private source repository reached the private gate or release creation"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "private source repository reached release creation"
 
-# A byte mismatch must stop before the private gate and release command.
+# A byte mismatch must stop before the release command.
 cp "${UPDATE_PATH}" "${FIXTURE_ROOT}/update.backup"
 printf 'tampered\n' >> "${UPDATE_PATH}"
 if run_publish >"${FIXTURE_ROOT}/tamper.log" 2>&1; then
   die "publisher accepted a changed update.json"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate or release command after a hash mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached the release command after a hash mismatch"
 cp "${FIXTURE_ROOT}/update.backup" "${UPDATE_PATH}"
 
 # A fresh scanner finding must stop before an attestation or release command.
 if AUTOFORM_SELFTEST_AUDIT_FAIL=true run_publish >"${FIXTURE_ROOT}/audit-finding.log" 2>&1; then
   die "publisher accepted a failed fresh public audit"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a public audit failure"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a public audit failure"
 
 # Public release notes, update metadata, and candidate manifest are scanned too.
 if AUTOFORM_SELFTEST_FILE_AUDIT_FAIL=true run_publish >"${FIXTURE_ROOT}/release-metadata-finding.log" 2>&1; then
   die "publisher accepted prohibited data in public release metadata"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a public release metadata finding"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a public release metadata finding"
 
 # A valid report for different update.json bytes cannot satisfy the manifest binding.
 if AUTOFORM_SELFTEST_STALE_METADATA_REPORT=true \
   run_publish >"${FIXTURE_ROOT}/stale-metadata-report.log" 2>&1; then
   die "publisher accepted an update.json audit for different bytes"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a metadata report/input mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a metadata report/input mismatch"
 
 # candidate-manifest.json cannot self-bind its report hash, so its fresh scan must
 # at least bind the exact selected manifest SHA before the private attestation.
@@ -2440,46 +2209,46 @@ if AUTOFORM_SELFTEST_STALE_MANIFEST_REPORT=true \
   run_publish >"${FIXTURE_ROOT}/stale-manifest-report.log" 2>&1; then
   die "publisher accepted a candidate manifest audit for different bytes"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a candidate manifest report/input mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a candidate manifest report/input mismatch"
 
 # A valid-looking old report with a different input hash must not be trusted.
 if AUTOFORM_SELFTEST_STALE_REPORT=true run_publish >"${FIXTURE_ROOT}/stale-report.log" 2>&1; then
   die "publisher accepted a stale public audit report"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a stale report mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a stale report mismatch"
 
 # Scanner bytes are sampled on both sides of every scan to close that TOCTOU window.
 if AUTOFORM_SELFTEST_SCANNER_SHA_FLIP=true run_publish >"${FIXTURE_ROOT}/scanner-toctou.log" 2>&1; then
   die "publisher accepted scanner bytes changing during an audit"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after scanner TOCTOU"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after scanner TOCTOU"
 
-# The independent source verifier is mandatory and must pass before the private gate.
+# The independent source verifier is mandatory and must pass before publishing.
 if AUTOFORM_SELFTEST_SOURCE_PROVENANCE_FAIL=true \
   run_publish >"${FIXTURE_ROOT}/source-provenance-failure.log" 2>&1; then
   die "publisher accepted a failed APK source-provenance verification"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after source-provenance verification failed"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after source-provenance verification failed"
 
 # An internally valid report for another APK and different counts is still stale.
 if AUTOFORM_SELFTEST_STALE_SOURCE_PROVENANCE_REPORT=true \
   run_publish >"${FIXTURE_ROOT}/stale-source-provenance-report.log" 2>&1; then
   die "publisher accepted a source-provenance report for different bytes or counts"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a stale source-provenance report"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a stale source-provenance report"
 
 # Verifier bytes must be exactly those committed at the candidate source commit.
 if AUTOFORM_SELFTEST_SOURCE_VERIFIER_BLOB_MISMATCH=true \
   run_publish >"${FIXTURE_ROOT}/source-verifier-binding.log" 2>&1; then
   die "publisher accepted source-verifier bytes outside the exact source commit"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a source-verifier source mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a source-verifier source mismatch"
 
 # Candidate bytes changing inside a scan must be caught even when its report says pass.
 cp "${APK_PATH}" "${FIXTURE_ROOT}/apk.backup"
@@ -2488,33 +2257,31 @@ if AUTOFORM_SELFTEST_MUTATE_APK_DURING_AUDIT=true \
   die "publisher accepted an APK changing during its audit"
 fi
 cp "${FIXTURE_ROOT}/apk.backup" "${APK_PATH}"
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after APK TOCTOU"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after APK TOCTOU"
 
 # Public-history inputs are freshly scanned and a valid report for different commit bytes fails.
 if AUTOFORM_SELFTEST_STALE_HISTORY_REPORT=true \
   run_publish >"${FIXTURE_ROOT}/stale-history-report.log" 2>&1; then
   die "publisher accepted a public-history audit for different commit bytes"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "publisher reached the gate after a public-history report mismatch"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "publisher reached a side effect after a public-history report mismatch"
 
 # Branch-protection status contexts are administrator-controlled public text and
 # must pass through the exact refs API normalizer into the private-wordlist scan.
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if AUTOFORM_SELFTEST_REQUIRED_STATUS_MARKER=true \
   run_publish >"${FIXTURE_ROOT}/required-status-marker.log" 2>&1; then
   die "publisher accepted prohibited text in a required status context"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "required-status marker reached the private gate or release creation"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "required-status marker reached release creation"
 
 # Third-party actor and uploader identities are also retained in the normalized
 # Release scan surface. Test both independently before any side effect.
 for actor_location in ACTOR UPLOADER; do
-  : > "${GATE_LOG}"
-  : > "${GH_LOG}"
+    : > "${GH_LOG}"
   actor_marker_status=0
   if [[ "${actor_location}" == "ACTOR" ]]; then
     actor_label="actor"
@@ -2530,33 +2297,20 @@ for actor_location in ACTOR UPLOADER; do
   if [[ ${actor_marker_status} -eq 0 ]]; then
     die "publisher accepted prohibited text in a Release ${actor_label}"
   fi
-  [[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-    die "Release ${actor_label} marker reached the private gate or release creation"
+  [[ ! -s "${GH_LOG}" ]] || \
+    die "Release ${actor_label} marker reached release creation"
 done
 
 # A full ls-remote capture may contain heads, tags, pull refs, and one literal
 # HEAD only. Any future or unexpected namespace must fail closed.
-: > "${GATE_LOG}"
 : > "${GH_LOG}"
 if AUTOFORM_SELFTEST_REMOTE_UNKNOWN_REF=true \
   run_publish >"${FIXTURE_ROOT}/unknown-remote-ref.log" 2>&1; then
   die "publisher accepted an unknown remote ref namespace"
 fi
-[[ ! -s "${GATE_LOG}" && ! -s "${GH_LOG}" ]] || \
-  die "unknown remote ref reached the private gate or release creation"
+[[ ! -s "${GH_LOG}" ]] || \
+  die "unknown remote ref reached release creation"
 
-# An arbitrary external gate must still stop before execution and before GitHub
-# Release creation when its bytes do not match the reviewed source-pinned identity.
-: > "${GATE_LOG}"
-: > "${GH_LOG}"
-if run_publish >"${FIXTURE_ROOT}/untrusted-gate-identity.log" 2>&1; then
-  die "publisher bypassed the trusted private gate identity"
-fi
-grep -q 'private release gate does not match the source-committed trusted gate SHA-256' \
-  "${FIXTURE_ROOT}/untrusted-gate-identity.log" || \
-  die "publisher did not explain the unreviewed gate identity"
-[[ ! -s "${GATE_LOG}" ]] || die "publisher invoked an arbitrary private gate"
-[[ ! -s "${GH_LOG}" ]] || die "publisher called release create without a trusted gate"
 
 # The scripts and generated logs must not copy the external policy path or values.
 if grep -Fq "${PRIVATE_WORDLIST}" "${FIXTURE_ROOT}"/*.log \

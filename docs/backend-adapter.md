@@ -211,7 +211,7 @@ Converter 将结果写入 profile 的 legacy wire key `gradeMap`，但运行时�
 `outcomePolicy` 的固定结构为：
 
 - `version:1`；
-- `evidenceSha256`：对应私有、脱敏响应 replay 证据原始字节的 64 位小写 SHA-256；公共校验只检查格式，正式私有 release gate 必须检查真实绑定；
+- `evidenceSha256`：对应私有、脱敏响应 replay 证据原始字节的 64 位小写 SHA-256；公共校验只检查格式，发布前的私有核对必须检查真实绑定；
 - `retryableNotWrittenRules`：确定可原样重试的未写入拒绝规则数组；
 - `missingMaterialNotWrittenRules`：确定为缺料且未写入的拒绝规则数组。
 
@@ -255,9 +255,9 @@ Outcome evidence 发布门只检查实际可执行的 recipe 路径：`workflow.
 
 ### `operations.recovery`
 
-迁移期间可省略；省略或无效时，普通登录、上传和提交仍按原 adapter 契约运行，但不能通过正式 release 的 controlled-recovery gate。正式 capability 必须使用 `version:1`、`issuanceMode:"panel_signed_exact_reconciliation"`、`evidenceAlgorithm:"RS256"`，提供可由 Android 解析的 RSA SPKI DER 小写 hex、1–3600 秒证据窗口、私有 reconciliation contract 原始字节 SHA-256，并在 `enabledOperations` 中无重复地包含 `FINAL_SUBMISSION`、`PREVIOUS_STEP_RECIPE`、`MULTIPART_UPLOAD`。
+迁移期间可省略；省略或无效时，普通登录、上传和提交仍按原 adapter 契约运行，但不能通过正式发布所要求的 controlled-recovery 私有证据。正式 capability 必须使用 `version:1`、`issuanceMode:"panel_signed_exact_reconciliation"`、`evidenceAlgorithm:"RS256"`，提供可由 Android 解析的 RSA SPKI DER 小写 hex、1–3600 秒证据窗口、私有 reconciliation contract 原始字节 SHA-256，并在 `enabledOperations` 中无重复地包含 `FINAL_SUBMISSION`、`PREVIOUS_STEP_RECIPE`、`MULTIPART_UPLOAD`。
 
-这里放的是非秘密的验证公钥与 contract 摘要；签名私钥、真实 endpoint 证据、server correlation、remote receipt、journal/pair cross-proof 和 replay 原文只能留在受控私有系统。Panel/Worker 的同步校验只阻止明显错误或可编辑 outcome 字段；Android `KeyFactory` 与正式 private gate 才做完整公钥/证据验证。
+这里放的是非秘密的验证公钥与 contract 摘要；签名私钥、真实 endpoint 证据、server correlation、remote receipt、journal/pair cross-proof 和 replay 原文只能留在受控私有系统。Panel/Worker 的同步校验只阻止明显错误或可编辑 outcome 字段；Android `KeyFactory` 与发布前的私有验证才做完整公钥/证据验证。
 
 Capability 本身不能恢复任何记录。App 只有在原始 journal/barrier、原 Panel/catalog/backend 上下文、持久 one-time challenge、签名 evidence 和原子 write-back 全部精确匹配后才可能转换状态。本仓库当前尚未把这些步骤接入 operator-facing runtime；`Subject.request()` 只有 opaque hash 与 nonce，而原 POST 也没有把 recovery subject/operation id 发送到 authority。部署方必须先建立原请求发生时可用的服务端相关性来源，不能事后仅凭 subject hash 猜请求。验收格式与当前 release blocker 见 [Controlled-recovery 私有证据契约](./releasing.md#controlled-recovery-私有证据契约)。
 

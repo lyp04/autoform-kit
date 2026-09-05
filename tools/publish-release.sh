@@ -12,11 +12,8 @@ APK_THIRD_PARTY_POLICY="${SCRIPT_DIR}/apk-third-party-components.json"
 ANDROID_RUNTIME_LOCK="${SCRIPT_DIR}/android-runtime-dependencies.lock.json"
 APK_SOURCE_PROVENANCE_VERIFIER="${SCRIPT_DIR}/verify-apk-third-party-sources.mjs"
 PRIVATE_RELEASE_EVIDENCE_VERIFIER="${SCRIPT_DIR}/verify-private-release-evidence.mjs"
-PRIVATE_RELEASE_GATE_POLICY="${SCRIPT_DIR}/private-release-gate-policy.json"
 cd "${ROOT_DIR}"
 
-ATTESTATION_DIR=""
-ATTESTATION_DIR_IDENTITY=""
 AUDIT_DIR=""
 AUDIT_DIR_IDENTITY=""
 RELEASE_TEMP_PARENT=""
@@ -57,7 +54,6 @@ PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256=""
 PRIVATE_CATALOG_MANIFEST_SHA256=""
 PRIVATE_PANEL_SETTINGS_PRESENT=""
 PRIVATE_PANEL_SETTINGS_SHA256=""
-PRIVATE_GATE_SHA256=""
 
 die() {
   printf 'publish-release: %s\n' "$*" >&2
@@ -73,10 +69,6 @@ cleanup() {
   local cleanup_failed=false
   trap - EXIT HUP INT TERM
   if ! remove_bound_temporary_directory \
-    "${ATTESTATION_DIR:-}" "${ATTESTATION_DIR_IDENTITY:-}" "attestation"; then
-    cleanup_failed=true
-  fi
-  if ! remove_bound_temporary_directory \
     "${AUDIT_DIR:-}" "${AUDIT_DIR_IDENTITY:-}" "public audit"; then
     cleanup_failed=true
   fi
@@ -89,22 +81,20 @@ trap cleanup EXIT HUP INT TERM
 
 usage() {
   cat <<'EOF'
-Usage: tools/publish-release.sh --candidate PATH --previous-apk PATH --gate PATH \
+Usage: tools/publish-release.sh --candidate PATH --previous-apk PATH \
   --private-migration-report PATH --panel-config-evidence PATH \
   --panel-catalog-evidence PATH --private-deployment-evidence PATH \
   --private-wordlist PATH [--private-wordlist PATH ...]
 
 Publish an already-built standard upgrade candidate without rebuilding or
 rewriting it. Schema 3, schema 4, every historical publicationMode, and the
-reserved v1.0.0-v1.0.6 history-rewrite tags are rejected before any gate or
-GitHub side effect. Those candidates belong only to the separate reviewed
+reserved v1.0.0-v1.0.6 history-rewrite tags are rejected before any GitHub
+side effect. Those candidates belong only to the separate reviewed
 non-latest history-rewrite workflow.
 
 Required options:
   --candidate PATH       candidate-manifest.json created by tools/release.sh
   --previous-apk PATH    Exact previous APK bound by the candidate manifest
-  --gate PATH            Executable private release gate outside the repository,
-                         or at a Git-ignored path inside it
   --private-migration-report PATH
                          Real release-ready private migration report (mode 0600)
   --panel-config-evidence PATH
@@ -117,11 +107,10 @@ Required options:
                           fresh public-surface audit (required; repeatable)
   -h, --help             Show this help
 
-Relative paths are resolved from the repository root. A fresh attestation path
-and exact candidate bindings are passed to the gate through AUTOFORM_RELEASE_*
-environment variables. A source-commit-bound verifier checks the private files
-before the gate runs. Publishing fails closed unless all evidence and the gate
-attestation have the contracts documented in docs/releasing.md.
+Relative paths are resolved from the repository root. A source-commit-bound
+verifier checks the private files, and every local byte and public precondition
+is re-read after it. Publishing fails closed unless all evidence has the
+contracts documented in docs/releasing.md.
 EOF
 }
 
@@ -251,13 +240,13 @@ assert_secure_temporary_parent() {
   local directory="$1"
   local mode owner
   [[ -d "${directory}" && ! -L "${directory}" ]] || \
-    die "private gate temporary parent is invalid"
+    die "release temporary parent is invalid"
   mode="$(private_file_mode "${directory}" 2>/dev/null)" || \
-    die "private gate temporary parent permissions could not be read"
+    die "release temporary parent permissions could not be read"
   [[ "${mode}" =~ ^[0-7]{3,4}$ ]] || \
-    die "private gate temporary parent permissions are invalid"
+    die "release temporary parent permissions are invalid"
   owner="$(private_file_owner "${directory}" 2>/dev/null)" || \
-    die "private gate temporary parent owner could not be read"
+    die "release temporary parent owner could not be read"
   if (( (8#${mode} & 8#022) != 0 )) \
     && { (( (8#${mode} & 8#1000) == 0 )) \
       || [[ "${owner}" != "0" && "${owner}" != "${EUID}" ]]; }; then
@@ -306,30 +295,6 @@ remove_bound_temporary_directory() {
       "${label}" >&2
     return 1
   }
-}
-
-assert_private_gate_permissions() {
-  local gate_path="$1"
-  local mode
-  mode="$(private_file_mode "${gate_path}" 2>/dev/null)" || \
-    die "private gate permissions could not be read"
-  [[ "${mode}" =~ ^[0-7]{3,4}$ ]] || \
-    die "private gate permissions are invalid"
-  if (( (8#${mode} & 8#022) != 0 )); then
-    die "private gate must not be writable by group or others"
-  fi
-}
-
-assert_original_private_gate_stable() {
-  local gate_path="$1"
-  local expected_identity="$2"
-  local expected_sha256="$3"
-  [[ -f "${gate_path}" && ! -L "${gate_path}" && -x "${gate_path}" ]] || \
-    die "private gate path changed after verification"
-  assert_private_gate_permissions "${gate_path}"
-  [[ "$(private_file_identity "${gate_path}")" == "${expected_identity}" \
-    && "$(sha256_private_file "${gate_path}")" == "${expected_sha256}" ]] || \
-    die "private gate path changed after verification"
 }
 
 canonical_private_wordlist() {
@@ -416,36 +381,6 @@ assert_private_evidence_verifier_matches_source() {
     "tools/verify-private-release-evidence.mjs" \
     "${PRIVATE_RELEASE_EVIDENCE_VERIFIER}" \
     "private release evidence verifier"
-}
-
-assert_private_gate_policy_matches_source() {
-  local commit="$1"
-  assert_source_file_matches_commit \
-    "${commit}" \
-    "tools/private-release-gate-policy.json" \
-    "${PRIVATE_RELEASE_GATE_POLICY}" \
-    "private release gate policy"
-}
-
-assert_trusted_private_gate_enabled() {
-  local expected_gate_sha
-  assert_private_gate_policy_matches_source "${SOURCE_COMMIT}"
-  assert_private_gate_permissions "${GATE_PATH}"
-  jq -e -s '
-    length == 1
-    and (.[0] | keys == ["enabled", "gateSha256", "schemaVersion"])
-    and .[0].schemaVersion == 1
-    and (.[0].enabled | type == "boolean")
-    and (.[0].gateSha256 == null
-      or (.[0].gateSha256 | type == "string" and test("^[0-9a-f]{64}$")))
-  ' "${PRIVATE_RELEASE_GATE_POLICY}" >/dev/null || \
-    die "trusted private release gate policy is invalid"
-  if [[ "$(jq -r '.enabled' "${PRIVATE_RELEASE_GATE_POLICY}")" != true ]]; then
-    die "trusted private release gate policy is disabled; review the real gate, pin its exact SHA-256, and commit the policy before publishing"
-  fi
-  expected_gate_sha="$(jq -er '.gateSha256' "${PRIVATE_RELEASE_GATE_POLICY}")"
-  [[ "$(sha256_private_file "${GATE_PATH}")" == "${expected_gate_sha}" ]] || \
-    die "private release gate does not match the source-committed trusted gate SHA-256"
 }
 
 assert_source_file_matches_commit() {
@@ -1113,7 +1048,7 @@ capture_and_audit_public_history_metadata() {
       && ! -L "${PUBLIC_HISTORY_RELEASES_FILE}" \
       && "$(sha256_file "${PUBLIC_HISTORY_RELEASES_FILE}")" \
         == "${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" ]] || \
-      die "private gate changed a public-history snapshot input"
+      die "a public-history snapshot input changed during verification"
   fi
 
   source_repository_is_public "${REPO_SLUG}" || \
@@ -1451,14 +1386,13 @@ assert_private_evidence_unchanged() {
     && "$(sha256_private_file "${PRIVATE_PANEL_CATALOG_PATH}")" \
       == "${PRIVATE_PANEL_CATALOG_SHA256}" \
     && "$(sha256_private_file "${PRIVATE_DEPLOYMENT_EVIDENCE_PATH}")" \
-      == "${PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" \
-    && "$(sha256_private_file "${GATE_PATH}")" == "${PRIVATE_GATE_SHA256}" ]] || \
-    die "private release evidence or gate changed after verification"
+      == "${PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" ]] || \
+    die "private release evidence changed after verification"
 }
 
 verify_private_release_evidence() {
   local report="${AUDIT_DIR}/private-release-evidence-report.json"
-  local status migration_before config_before catalog_before deployment_before gate_before
+  local status migration_before config_before catalog_before deployment_before
 
   assert_private_evidence_verifier_matches_source "${SOURCE_COMMIT}"
   PRIVATE_EVIDENCE_VERIFIER_SHA256="$(sha256_file "${PRIVATE_RELEASE_EVIDENCE_VERIFIER}")"
@@ -1470,10 +1404,8 @@ verify_private_release_evidence() {
     die "Panel catalog evidence became unreadable"
   deployment_before="$(sha256_private_file "${PRIVATE_DEPLOYMENT_EVIDENCE_PATH}")" || \
     die "private deployment evidence became unreadable"
-  gate_before="$(sha256_private_file "${GATE_PATH}")" || \
-    die "private release gate became unreadable"
   for digest in "${migration_before}" "${config_before}" "${catalog_before}" \
-    "${deployment_before}" "${gate_before}" "${PRIVATE_EVIDENCE_VERIFIER_SHA256}"; do
+    "${deployment_before}" "${PRIVATE_EVIDENCE_VERIFIER_SHA256}"; do
     [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || die "private evidence SHA-256 could not be calculated"
   done
 
@@ -1489,7 +1421,6 @@ verify_private_release_evidence() {
     --candidate-manifest-sha256 "${MANIFEST_SHA256}" \
     --apk-sha256 "${APK_SHA256}" \
     --previous-apk-sha256 "${PREVIOUS_APK_SHA256}" \
-    --private-gate-sha256 "${gate_before}" \
     --public-history-remote-refs-input-sha256 \
       "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
     --public-history-ref-api-input-sha256 \
@@ -1521,7 +1452,6 @@ verify_private_release_evidence() {
   PRIVATE_PANEL_CONFIG_SHA256="${config_before}"
   PRIVATE_PANEL_CATALOG_SHA256="${catalog_before}"
   PRIVATE_DEPLOYMENT_EVIDENCE_SHA256="${deployment_before}"
-  PRIVATE_GATE_SHA256="${gate_before}"
   PRIVATE_EVIDENCE_REPORT_SHA256="$(sha256_file "${report}")"
   PRIVATE_PANEL_PAIR_SHA256="$(jq -er '.bindings.panelPairSha256' "${report}")"
   PRIVATE_CATALOG_VERSION="$(jq -er '.bindings.catalogVersion | tostring' "${report}")"
@@ -1552,7 +1482,6 @@ verify_private_release_evidence() {
     --arg manifest "${MANIFEST_SHA256}" \
     --arg apk "${APK_SHA256}" \
     --arg previousApk "${PREVIOUS_APK_SHA256}" \
-    --arg gate "${PRIVATE_GATE_SHA256}" \
     --arg migration "${PRIVATE_MIGRATION_REPORT_SHA256}" \
     --arg config "${PRIVATE_PANEL_CONFIG_SHA256}" \
     --arg catalog "${PRIVATE_PANEL_CATALOG_SHA256}" \
@@ -1577,7 +1506,6 @@ verify_private_release_evidence() {
         candidateManifestSha256: $manifest,
         apkSha256: $apk,
         previousApkSha256: $previousApk,
-        privateGateSha256: $gate,
         migrationReportSha256: $migration,
         panelConfigSha256: $config,
         panelCatalogSha256: $catalog,
@@ -1622,385 +1550,12 @@ reverify_private_release_evidence_before_publish() {
     die "initial private release evidence report binding is invalid"
   verify_private_release_evidence
   [[ "${PRIVATE_EVIDENCE_REPORT_SHA256}" == "${expected_report_sha256}" ]] || \
-    die "live private release evidence changed after the private gate"
-  info "live private release evidence remained exact after the private gate"
-}
-
-assert_private_gate() {
-  local gate_path="$1"
-  local relative
-
-  case "${gate_path}" in
-    "${ROOT_DIR}"/*)
-      relative="${gate_path#"${ROOT_DIR}"/}"
-      if git ls-files --error-unmatch -- "${relative}" >/dev/null 2>&1; then
-        die "private gate must not be tracked by Git: ${relative}"
-      fi
-      git check-ignore --quiet -- "${relative}" || \
-        die "a gate inside the repository must be covered by .gitignore: ${relative}"
-      ;;
-  esac
-}
-
-run_private_gate() {
-  local gate_path="$1"
-  local attestation gate_basename gate_identity gate_snapshot gate_snapshot_dir
-  local gate_snapshot_dir_identity gate_status
-
-  assert_private_gate "${gate_path}"
-  assert_private_gate_permissions "${gate_path}"
-  gate_identity="$(private_file_identity "${gate_path}")" || \
-    die "private gate identity could not be read"
-  [[ "$(sha256_private_file "${gate_path}")" == "${PRIVATE_GATE_SHA256}" ]] || \
-    die "private gate changed before snapshot creation"
-  assert_release_temp_parent_stable
-  ATTESTATION_DIR="$(mktemp -d \
-    "${RELEASE_TEMP_PARENT}/autoform-release-attestation.XXXXXX")"
-  case "${ATTESTATION_DIR}" in
-    "${RELEASE_TEMP_PARENT}"/autoform-release-attestation.*) ;;
-    *) die "private gate attestation directory escaped the release temporary parent" ;;
-  esac
-  assert_release_temp_parent_stable
-  assert_owned_private_directory "${ATTESTATION_DIR}" 700 \
-    "private gate attestation directory"
-  ATTESTATION_DIR_IDENTITY="$(private_directory_identity "${ATTESTATION_DIR}")" || \
-    die "private gate attestation directory identity could not be read"
-  gate_snapshot_dir="${ATTESTATION_DIR}/trusted-gate"
-  mkdir "${gate_snapshot_dir}"
-  chmod 700 "${gate_snapshot_dir}"
-  assert_owned_private_directory "${gate_snapshot_dir}" 700 \
-    "private gate snapshot directory"
-  gate_basename="$(basename "${gate_path}")"
-  gate_snapshot="${gate_snapshot_dir}/${gate_basename}"
-  cp "${gate_path}" "${gate_snapshot}"
-  chmod 500 "${gate_snapshot}"
-  [[ -f "${gate_snapshot}" && ! -L "${gate_snapshot}" \
-    && "$(private_file_owner "${gate_snapshot}")" == "${EUID}" \
-    && "$(private_file_link_count "${gate_snapshot}")" == "1" \
-    && "$(private_file_mode "${gate_snapshot}")" == "500" \
-    && "$(sha256_private_file "${gate_snapshot}")" == "${PRIVATE_GATE_SHA256}" ]] || \
-    die "private gate snapshot does not match the trusted SHA-256"
-  assert_original_private_gate_stable \
-    "${gate_path}" "${gate_identity}" "${PRIVATE_GATE_SHA256}"
-
-  # Bind the final gate and attestation lookups to the already-entered private
-  # directory inode. Replacing a TMPDIR pathname cannot redirect the relative
-  # execution or attestation read to another directory.
-  cd "${gate_snapshot_dir}"
-  gate_snapshot_dir_identity="$(private_directory_identity .)" || \
-    die "private gate snapshot directory identity could not be read"
-  assert_owned_private_directory . 700 "private gate snapshot directory"
-  gate_snapshot="./${gate_basename}"
-  attestation="./attestation.json"
-  [[ -f "${gate_snapshot}" && ! -L "${gate_snapshot}" \
-    && "$(private_file_owner "${gate_snapshot}")" == "${EUID}" \
-    && "$(private_file_link_count "${gate_snapshot}")" == "1" \
-    && "$(private_file_mode "${gate_snapshot}")" == "500" \
-    && "$(sha256_private_file "${gate_snapshot}")" == "${PRIVATE_GATE_SHA256}" ]] || \
-    die "private gate snapshot changed before relative execution"
-
-  info "running required private release gate from a verified private snapshot"
-  set +e
-  AUTOFORM_RELEASE_REPOSITORY_ROOT="${ROOT_DIR}" \
-  AUTOFORM_RELEASE_CANDIDATE_MANIFEST="${MANIFEST_PATH}" \
-  AUTOFORM_RELEASE_CANDIDATE_MANIFEST_SHA256="${MANIFEST_SHA256}" \
-  AUTOFORM_RELEASE_APK="${APK_PATH}" \
-  AUTOFORM_RELEASE_APK_SHA256="${APK_SHA256}" \
-  AUTOFORM_RELEASE_UPDATE="${UPDATE_PATH}" \
-  AUTOFORM_RELEASE_UPDATE_SHA256="${UPDATE_SHA256}" \
-  AUTOFORM_RELEASE_NOTES="${NOTES_PATH}" \
-  AUTOFORM_RELEASE_NOTES_SHA256="${NOTES_SHA256}" \
-  AUTOFORM_RELEASE_PREVIOUS_APK="${PREVIOUS_APK_PATH}" \
-  AUTOFORM_RELEASE_PREVIOUS_APK_SHA256="${PREVIOUS_APK_SHA256}" \
-  AUTOFORM_RELEASE_SOURCE_COMMIT="${SOURCE_COMMIT}" \
-  AUTOFORM_RELEASE_PUBLIC_AUDIT_SCANNER_SHA256="${PUBLIC_AUDIT_SCANNER_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_AUDIT_POLICY_SHA256="${PUBLIC_AUDIT_POLICY_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_TREE_OID="${PUBLIC_TREE_OID}" \
-  AUTOFORM_RELEASE_PUBLIC_TREE_INPUT_SHA256="${PUBLIC_TREE_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_TREE_REPORT_SHA256="${PUBLIC_TREE_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_WORKTREE_INPUT_SHA256="${PUBLIC_WORKTREE_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_WORKTREE_REPORT_SHA256="${PUBLIC_WORKTREE_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_APK_INPUT_SHA256="${PUBLIC_APK_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_APK_REPORT_SHA256="${PUBLIC_APK_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_APK_ZIP_ENTRY_MANIFEST_SHA256="${PUBLIC_APK_ZIP_ENTRY_MANIFEST_SHA256}" \
-  AUTOFORM_RELEASE_APK_THIRD_PARTY_POLICY_SHA256="${APK_THIRD_PARTY_POLICY_SHA256}" \
-  AUTOFORM_RELEASE_APK_THIRD_PARTY_PROFILE_ID="${APK_THIRD_PARTY_PROFILE_ID}" \
-  AUTOFORM_RELEASE_APK_THIRD_PARTY_MATCHED_ENTRY_COUNT="${APK_THIRD_PARTY_MATCHED_ENTRY_COUNT}" \
-  AUTOFORM_RELEASE_ANDROID_RUNTIME_LOCK_SHA256="${ANDROID_RUNTIME_LOCK_SHA256}" \
-  AUTOFORM_RELEASE_APK_SOURCE_VERIFIER_SHA256="${APK_SOURCE_VERIFIER_SHA256}" \
-  AUTOFORM_RELEASE_APK_SOURCE_REPORT_SHA256="${APK_SOURCE_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_APK_SOURCE_ARTIFACT_COUNT="${APK_SOURCE_ARTIFACT_COUNT}" \
-  AUTOFORM_RELEASE_APK_SOURCE_ENTRY_COUNT="${APK_SOURCE_ENTRY_COUNT}" \
-  AUTOFORM_RELEASE_APK_MERGED_SOURCE_COUNT="${APK_MERGED_SOURCE_COUNT}" \
-  AUTOFORM_RELEASE_APK_COMPILED_OUTPUT_COUNT="${APK_COMPILED_OUTPUT_COUNT}" \
-  AUTOFORM_RELEASE_APK_DEX_SOURCE_ARTIFACT_COUNT="${APK_DEX_SOURCE_ARTIFACT_COUNT}" \
-  AUTOFORM_RELEASE_APK_DEX_SOURCE_ENTRY_COUNT="${APK_DEX_SOURCE_ENTRY_COUNT}" \
-  AUTOFORM_RELEASE_APK_DECLARED_DEX_STRING_COUNT="${APK_DECLARED_DEX_STRING_COUNT}" \
-  AUTOFORM_RELEASE_APK_SOURCE_MATCHED_DEX_STRING_COUNT="${APK_SOURCE_MATCHED_DEX_STRING_COUNT}" \
-  AUTOFORM_RELEASE_APK_MATCHED_DEX_STRING_COUNT="${APK_MATCHED_DEX_STRING_COUNT}" \
-  AUTOFORM_RELEASE_PUBLIC_UPDATE_INPUT_SHA256="${PUBLIC_UPDATE_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_UPDATE_REPORT_SHA256="${PUBLIC_UPDATE_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_NOTES_INPUT_SHA256="${PUBLIC_NOTES_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_NOTES_REPORT_SHA256="${PUBLIC_NOTES_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_MANIFEST_INPUT_SHA256="${PUBLIC_MANIFEST_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_MANIFEST_REPORT_SHA256="${PUBLIC_MANIFEST_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_FILE="${PUBLIC_HISTORY_COMMIT_OBJECT_FILE}" \
-  AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_INPUT_SHA256="${PUBLIC_HISTORY_COMMIT_OBJECT_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_COMMIT_OBJECT_REPORT_SHA256="${PUBLIC_HISTORY_COMMIT_OBJECT_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_FILE="${PUBLIC_HISTORY_REMOTE_REFS_FILE}" \
-  AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_INPUT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_REPORT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REF_API_FILE="${PUBLIC_HISTORY_REF_API_FILE}" \
-  AUTOFORM_RELEASE_PUBLIC_REF_API_INPUT_SHA256="${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REF_API_REPORT_SHA256="${PUBLIC_HISTORY_REF_API_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_RELEASES_FILE="${PUBLIC_HISTORY_RELEASES_FILE}" \
-  AUTOFORM_RELEASE_PUBLIC_RELEASES_INPUT_SHA256="${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_RELEASES_REPORT_SHA256="${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REF_IDENTITY_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_PULL_REF_IDENTITY_SHA256="${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REMOTE_REFS_RAW_SNAPSHOT_SHA256="${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REF_API_SNAPSHOT_SHA256="${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_RELEASE_API_SNAPSHOT_SHA256="${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_REPOSITORY_BINDING_SHA256="${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
-  AUTOFORM_RELEASE_PUBLIC_METADATA_BINDING_SHA256="${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_EVIDENCE_VERIFIER_SHA256="${PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_EVIDENCE_REPORT_SHA256="${PRIVATE_EVIDENCE_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_MIGRATION_REPORT_SHA256="${PRIVATE_MIGRATION_REPORT_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_CONFIG_SHA256="${PRIVATE_PANEL_CONFIG_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_CATALOG_SHA256="${PRIVATE_PANEL_CATALOG_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_PAIR_SHA256="${PRIVATE_PANEL_PAIR_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_DEPLOYMENT_EVIDENCE_SHA256="${PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_VERSION="${PRIVATE_CATALOG_VERSION}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_WORKER_VERSION_ID="${PRIVATE_PANEL_WORKER_VERSION_ID}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_TYPE="${PRIVATE_CATALOG_AUTHORITY_TYPE}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256="${PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_REVISION="${PRIVATE_CATALOG_AUTHORITY_REVISION}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256="${PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_CATALOG_MANIFEST_SHA256="${PRIVATE_CATALOG_MANIFEST_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_SETTINGS_PRESENT="${PRIVATE_PANEL_SETTINGS_PRESENT}" \
-  AUTOFORM_RELEASE_PRIVATE_PANEL_SETTINGS_SHA256="${PRIVATE_PANEL_SETTINGS_SHA256}" \
-  AUTOFORM_RELEASE_PRIVATE_GATE_SHA256="${PRIVATE_GATE_SHA256}" \
-  AUTOFORM_RELEASE_ATTESTATION_OUT="${attestation}" \
-    "${gate_snapshot}"
-  gate_status=$?
-  set -e
-
-  [[ -f "${gate_snapshot}" && ! -L "${gate_snapshot}" \
-    && "$(private_file_owner "${gate_snapshot}")" == "${EUID}" \
-    && "$(private_file_link_count "${gate_snapshot}")" == "1" \
-    && "$(private_file_mode "${gate_snapshot}")" == "500" \
-    && "$(sha256_private_file "${gate_snapshot}")" == "${PRIVATE_GATE_SHA256}" ]] || \
-    die "private gate snapshot changed while it was running"
-  [[ "$(private_directory_identity .)" == "${gate_snapshot_dir_identity}" ]] || \
-    die "private gate snapshot directory changed while it was running"
-  assert_owned_private_directory . 700 "private gate snapshot directory"
-  assert_original_private_gate_stable \
-    "${gate_path}" "${gate_identity}" "${PRIVATE_GATE_SHA256}"
-  [[ ${gate_status} -eq 0 ]] || die "private release gate failed"
-
-  [[ -f "${attestation}" && ! -L "${attestation}" ]] || \
-    die "private gate did not create a regular attestation file"
-  jq -e -s \
-    --arg manifest "${MANIFEST_SHA256}" \
-    --arg apk "${APK_SHA256}" \
-    --arg update "${UPDATE_SHA256}" \
-    --arg notes "${NOTES_SHA256}" \
-    --arg previousApk "${PREVIOUS_APK_SHA256}" \
-    --arg sourceCommit "${SOURCE_COMMIT}" \
-    --arg auditScanner "${PUBLIC_AUDIT_SCANNER_SHA256}" \
-    --arg auditPolicy "${PUBLIC_AUDIT_POLICY_SHA256}" \
-    --arg treeOid "${PUBLIC_TREE_OID}" \
-    --arg treeInput "${PUBLIC_TREE_INPUT_SHA256}" \
-    --arg treeReport "${PUBLIC_TREE_REPORT_SHA256}" \
-    --arg worktreeInput "${PUBLIC_WORKTREE_INPUT_SHA256}" \
-    --arg worktreeReport "${PUBLIC_WORKTREE_REPORT_SHA256}" \
-    --arg apkInput "${PUBLIC_APK_INPUT_SHA256}" \
-    --arg apkReport "${PUBLIC_APK_REPORT_SHA256}" \
-    --arg apkZipEntryManifest "${PUBLIC_APK_ZIP_ENTRY_MANIFEST_SHA256}" \
-    --arg thirdPartyPolicy "${APK_THIRD_PARTY_POLICY_SHA256}" \
-    --arg thirdPartyProfile "${APK_THIRD_PARTY_PROFILE_ID}" \
-    --argjson thirdPartyEntryCount "${APK_THIRD_PARTY_MATCHED_ENTRY_COUNT}" \
-    --arg runtimeLock "${ANDROID_RUNTIME_LOCK_SHA256}" \
-    --arg sourceVerifier "${APK_SOURCE_VERIFIER_SHA256}" \
-    --arg sourceReport "${APK_SOURCE_REPORT_SHA256}" \
-    --argjson sourceArtifactCount "${APK_SOURCE_ARTIFACT_COUNT}" \
-    --argjson sourceEntryCount "${APK_SOURCE_ENTRY_COUNT}" \
-    --argjson mergedSourceCount "${APK_MERGED_SOURCE_COUNT}" \
-    --argjson compiledOutputCount "${APK_COMPILED_OUTPUT_COUNT}" \
-    --argjson dexSourceArtifactCount "${APK_DEX_SOURCE_ARTIFACT_COUNT}" \
-    --argjson dexSourceEntryCount "${APK_DEX_SOURCE_ENTRY_COUNT}" \
-    --argjson declaredDexStringCount "${APK_DECLARED_DEX_STRING_COUNT}" \
-    --argjson sourceMatchedDexStringCount "${APK_SOURCE_MATCHED_DEX_STRING_COUNT}" \
-    --argjson apkMatchedDexStringCount "${APK_MATCHED_DEX_STRING_COUNT}" \
-    --arg updateInput "${PUBLIC_UPDATE_INPUT_SHA256}" \
-    --arg updateReport "${PUBLIC_UPDATE_REPORT_SHA256}" \
-    --arg notesInput "${PUBLIC_NOTES_INPUT_SHA256}" \
-    --arg notesReport "${PUBLIC_NOTES_REPORT_SHA256}" \
-    --arg manifestInput "${PUBLIC_MANIFEST_INPUT_SHA256}" \
-    --arg manifestReport "${PUBLIC_MANIFEST_REPORT_SHA256}" \
-    --arg commitObjectInput "${PUBLIC_HISTORY_COMMIT_OBJECT_INPUT_SHA256}" \
-    --arg commitObjectReport "${PUBLIC_HISTORY_COMMIT_OBJECT_REPORT_SHA256}" \
-    --arg remoteRefsInput "${PUBLIC_HISTORY_REMOTE_REFS_INPUT_SHA256}" \
-    --arg remoteRefsReport "${PUBLIC_HISTORY_REMOTE_REFS_REPORT_SHA256}" \
-    --arg refApiInput "${PUBLIC_HISTORY_REF_API_INPUT_SHA256}" \
-    --arg refApiReport "${PUBLIC_HISTORY_REF_API_REPORT_SHA256}" \
-    --arg releasesInput "${PUBLIC_HISTORY_RELEASES_INPUT_SHA256}" \
-    --arg releasesReport "${PUBLIC_HISTORY_RELEASES_REPORT_SHA256}" \
-    --arg refIdentity "${PUBLIC_HISTORY_REMOTE_REFS_IDENTITY_SHA256}" \
-    --arg pullRefIdentity "${PUBLIC_HISTORY_PULL_REFS_IDENTITY_SHA256}" \
-    --arg remoteRefsRawSnapshot "${PUBLIC_HISTORY_REMOTE_REFS_RAW_SNAPSHOT_SHA256}" \
-    --arg refApiSnapshot "${PUBLIC_HISTORY_REF_API_SNAPSHOT_SHA256}" \
-    --arg releaseApiSnapshot "${PUBLIC_HISTORY_RELEASE_API_SNAPSHOT_SHA256}" \
-    --arg repositoryBinding "${PUBLIC_HISTORY_REPOSITORY_BINDING_SHA256}" \
-    --arg metadataBinding "${PUBLIC_HISTORY_METADATA_BINDING_SHA256}" \
-    --arg privateVerifier "${PRIVATE_EVIDENCE_VERIFIER_SHA256}" \
-    --arg privateEvidenceReport "${PRIVATE_EVIDENCE_REPORT_SHA256}" \
-    --arg privateMigrationReport "${PRIVATE_MIGRATION_REPORT_SHA256}" \
-    --arg privatePanelConfig "${PRIVATE_PANEL_CONFIG_SHA256}" \
-    --arg privatePanelCatalog "${PRIVATE_PANEL_CATALOG_SHA256}" \
-    --arg privatePanelPair "${PRIVATE_PANEL_PAIR_SHA256}" \
-    --arg privateDeploymentEvidence "${PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" \
-    --arg privatePanelWorkerVersion "${PRIVATE_PANEL_WORKER_VERSION_ID}" \
-    --arg privateAuthorityType "${PRIVATE_CATALOG_AUTHORITY_TYPE}" \
-    --arg privateAuthorityIdentity "${PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256}" \
-    --arg privateAuthorityRevision "${PRIVATE_CATALOG_AUTHORITY_REVISION}" \
-    --arg privateAuthorityWorkerBinding "${PRIVATE_CATALOG_AUTHORITY_WORKER_BINDING_SHA256}" \
-    --arg privateCatalogManifest "${PRIVATE_CATALOG_MANIFEST_SHA256}" \
-    --arg privatePanelSettings "${PRIVATE_PANEL_SETTINGS_SHA256}" \
-    --argjson privatePanelSettingsPresent "${PRIVATE_PANEL_SETTINGS_PRESENT}" \
-    --arg privateGate "${PRIVATE_GATE_SHA256}" \
-    --argjson privateCatalogVersion "${PRIVATE_CATALOG_VERSION}" \
-    'length == 1
-      and (.[0] | keys == ["bindings", "checks", "releaseReady", "schemaVersion"])
-      and .[0].schemaVersion == 5
-      and .[0].releaseReady == true
-      and .[0].bindings == {
-        candidateManifestSha256: $manifest,
-        apkSha256: $apk,
-        updateSha256: $update,
-        notesSha256: $notes,
-        previousApkSha256: $previousApk,
-        sourceCommit: $sourceCommit,
-        publicAudit: {
-          scannerSha256: $auditScanner,
-          policySha256: $auditPolicy,
-          sourceTree: {
-            gitTreeOid: $treeOid,
-            inputSha256: $treeInput,
-            reportSha256: $treeReport
-          },
-          worktree: {
-            inputSha256: $worktreeInput,
-            reportSha256: $worktreeReport
-          },
-          apk: {
-            inputSha256: $apkInput,
-            reportSha256: $apkReport,
-            zipEntryManifestSha256: $apkZipEntryManifest
-          },
-          thirdPartyProvenance: {
-            manifestFile: "tools/apk-third-party-components.json",
-            manifestSha256: $thirdPartyPolicy,
-            runtimeLockFile: "tools/android-runtime-dependencies.lock.json",
-            runtimeLockSha256: $runtimeLock,
-            profileId: $thirdPartyProfile,
-            matchedEntryCount: $thirdPartyEntryCount,
-            sourceVerifierFile: "tools/verify-apk-third-party-sources.mjs",
-            sourceVerifierSha256: $sourceVerifier,
-            sourceReportSha256: $sourceReport,
-            sourceArtifactCount: $sourceArtifactCount,
-            sourceEntryCount: $sourceEntryCount,
-            mergedSourceCount: $mergedSourceCount,
-            compiledOutputCount: $compiledOutputCount,
-            dexSourceArtifactCount: $dexSourceArtifactCount,
-            dexSourceEntryCount: $dexSourceEntryCount,
-            declaredDexStringCount: $declaredDexStringCount,
-            sourceMatchedDexStringCount: $sourceMatchedDexStringCount,
-            apkMatchedDexStringCount: $apkMatchedDexStringCount,
-            applicationDexStrict: true
-          },
-          releaseMetadata: {
-            update: {
-              inputSha256: $updateInput,
-              reportSha256: $updateReport
-            },
-            notes: {
-              inputSha256: $notesInput,
-              reportSha256: $notesReport
-            },
-            candidateManifest: {
-              inputSha256: $manifestInput,
-              reportSha256: $manifestReport
-            }
-          },
-          publicHistory: {
-            sourceCommitObject: {
-              inputSha256: $commitObjectInput,
-              reportSha256: $commitObjectReport
-            },
-            remoteRefs: {
-              inputSha256: $remoteRefsInput,
-              reportSha256: $remoteRefsReport
-            },
-            refsApi: {
-              inputSha256: $refApiInput,
-              reportSha256: $refApiReport
-            },
-            releases: {
-              inputSha256: $releasesInput,
-              reportSha256: $releasesReport
-            },
-            refIdentitySha256: $refIdentity,
-            pullRefIdentitySha256: $pullRefIdentity,
-            remoteRefsRawSnapshotSha256: $remoteRefsRawSnapshot,
-            refApiSnapshotSha256: $refApiSnapshot,
-            releaseApiSnapshotSha256: $releaseApiSnapshot,
-            repositoryBindingSha256: $repositoryBinding,
-            metadataBindingSha256: $metadataBinding
-          }
-        },
-        privateEvidence: {
-          verifierFile: "tools/verify-private-release-evidence.mjs",
-          verifierSha256: $privateVerifier,
-          verificationReportSha256: $privateEvidenceReport,
-          migrationReportSha256: $privateMigrationReport,
-          panelConfigSha256: $privatePanelConfig,
-          panelCatalogSha256: $privatePanelCatalog,
-          panelPairSha256: $privatePanelPair,
-          deploymentEvidenceSha256: $privateDeploymentEvidence,
-          catalogVersion: $privateCatalogVersion,
-          panelWorkerVersionId: $privatePanelWorkerVersion,
-          catalogAuthorityType: $privateAuthorityType,
-          catalogAuthorityIdentitySha256: $privateAuthorityIdentity,
-          catalogAuthorityRevision: $privateAuthorityRevision,
-          catalogAuthorityWorkerBindingSha256: $privateAuthorityWorkerBinding,
-          catalogManifestSha256: $privateCatalogManifest,
-          panelSettingsPresent: $privatePanelSettingsPresent,
-          panelSettingsSha256: $privatePanelSettings,
-          privateGateSha256: $privateGate
-        }
-      }
-      and .[0].checks == {
-        privateUpgradeEvidence: true,
-        privateDeployment: true,
-        publicWorktree: true,
-        publicHistory: true,
-        candidateApk: true,
-        signedCurrentUpgrade: true,
-        freshInstall: true,
-        liveCatalogCompatibility: true,
-        automaticUpdateProtocol: true,
-        productionMutationFree: true
-      }' "${attestation}" >/dev/null || \
-    die "private gate attestation is missing an exact binding or required true check"
-  assert_private_evidence_unchanged
-  cd "${ROOT_DIR}"
-  info "private release gate attestation accepted"
+    die "live private release evidence changed before publishing"
+  info "live private release evidence remained exact before publishing"
 }
 
 CANDIDATE_INPUT=""
 PREVIOUS_APK_INPUT=""
-GATE_INPUT=""
 PRIVATE_MIGRATION_REPORT_INPUT=""
 PRIVATE_PANEL_CONFIG_INPUT=""
 PRIVATE_PANEL_CATALOG_INPUT=""
@@ -2018,11 +1573,6 @@ while [[ $# -gt 0 ]]; do
     --previous-apk)
       [[ $# -ge 2 ]] || die "--previous-apk requires a path"
       PREVIOUS_APK_INPUT="$2"
-      shift 2
-      ;;
-    --gate)
-      [[ $# -ge 2 ]] || die "--gate requires a path"
-      GATE_INPUT="$2"
       shift 2
       ;;
     --private-migration-report)
@@ -2062,7 +1612,6 @@ done
 
 [[ -n "${CANDIDATE_INPUT}" ]] || die "--candidate is required"
 [[ -n "${PREVIOUS_APK_INPUT}" ]] || die "--previous-apk is required"
-[[ -n "${GATE_INPUT}" ]] || die "--gate is required"
 [[ -n "${PRIVATE_MIGRATION_REPORT_INPUT}" ]] || die "--private-migration-report is required"
 [[ -n "${PRIVATE_PANEL_CONFIG_INPUT}" ]] || die "--panel-config-evidence is required"
 [[ -n "${PRIVATE_PANEL_CATALOG_INPUT}" ]] || die "--panel-catalog-evidence is required"
@@ -2093,8 +1642,6 @@ initialize_release_temp_parent
   die "APK source provenance verifier is missing or is not a regular file"
 [[ -f "${PRIVATE_RELEASE_EVIDENCE_VERIFIER}" && ! -L "${PRIVATE_RELEASE_EVIDENCE_VERIFIER}" ]] || \
   die "private release evidence verifier is missing or is not a regular file"
-[[ -f "${PRIVATE_RELEASE_GATE_POLICY}" && ! -L "${PRIVATE_RELEASE_GATE_POLICY}" ]] || \
-  die "private release gate policy is missing or is not a regular file"
 for ((PRIVATE_WORDLIST_INDEX = 0; PRIVATE_WORDLIST_INDEX < ${#PRIVATE_WORDLISTS[@]}; PRIVATE_WORDLIST_INDEX++)); do
   PRIVATE_WORDLISTS[PRIVATE_WORDLIST_INDEX]="$(canonical_private_wordlist "${PRIVATE_WORDLISTS[PRIVATE_WORDLIST_INDEX]}")"
   PRIVATE_WORDLIST_FINGERPRINTS[PRIVATE_WORDLIST_INDEX]="$(
@@ -2125,9 +1672,6 @@ case "${CANDIDATE_DECLARED_TAG}" in
     ;;
 esac
 PREVIOUS_APK_PATH="$(canonical_regular_file "previous APK" "${PREVIOUS_APK_INPUT}")"
-GATE_PATH="$(canonical_regular_file "private gate" "${GATE_INPUT}")"
-[[ -x "${GATE_PATH}" ]] || die "private gate is not executable: ${GATE_PATH}"
-assert_private_gate_permissions "${GATE_PATH}"
 PRIVATE_MIGRATION_REPORT_PATH="$(canonical_private_evidence_file \
   "private migration report" "${PRIVATE_MIGRATION_REPORT_INPUT}")"
 PRIVATE_PANEL_CONFIG_PATH="$(canonical_private_evidence_file \
@@ -2355,20 +1899,18 @@ gh auth status --hostname github.com >/dev/null 2>&1 || \
   die "publishing requires an authenticated gh session"
 assert_public_source_repository "${REPO_SLUG}"
 
-# Check all local bytes and remote preconditions before invoking the private
-# gate. No build or candidate rewrite occurs in this script.
+# Check all local bytes and remote preconditions before verifying the private
+# evidence. No build or candidate rewrite occurs in this script.
 assert_candidate_bytes_and_identity
 assert_publishable_head "${SOURCE_COMMIT}"
 assert_fresh_public_audits
 assert_tag_and_release_absent "${REPO_SLUG}" "${TAG}"
-assert_trusted_private_gate_enabled
 verify_private_release_evidence
-run_private_gate "${GATE_PATH}"
 
-# The gate can take time. Re-read all bytes and public metadata once, then
-# reverify the live private evidence. A third, metadata-only capture after that
-# verifier closes its network window and must still equal the original binding
-# before the sole publishing command.
+# Re-read all bytes and public metadata once, then reverify the live private
+# evidence. A third, metadata-only capture after that verifier closes its network
+# window and must still equal the original binding before the sole publishing
+# command.
 assert_candidate_bytes_and_identity
 assert_publishable_head "${SOURCE_COMMIT}"
 assert_fresh_public_audits
