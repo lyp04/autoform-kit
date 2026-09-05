@@ -8,6 +8,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import {
+  selfHostedStorePermissionError,
   currentUpgradeReportPass,
   parseDeploymentAuthority,
   parseGitHubCatalogTree,
@@ -219,6 +220,28 @@ test("deployment evidence discriminates GitHub and R2 authority", () => {
     },
     ...common
   }), /R2 catalog authority is invalid/u);
+});
+
+test("self-hosted store permissions allow a service-owned directory and nothing wider", () => {
+  const service = { uid: 996, gid: 989 };
+  const store = (mode, uid = 996, gid = 989) => ({ mode, uid, gid });
+  // The ordinary shape: owned by the service user, its own private group, nothing for others.
+  assert.equal(selfHostedStorePermissionError(store(0o750), service), null);
+  assert.equal(selfHostedStorePermissionError(store(0o700), service), null);
+  for (const [directory, expected, label] of [
+    [store(0o755), /reachable by other users/u, "world-readable"],
+    [store(0o751), /reachable by other users/u, "world-traversable"],
+    [store(0o752), /reachable by other users/u, "world-writable"],
+    [store(0o750, 0), /not owned by the declared service user/u, "owned by root"],
+    [store(0o750, 996, 100), /group-readable outside the service group/u, "a shared group"],
+    [store(0o2750), /setuid, setgid or sticky/u, "setgid"],
+    [store(0o1750), /setuid, setgid or sticky/u, "sticky"]
+  ]) {
+    assert.match(String(selfHostedStorePermissionError(directory, service)), expected,
+      `${label} must be rejected`);
+  }
+  // A different group only matters when group bits are actually set.
+  assert.equal(selfHostedStorePermissionError(store(0o700, 996, 100), service), null);
 });
 
 test("deployment evidence accepts a self-hosted authority and binds its store", () => {

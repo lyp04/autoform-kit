@@ -659,13 +659,13 @@ async function readSelfHostedStore(authority) {
   if (!directory.isDirectory() || directory.isSymbolicLink()) {
     throw new Error("self-hosted catalog store is not a directory");
   }
-  if ((directory.mode & 0o077n) !== 0n) {
-    throw new Error("self-hosted catalog store is readable or writable by group or others");
-  }
-  const owner = selfHostedServiceUid(authority.serviceUser);
-  if (directory.uid !== BigInt(owner)) {
-    throw new Error("self-hosted catalog store is not owned by the declared service user");
-  }
+  const service = selfHostedServiceIdentity(authority.serviceUser);
+  const permissionError = selfHostedStorePermissionError({
+    mode: directory.mode,
+    uid: directory.uid,
+    gid: directory.gid
+  }, service);
+  if (permissionError !== null) throw new Error(permissionError);
   const pointerPath = `${storePath}/${R2_POINTER_KEY}`;
   const pointerBytes = await readFile(pointerPath);
   const pointer = strictJsonObject(pointerBytes, "self-hosted current pointer");
@@ -681,13 +681,46 @@ async function readSelfHostedStore(authority) {
   return { storePath, directory, pointerBytes, snapshot };
 }
 
-function selfHostedServiceUid(serviceUser) {
-  const bytes = runBytes("id", ["-u", serviceUser], "self-hosted service user");
-  const uid = Number(bytes.toString("utf8").trim());
-  if (!Number.isSafeInteger(uid) || uid < 0) {
-    throw new Error("self-hosted service user could not be resolved");
+/**
+ * Decide whether a self-hosted catalog store directory is private enough to release from.
+ *
+ * The Worker authorities prove the catalog store is not readable outside the deployment. On a
+ * filesystem that means no access at all for others, and group access only when the group is the
+ * service user's own primary group -- which is how a systemd unit normally owns its data, and is
+ * not a way for anyone else to read it.
+ */
+export function selfHostedStorePermissionError(directory, service) {
+  const mode = BigInt(directory.mode);
+  const uid = BigInt(directory.uid);
+  const gid = BigInt(directory.gid);
+  if ((mode & 0o007n) !== 0n) {
+    return "self-hosted catalog store is reachable by other users";
   }
-  return uid;
+  if (uid !== BigInt(service.uid)) {
+    return "self-hosted catalog store is not owned by the declared service user";
+  }
+  if ((mode & 0o070n) !== 0n && gid !== BigInt(service.gid)) {
+    return "self-hosted catalog store is group-readable outside the service group";
+  }
+  if ((mode & 0o7000n) !== 0n) {
+    return "self-hosted catalog store carries setuid, setgid or sticky bits";
+  }
+  return null;
+}
+
+function selfHostedServiceIdentity(serviceUser) {
+  const read = (flag, label) => {
+    const value = Number(
+      runBytes("id", [flag, serviceUser], label).toString("utf8").trim());
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error("self-hosted service user could not be resolved");
+    }
+    return value;
+  };
+  return {
+    uid: read("-u", "self-hosted service user"),
+    gid: read("-g", "self-hosted service group")
+  };
 }
 
 function selfHostedUnitTree(authority) {
