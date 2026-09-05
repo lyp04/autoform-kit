@@ -1,6 +1,7 @@
 package com.autoformkit.app;
 
 import org.json.JSONArray;
+import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.math.BigDecimal;
@@ -21,7 +22,7 @@ import java.util.Locale;
  */
 final class MainDraftSnapshotRules {
     static final int DRAFT_VERSION = 3;
-    static final int BINDING_VERSION = 1;
+    static final int BINDING_VERSION = 2;
     static final int LEGACY_RECEIPT_VERSION = 1;
     static final int LEGACY_COMPATIBILITY_MIN_RELEASE_CODE = 8;
     static final String BINDING_FIELD = "_autoFormKitDraftBinding";
@@ -54,14 +55,23 @@ final class MainDraftSnapshotRules {
         final int catalogVersion;
         final String profileId;
         final String semanticsSha256;
+        /**
+         * The pre-narrowing fingerprint of the same semantics, carried so a binding written by
+         * an older release can be recognised on first launch after an upgrade. Never serialised:
+         * a stored binding has no use for it and {@link #toJson} must stay at five keys.
+         */
+        final String legacySemanticsSha256;
 
         private Binding(String connectionNamespace, int catalogVersion,
-                        String profileId, String semanticsSha256) {
+                        String profileId, String semanticsSha256,
+                        String legacySemanticsSha256) {
             this.connectionNamespace = requiredNamespace(connectionNamespace);
             if (catalogVersion <= 0) throw invalid("catalogVersion must be positive");
             this.catalogVersion = catalogVersion;
             this.profileId = requiredText(profileId, "profileId", 256);
             this.semanticsSha256 = requiredDigest(semanticsSha256, "semanticsSha256");
+            this.legacySemanticsSha256 = legacySemanticsSha256 == null
+                ? "" : legacySemanticsSha256;
         }
 
         JSONObject toJson() {
@@ -77,13 +87,103 @@ final class MainDraftSnapshotRules {
             }
         }
 
+        /**
+          * True when a binding written by the previous release still describes these exact
+          * semantics. The comparison reproduces the old rule in full — catalog version
+          * included — so upgrading can only ever widen what is restorable, never narrow it.
+          */
+        boolean acceptsLegacy(Binding stored) {
+            return stored != null
+                && !legacySemanticsSha256.isEmpty()
+                && connectionNamespace.equals(stored.connectionNamespace)
+                && catalogVersion == stored.catalogVersion
+                && profileId.equals(stored.profileId)
+                && legacySemanticsSha256.equals(stored.semanticsSha256);
+        }
+
         boolean sameAs(Binding other) {
+            // The catalog version is recorded for diagnostics but is deliberately not compared:
+            // a publish that leaves the submission semantics untouched must not strand drafts.
             return other != null
                 && connectionNamespace.equals(other.connectionNamespace)
-                && catalogVersion == other.catalogVersion
                 && profileId.equals(other.profileId)
                 && semanticsSha256.equals(other.semanticsSha256);
         }
+    }
+
+    /**
+     * Exact positions that only decide how something is shown. Stripping by key name at any
+     * depth was wrong: "title" and "label" also appear inside backendAdapter.fields, where the
+     * values are JSON key paths into the backend response, and the submit operation's pattern
+     * lists decide whether a record already counts as written. Those must keep contributing to
+     * the fingerprint, so only the paths listed here are removed. A "*" matches one segment;
+     * array elements contribute their index.
+     */
+    private static final List<String> PRESENTATION_PATHS = Collections.unmodifiableList(
+        new ArrayList<>(java.util.Arrays.asList(
+            "profile/displayName",
+            "profile/searchText",
+            "profile/uiColor",
+            "profile/photoSlots/*/title",
+            "profile/photoSlots/*/titleI18n",
+            "profile/photoSlots/*/titleFull",
+            "profile/optionalSlots/*/title",
+            "profile/optionalSlots/*/titleI18n",
+            "profile/optionalSlots/*/titleFull",
+            "profile/gradeMap/*/label",
+            "profile/gradeMap/*/labelI18n",
+            "profile/gradeMap/*/operatorLabel",
+            "profile/gradeMap/*/operatorLabelI18n",
+            "profile/gradeMap/*/uiColor",
+            "profile/materialGroups/*/title",
+            "profile/materialGroups/*/titleI18n",
+            "profile/workflow/alternateEntries/entries/*/title",
+            "profile/workflow/alternateEntries/entries/*/titleI18n",
+            "backendAdapter/conversion/result/mappings/*/label",
+            "backendAdapter/conversion/result/mappings/*/uiColor",
+            "backendAdapter/conversion/result/mappings/*/operatorLabel")));
+
+    private static boolean presentationOnly(String path) {
+        for (int i = 0; i < PRESENTATION_PATHS.size(); i++) {
+            if (pathMatches(PRESENTATION_PATHS.get(i), path)) return true;
+        }
+        return false;
+    }
+
+    private static boolean pathMatches(String pattern, String path) {
+        String[] want = pattern.split("/", -1);
+        String[] got = path.split("/", -1);
+        if (want.length != got.length) return false;
+        for (int i = 0; i < want.length; i++) {
+            if (!"*".equals(want[i]) && !want[i].equals(got[i])) return false;
+        }
+        return true;
+    }
+
+    /** Copies the tree, dropping only the exact paths in {@link #PRESENTATION_PATHS}. */
+    private static Object withoutPresentationFields(Object value, String path)
+            throws JSONException {
+        if (value instanceof JSONObject) {
+            JSONObject source = (JSONObject) value;
+            JSONObject copy = new JSONObject();
+            Iterator<String> keys = source.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                String childPath = path.isEmpty() ? key : path + "/" + key;
+                if (presentationOnly(childPath)) continue;
+                copy.put(key, withoutPresentationFields(source.opt(key), childPath));
+            }
+            return copy;
+        }
+        if (value instanceof JSONArray) {
+            JSONArray source = (JSONArray) value;
+            JSONArray copy = new JSONArray();
+            for (int i = 0; i < source.length(); i++) {
+                copy.put(withoutPresentationFields(source.opt(i), path + "/" + i));
+            }
+            return copy;
+        }
+        return value;
     }
 
     private MainDraftSnapshotRules() {}
@@ -102,9 +202,12 @@ final class MainDraftSnapshotRules {
             adapter = catalogSettings.optJSONObject("backendAdapter");
         }
         try {
-            // The complete immutable profile covers template ids, payload fields, scanners,
-            // photos, grade/material maps and workflow policies. The resolved adapter plus its
-            // legacy endpoint/header inputs covers every upload and POST target/shape.
+            // The profile covers template ids, payload fields, scanners, photos, grade/material
+            // maps and workflow policies; the resolved adapter plus its legacy endpoint/header
+            // inputs covers every upload and POST target/shape. Presentation-only keys are
+            // stripped first: they cannot move a record, and keeping them meant every cosmetic
+            // publish stranded drafts. Anything not named in PRESENTATION_ONLY_KEYS still counts,
+            // so a newly introduced field fails closed until it is reviewed.
             JSONObject semantics = new JSONObject()
                 .put("profile", new JSONObject(catalogProfile.toString()))
                 .put("backendAdapter", adapter == null ? JSONObject.NULL
@@ -117,8 +220,13 @@ final class MainDraftSnapshotRules {
                     : appConfig.optString("webOrigin", "").trim())
                 .put("webReferer", appConfig == null ? ""
                     : appConfig.optString("webReferer", "").trim());
+            // The legacy digest is the pre-narrowing one, byte for byte, so a draft written by
+            // the previous release can still be recognised. The active digest drops the exact
+            // presentation paths above.
+            String legacy = sha256(canonicalJson(semantics));
+            Object narrowed = withoutPresentationFields(semantics, "");
             return new Binding(connectionNamespace, catalogVersion, id,
-                sha256(canonicalJson(semantics)));
+                sha256(canonicalJson(narrowed)), legacy);
         } catch (IllegalArgumentException error) {
             throw error;
         } catch (Exception error) {
@@ -143,9 +251,16 @@ final class MainDraftSnapshotRules {
                     return blocked("unsupported bound draft version");
                 }
                 Binding stored = parseBinding(storedJson);
-                return stored.sameAs(current)
-                    ? new RestoreDecision(RestoreKind.EXACT, "")
-                    : blocked("draft binding does not match active Panel semantics");
+                if (stored.sameAs(current)) return new RestoreDecision(RestoreKind.EXACT, "");
+                // A draft written by the previous release carries a version 1 binding whose
+                // digest came from the pre-narrowing algorithm. Accept it exactly when that
+                // algorithm still matches, so an upgrade never strands a draft that was
+                // usable a moment earlier. The next save rewrites it at version 2.
+                if (exactInteger(storedJson.opt("version")) == 1
+                        && current.acceptsLegacy(stored)) {
+                    return new RestoreDecision(RestoreKind.EXACT, "");
+                }
+                return blocked("draft binding does not match active Panel semantics");
             } catch (Exception error) {
                 return blocked("draft binding is malformed");
             }
@@ -377,15 +492,19 @@ final class MainDraftSnapshotRules {
     }
 
     private static Binding parseBinding(JSONObject value) {
+        int version = value == null ? 0 : exactInteger(value.opt("version"));
+        // Version 1 is still parsed so an upgraded app can recognise, and then rewrite,
+        // a draft the previous release stored. Whether it may be restored is decided in
+        // evaluate(), not here.
         if (value == null || value.length() != 5
-                || exactInteger(value.opt("version")) != BINDING_VERSION
+                || (version != BINDING_VERSION && version != 1)
                 || !value.has("connectionNamespace") || !value.has("catalogVersion")
                 || !value.has("profileId") || !value.has("semanticsSha256")) {
             throw invalid("invalid draft binding fields");
         }
         return new Binding(requiredString(value, "connectionNamespace"),
             positiveInteger(value.opt("catalogVersion"), "catalogVersion"),
-            requiredString(value, "profileId"), requiredString(value, "semanticsSha256"));
+            requiredString(value, "profileId"), requiredString(value, "semanticsSha256"), "");
     }
 
     private static boolean legacyReceiptMatches(JSONObject value, Binding current,

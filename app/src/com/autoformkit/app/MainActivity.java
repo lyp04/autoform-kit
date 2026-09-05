@@ -6098,10 +6098,6 @@ public class MainActivity extends Activity {
         }
     }
 
-    private int expectedPrimaryIdentifierLength() {
-        return expectedIdentifierLength(false);
-    }
-
     private int expectedIdentifierLength(boolean secondary) {
         return scannerPolicy(secondary).expectedLength;
     }
@@ -6298,10 +6294,6 @@ public class MainActivity extends Activity {
         alert(t("scan_result_invalid_title"), t("scan_result_invalid_detail"));
     }
 
-    private String primaryIdentifierLengthMessage(int expected, int actual) {
-        return identifierLengthMessage(false, expected, actual);
-    }
-
     private String identifierLengthMessage(boolean secondary, int expected, int actual) {
         return identifierLengthMessage(
             secondary, Collections.singletonList(expected), actual);
@@ -6340,11 +6332,6 @@ public class MainActivity extends Activity {
         if ("en".equals(lang)) return "Camera scanning is disabled for " + label + " by Panel.";
         if ("es".equals(lang)) return "Panel desactiv\u00f3 el escaneo por c\u00e1mara para " + label + ".";
         return "Panel \u5df2\u5173\u95ed " + label + " \u7684\u76f8\u673a\u626b\u7801\u3002";
-    }
-
-    private String identifierExpectedOnlyMessage(boolean secondary, int expected) {
-        return identifierExpectedOnlyMessage(
-            secondary, Collections.singletonList(expected));
     }
 
     private String identifierExpectedOnlyMessage(boolean secondary,
@@ -6409,63 +6396,6 @@ public class MainActivity extends Activity {
             startActivityForResult(intent, baseSn ? REQ_RESCAN_UNIT_BASE_SN : REQ_RESCAN_UNIT_SN);
         } catch (Exception exc) {
             clearPendingRescan();
-            alert(t("camera_open_failed"), exc.getMessage());
-        }
-    }
-
-    private void startSnOcr(boolean baseSn) {
-        if (blockDraftMutationForPreviousStepJournal()) return;
-        if (!identifierScanEnabled(baseSn)) {
-            toast(scanDisabledMessage(baseSn));
-            return;
-        }
-        if (!scannerPolicy(baseSn).valid) {
-            alert(t("panel_required_title"), scannerPolicyInvalidMessage(baseSn));
-            return;
-        }
-        if (baseSn && firstMissingBaseSn() == null) {
-            toast(noSecondaryInputNeededMessage());
-            refocusBaseInput();
-            return;
-        }
-        if (!baseSn && hasMultipleGradeChoices() && selectedGrade().isEmpty()) {
-            toast(t("choose_grade"));
-            refocusSnInput();
-            return;
-        }
-        if (!ensureCameraPermission()) return;
-        UnitRecord targetUnit = baseSn ? firstMissingBaseSn() : null;
-        int targetSequence = baseSn ? targetUnit.sequence : nextUnitSequence();
-        String targetRole = baseSn ? PendingFormOperationRules.ROLE_SECONDARY
-            : PendingFormOperationRules.ROLE_PRIMARY;
-        if (preparePendingMainFormTarget(PendingFormOperationRules.SCAN,
-                targetSequence, targetRole, "", "", "",
-                baseSn ? "" : selectedGrade(), -1) == null) {
-            alert(t("draft_save_failed"), t("draft_binding_locked_detail"));
-            return;
-        }
-        Intent intent = new Intent(this, ScannerActivity.class);
-        intent.putExtra("PROMPT_MESSAGE", scanPrompt(baseSn));
-        intent.putExtra("IDENTIFIER_LABEL", inputLabel(baseSn));
-        intent.putExtra("lang", lang);
-        intent.putExtra("AUTO_TEXT_MODE", "always");
-        intent.putExtra("REJECT_NUMERIC_ONLY", scannerRejectsNumericOnly(baseSn));
-        JSONObject ocrPolicy = effectiveScannerConfig(baseSn);
-        try {
-            ocrPolicy.put("autoTextMode", "always");
-        } catch (Exception exc) {
-            alert(t("panel_required_title"), scannerPolicyInvalidMessage(baseSn));
-            return;
-        }
-        intent.putExtra("SCANNER_POLICY_JSON", ocrPolicy.toString());
-        intent.putExtra("OCR_ONLY", true);
-        intent.putExtra(EXTRA_EXPECTED_SN_LENGTH, expectedIdentifierLength(baseSn));
-        intent.putExtra("PREFERRED_SN_PREFIXES", preferredSnPrefixes(baseSn));
-        try {
-            Diagnostics.append(this, "Starting local text scanner role=" + (baseSn ? "secondary" : "primary"));
-            startActivityForResult(intent, baseSn ? REQ_SCAN_BASE : REQ_SCAN_SN);
-        } catch (Exception exc) {
-            clearPendingMainFormTarget();
             alert(t("camera_open_failed"), exc.getMessage());
         }
     }
@@ -6868,10 +6798,6 @@ public class MainActivity extends Activity {
         pendingPhotoSide = step.side;
         pendingPhotoField = "";
         startPendingPhotoInput(inputSource);
-    }
-
-    private void captureNextSlotPhoto() {
-        captureNextSlotPhoto("");
     }
 
     private void captureNextSlotPhoto(String inputSourceOverride) {
@@ -7311,14 +7237,6 @@ public class MainActivity extends Activity {
         recognizeSnFromPhoto(baseSn, photoFile, false, target);
     }
 
-    private void recognizeSnFromPhoto(boolean baseSn, File photoFile) {
-        recognizeSnFromPhoto(baseSn, photoFile, false, null);
-    }
-
-    private void recognizeSnFromPhoto(boolean baseSn, File photoFile, boolean autoCapture) {
-        recognizeSnFromPhoto(baseSn, photoFile, autoCapture, null);
-    }
-
     private void recognizeSnFromPhoto(boolean baseSn, File photoFile, boolean autoCapture,
                                       PendingFormOperationRules.Target pendingTarget) {
         final JSONObject configSnapshot = appConfig;
@@ -7422,10 +7340,6 @@ public class MainActivity extends Activity {
 
     private void ensureOcrUrlThenRecognize(boolean baseSn, File photoFile) {
         ensureOcrUrlThenRecognize(baseSn, photoFile, false, null);
-    }
-
-    private void ensureOcrUrlThenRecognize(boolean baseSn, File photoFile, boolean autoCapture) {
-        ensureOcrUrlThenRecognize(baseSn, photoFile, autoCapture, null);
     }
 
     private void ensureOcrUrlThenRecognize(boolean baseSn, File photoFile,
@@ -8434,10 +8348,6 @@ public class MainActivity extends Activity {
             mainDraftRemoteWorkerLease.close();
             mainDraftRemoteWorkerLease = null;
         }
-    }
-
-    private synchronized boolean mainDraftRemoteWorkerActive() {
-        return mainDraftRemoteWorkerCount > 0;
     }
 
     private synchronized boolean profileOwnedRemoteWorkerActive() {
@@ -10435,12 +10345,6 @@ public class MainActivity extends Activity {
         if ("en".equals(lang)) return "Submitting " + idx + "/" + total + ": " + label;
         if ("es".equals(lang)) return "Enviando " + idx + "/" + total + ": " + label;
         return "正在提交 " + idx + "/" + total + "：" + label;
-    }
-
-    private String formatSubmitProgressWait(long secs, int upcoming, int total) {
-        if ("en".equals(lang)) return "Waiting " + secs + "s before next unit (" + upcoming + "/" + total + ")";
-        if ("es".equals(lang)) return "Esperando " + secs + " s antes de la siguiente unidad (" + upcoming + "/" + total + ")";
-        return "等待 " + secs + " 秒后提交下一台（" + upcoming + "/" + total + "）";
     }
 
     private interface SubmissionAction {
@@ -14873,10 +14777,6 @@ public class MainActivity extends Activity {
         return baseKey + "_" + panelStateNamespace();
     }
 
-    private String dailyStatsPreferenceKey(String date) {
-        return panelStatePreferenceKey(DAILY_STATS_PREFIX + date);
-    }
-
     private String rollbackMirrorReceiptPreferenceKey(String logicalKey) {
         return RollbackMirrorRules.receiptPreferenceKey(
             currentConnectionNamespace(), logicalKey);
@@ -15176,18 +15076,6 @@ public class MainActivity extends Activity {
             if (!key.isEmpty() && resultMap.optJSONObject(key) != null) keys.add(key);
         }
         return keys;
-    }
-
-    private List<String> profileNames() {
-        List<String> names = new ArrayList<>();
-        try {
-            for (int i = 0; i < profiles.length(); i++) {
-                names.add(profiles.getJSONObject(i).optString("displayName", "Profile " + (i + 1)));
-            }
-        } catch (JSONException exc) {
-            names.add("Profile load error");
-        }
-        return names;
     }
 
     private View profileSpinnerView(JSONArray spinnerProfiles, int position,
@@ -15662,16 +15550,6 @@ public class MainActivity extends Activity {
         return sb.toString();
     }
 
-    private void clearSlotPhotos(UnitRecord unit, String field) {
-        if (blockDraftMutationForPreviousStepJournal()) return;
-        List<String> photos = unit.slotPhotos.remove(field);
-        if (photos != null) {
-            for (String path : photos) deleteFileQuietly(path);
-        }
-        refreshFormUi();
-        saveDraft();
-    }
-
     private boolean hasMultipleGradeChoices() {
         return availableGrades().size() > 1;
     }
@@ -15796,18 +15674,6 @@ public class MainActivity extends Activity {
                 + conciseError(invalid));
             return false;
         }
-    }
-
-    /** Optional web-client Origin header from the cached panel config, or "" when unset. Never null. */
-    private String webOrigin() {
-        JSONObject config = appConfig;
-        return config == null ? "" : config.optString("webOrigin", "").trim();
-    }
-
-    /** Optional web-client Referer header from the cached panel config, or "" when unset. Never null. */
-    private String webReferer() {
-        JSONObject config = appConfig;
-        return config == null ? "" : config.optString("webReferer", "").trim();
     }
 
     /** The panel-owned, versioned backend contract. It never supplies path fallbacks. */
@@ -16253,10 +16119,28 @@ public class MainActivity extends Activity {
             if (after.mode == PanelBootstrapRules.Mode.READY
                     && activePair != null
                     && safeToActivateSameConnectionPanelRevision()) {
+                final String pairBefore = activePanelPairSha256 == null
+                    ? "" : activePanelPairSha256;
+                final int catalogVersionBefore = activeCatalogVersion;
                 installBoundPanelSnapshot(activePair);
-                if (newlyReady) {
-                    showSettingsPage();
-                    if (savedToken().isEmpty() && captchaClient.isEmpty()) refreshCaptcha();
+                // Installing replaces appConfig/allProfiles/profiles/profile underneath a page
+                // that was built from the previous pair. newlyReady alone is not enough: an
+                // already-READY device promoting a new catalog on a routine foreground refresh
+                // would swap the profile array while the picker still showed the old names,
+                // so a moved pair rebuilds too.
+                final boolean pairMoved = !pairBefore.equals(
+                        activePanelPairSha256 == null ? "" : activePanelPairSha256)
+                    || catalogVersionBefore != activeCatalogVersion;
+                if (newlyReady || pairMoved) {
+                    if (settingsPageOpen) {
+                        showSettingsPage();
+                        if (savedToken().isEmpty() && captchaClient.isEmpty()) refreshCaptcha();
+                    } else if (!alternateEntryPageOpen) {
+                        // The visible form page was built from the previous adapter, so its
+                        // header, profile picker and grade buttons are stale. Rebuild without
+                        // re-asking about saved drafts, which was already answered on entry.
+                        showFormPage(false, true);
+                    }
                 }
             }
             if (after.mode == PanelBootstrapRules.Mode.READY
@@ -16362,15 +16246,31 @@ public class MainActivity extends Activity {
         return safeToInstallBoundPanelSnapshot(true);
     }
 
+    /**
+     * True while an identifier sits in an input box without having been added yet. Installing a
+     * pair rebuilds the form page, which recreates those boxes; blocking here means a scan in
+     * progress is never silently discarded. Called only from the UI thread, alongside the other
+     * gates in {@link #safeToInstallBoundPanelSnapshot}.
+     */
+    private boolean pendingIdentifierInputPresent() {
+        return (snEdit != null && snEdit.getText() != null && snEdit.getText().length() > 0)
+            || (baseSnEdit != null && baseSnEdit.getText() != null
+                && baseSnEdit.getText().length() > 0);
+    }
+
     private boolean safeToInstallBoundPanelSnapshot(boolean allowStoredMainDraftRebind) {
+        // Every data-safety gate below still applies (empty unit list, no drafts, no pending
+        // submission or upload). Which screen happens to be showing is not one of them: a form
+        // page built before the pair was ready would otherwise stay degraded until app restart.
         if (panelBoundaryCleanupBlocked || panelConnectionTupleIncomplete()
-                || !settingsPageOpen || submitting || profileOwnedRemoteWorkerActive()
+                || submitting || profileOwnedRemoteWorkerActive()
                 || UpdateManager.installerHandoffActive(this)
                 || mainFormBoundWorkerActive() || hasPendingMainFormOperation()
                 || hasStoredOrUnreadableReprintAttempt()
                 || hasStoredUploadReplayBarrier()
                 || alternateEntrySubmitting
                 || alternateEntryPageOpen || !units.isEmpty()
+                || pendingIdentifierInputPresent()
                 || hasAlternateEntryPendingData() || hasStoredAlternateEntryDraft()
                 || blockingMainSubmissionAttempt() != null
                 || prefs.contains(previousStepSubmissionAttemptPreferenceKey())

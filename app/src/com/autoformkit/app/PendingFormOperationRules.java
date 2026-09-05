@@ -130,7 +130,14 @@ final class PendingFormOperationRules {
                 && connectionNamespace.equals(draftBinding.connectionNamespace)
                 && catalogVersion == draftBinding.catalogVersion
                 && profileId.equals(draftBinding.profileId)
-                && draftSemanticsSha256.equals(draftBinding.semanticsSha256)
+                // A target stored by the previous release carries the pre-narrowing digest.
+                // The legacy value is recomputed from the *current* configuration, so it only
+                // matches when nothing has actually moved — i.e. the upgrade itself. Without
+                // this, a device interrupted mid-capture could neither finish that photo nor
+                // start a new one until someone cleared the slot by hand.
+                && (draftSemanticsSha256.equals(draftBinding.semanticsSha256)
+                    || (!draftBinding.legacySemanticsSha256.isEmpty()
+                        && draftSemanticsSha256.equals(draftBinding.legacySemanticsSha256)))
                 && this.pairSha256.equals(pairSha256)
                 && operationBinding.matchesContext(connectionNamespace, catalogVersion,
                     pairSha256, webFingerprint, token, kind);

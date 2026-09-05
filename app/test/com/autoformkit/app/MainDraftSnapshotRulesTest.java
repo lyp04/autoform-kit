@@ -119,7 +119,10 @@ public class MainDraftSnapshotRulesTest {
         assertEquals(MainDraftSnapshotRules.RestoreKind.BLOCKED,
             MainDraftSnapshotRules.evaluate(
                 draft, otherConnection, null, RELEASE_CODE, "").kind);
-        assertEquals(MainDraftSnapshotRules.RestoreKind.BLOCKED,
+        // A catalog version bump on its own no longer strands a draft: the binding compares
+        // the submission semantics, and a republish that leaves those untouched must stay
+        // restorable. What the version still does is gate the version 1 migration path below.
+        assertEquals(MainDraftSnapshotRules.RestoreKind.EXACT,
             MainDraftSnapshotRules.evaluate(
                 draft, otherVersion, null, RELEASE_CODE, "").kind);
         assertThrows(IllegalArgumentException.class, () ->
@@ -357,5 +360,127 @@ public class MainDraftSnapshotRulesTest {
         StringBuilder out = new StringBuilder(length);
         for (int i = 0; i < length; i++) out.append(value);
         return out.toString();
+    }
+
+    /** 上一版写出的绑定是 version 1 + 旧算法摘要;升级后必须照样能恢复。 */
+    @Test
+    public void draftBoundByThePreviousReleaseStillRestores() throws Exception {
+        MainDraftSnapshotRules.Binding current = binding();
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), current);
+        draft.put(MainDraftSnapshotRules.BINDING_FIELD, new JSONObject()
+            .put("version", 1)
+            .put("connectionNamespace", CONNECTION)
+            .put("catalogVersion", CATALOG_VERSION)
+            .put("profileId", "sample-form")
+            .put("semanticsSha256", current.legacySemanticsSha256));
+
+        assertEquals(MainDraftSnapshotRules.RestoreKind.EXACT,
+            MainDraftSnapshotRules.evaluate(draft, current, null, RELEASE_CODE, "").kind);
+    }
+
+    /**
+     * The migration recognises a version 1 binding, it does not excuse one. A draft bound
+     * before the submit endpoint moved was unusable under the previous release and has to stay
+     * unusable here — otherwise the upgrade would hand an operator a draft aimed at the wrong
+     * place, which is the whole point of the binding.
+     */
+    @Test
+    public void previousReleaseBindingIsNotWidenedByTheMigration() throws Exception {
+        JSONObject profile = profile("SAMPLE-SKU");
+        MainDraftSnapshotRules.Binding bound = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, config("/submit"),
+            new JSONObject());
+        MainDraftSnapshotRules.Binding moved = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, config("/elsewhere"),
+            new JSONObject());
+
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), bound);
+        draft.put(MainDraftSnapshotRules.BINDING_FIELD, new JSONObject()
+            .put("version", 1)
+            .put("connectionNamespace", CONNECTION)
+            .put("catalogVersion", CATALOG_VERSION)
+            .put("profileId", "sample-form")
+            .put("semanticsSha256", bound.legacySemanticsSha256));
+
+        assertEquals(MainDraftSnapshotRules.RestoreKind.BLOCKED,
+            MainDraftSnapshotRules.evaluate(draft, moved, null, RELEASE_CODE, "").kind);
+    }
+
+    /** 改配色/文案属于展示层,不能把在录的草稿锁死。 */
+    @Test
+    public void recolouringAGradeDoesNotStrandADraft() throws Exception {
+        JSONObject graded = profile("SAMPLE-SKU").put("gradeMap", new JSONObject()
+            .put("A", new JSONObject()
+                .put("field", "grade-field")
+                .put("value", new JSONObject().put("sku", "RV-A").put("num", 1))
+                .put("label", "甲类")
+                .put("uiColor", "#DC2626")));
+        JSONObject recoloured = profile("SAMPLE-SKU").put("gradeMap", new JSONObject()
+            .put("A", new JSONObject()
+                .put("field", "grade-field")
+                .put("value", new JSONObject().put("sku", "RV-A").put("num", 1))
+                .put("label", "A 类")
+                .put("uiColor", "#16A34A")));
+
+        MainDraftSnapshotRules.Binding before = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", graded, config("/submit"),
+            new JSONObject());
+        MainDraftSnapshotRules.Binding after = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", recoloured, config("/submit"),
+            new JSONObject());
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), before);
+
+        assertEquals(MainDraftSnapshotRules.RestoreKind.EXACT,
+            MainDraftSnapshotRules.evaluate(draft, after, null, RELEASE_CODE, "").kind);
+    }
+
+    /**
+     * backendAdapter.fields values are JSON key paths into the backend response, not labels.
+     * They share their names with presentation keys, so this pins that they keep counting.
+     */
+    @Test
+    public void changingABackendFieldPathStillBlocks() throws Exception {
+        JSONObject profile = profile("SAMPLE-SKU");
+        JSONObject before = config("/submit");
+        before.getJSONObject("backendAdapter").put("fields", new JSONObject()
+            .put("option", new JSONObject().put("label", "name")));
+        JSONObject after = config("/submit");
+        after.getJSONObject("backendAdapter").put("fields", new JSONObject()
+            .put("option", new JSONObject().put("label", "displayName")));
+
+        MainDraftSnapshotRules.Binding bound = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, before, new JSONObject());
+        MainDraftSnapshotRules.Binding moved = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, after, new JSONObject());
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), bound);
+
+        assertEquals(MainDraftSnapshotRules.RestoreKind.BLOCKED,
+            MainDraftSnapshotRules.evaluate(draft, moved, null, RELEASE_CODE, "").kind);
+    }
+
+    /**
+     * The submit retry patterns decide whether a record already counts as written; treating
+     * them as cosmetic could turn a stranded draft into a duplicate submission.
+     */
+    @Test
+    public void changingSubmitRetryPatternsStillBlocks() throws Exception {
+        JSONObject profile = profile("SAMPLE-SKU");
+        JSONObject before = config("/submit");
+        before.getJSONObject("backendAdapter").put("operations", new JSONObject()
+            .put("submit", new JSONObject().put("retryableMessagePatterns",
+                new JSONArray().put("only once within 3 seconds"))));
+        JSONObject after = config("/submit");
+        after.getJSONObject("backendAdapter").put("operations", new JSONObject()
+            .put("submit", new JSONObject().put("retryableMessagePatterns",
+                new JSONArray())));
+
+        MainDraftSnapshotRules.Binding bound = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, before, new JSONObject());
+        MainDraftSnapshotRules.Binding moved = MainDraftSnapshotRules.currentBinding(
+            CONNECTION, CATALOG_VERSION, "sample-form", profile, after, new JSONObject());
+        JSONObject draft = MainDraftSnapshotRules.bindVerifiedLegacy(legacyDraft(), bound);
+
+        assertEquals(MainDraftSnapshotRules.RestoreKind.BLOCKED,
+            MainDraftSnapshotRules.evaluate(draft, moved, null, RELEASE_CODE, "").kind);
     }
 }
