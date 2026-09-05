@@ -221,6 +221,69 @@ test("deployment evidence discriminates GitHub and R2 authority", () => {
   }), /R2 catalog authority is invalid/u);
 });
 
+test("deployment evidence accepts a self-hosted authority and binds its store", () => {
+  const common = {
+    panelBase: "https://panel.example.invalid/",
+    catalogReadKey: "x".repeat(32)
+  };
+  const authority = {
+    type: "self-hosted",
+    storePath: "/srv/panel/data/catalog",
+    serviceUser: "panel-service",
+    unit: "panel.service"
+  };
+  assert.deepEqual(
+    parseDeploymentAuthority({ schemaVersion: 2, catalogAuthority: authority, ...common })
+      .authority,
+    authority);
+  for (const [broken, label] of [
+    [{ ...authority, storePath: "relative/catalog" }, "a relative store path"],
+    [{ ...authority, storePath: "/srv/panel\u0000/catalog" }, "an embedded NUL"],
+    [{ ...authority, serviceUser: "panel service" }, "a service user with a space"],
+    [{ ...authority, serviceUser: "" }, "an empty service user"],
+    [{ ...authority, unit: "panel" }, "a unit without a .service suffix"],
+    [{ ...authority, extra: true }, "an extra key"]
+  ]) {
+    assert.throws(
+      () => parseDeploymentAuthority({ schemaVersion: 2, catalogAuthority: broken, ...common }),
+      /self-hosted catalog authority is invalid/u,
+      `${label} must be rejected`);
+  }
+});
+
+test("Panel runtime provenance keeps the two deployment shapes apart", () => {
+  const selfHosted = {
+    version: 1,
+    provenance: "self_hosted_source_commit",
+    deploymentSha256: "d".repeat(64),
+    sourceCommit: "a".repeat(40),
+    versionCreatedAt: "2030-04-05T06:07:08.123Z"
+  };
+  assert.deepEqual(validatePanelRuntimeContract(selfHosted), selfHosted);
+  // A self-hosted panel must not be able to pass by presenting a Worker id, and a Cloudflare
+  // panel must not pass by presenting a tree digest.
+  assert.throws(() => validatePanelRuntimeContract({
+    ...selfHosted,
+    deploymentSha256: undefined,
+    workerVersionId: "01234567-89ab-cdef-0123-456789abcdef"
+  }), /unavailable or malformed/u);
+  assert.throws(() => validatePanelRuntimeContract({
+    version: 1,
+    provenance: "cloudflare_version_tag",
+    deploymentSha256: "d".repeat(64),
+    sourceCommit: "a".repeat(40),
+    versionCreatedAt: "2030-04-05T06:07:08.123Z"
+  }), /unavailable or malformed/u);
+  assert.throws(() => validatePanelRuntimeContract({
+    ...selfHosted,
+    deploymentSha256: "d".repeat(63)
+  }), /unavailable or malformed/u);
+  assert.throws(() => validatePanelRuntimeContract({
+    ...selfHosted,
+    provenance: "self_hosted"
+  }), /unavailable or malformed/u);
+});
+
 test("GitHub tree binds required files and explicit optional settings presence", () => {
   const tree = (entries) => Buffer.from(JSON.stringify({
     sha: "f".repeat(40),

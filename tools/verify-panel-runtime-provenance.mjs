@@ -3,6 +3,7 @@
 import { pathToFileURL } from "node:url";
 
 import {
+  panelRuntimeFromSelfHostedDeployment,
   panelRuntimeFromVersionMetadata,
   validPanelSourceCommit
 } from "../panel/src/panel-runtime.js";
@@ -13,6 +14,13 @@ const PANEL_RUNTIME_KEYS = Object.freeze([
   "version",
   "versionCreatedAt",
   "workerVersionId"
+]);
+const SELF_HOSTED_PANEL_RUNTIME_KEYS = Object.freeze([
+  "deploymentSha256",
+  "provenance",
+  "sourceCommit",
+  "version",
+  "versionCreatedAt"
 ]);
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_RESPONSE_BYTES = 1024 * 1024;
@@ -55,6 +63,25 @@ function validateReadKey(value) {
 }
 
 export function validatePanelRuntimeContract(value) {
+  const selfHosted = isPlainObject(value)
+    && value.provenance === "self_hosted_source_commit";
+  if (selfHosted) {
+    if (!hasExactKeys(value, SELF_HOSTED_PANEL_RUNTIME_KEYS) || value.version !== 1) {
+      throw new Error("live Panel runtime provenance is unavailable or malformed");
+    }
+    const normalized = panelRuntimeFromSelfHostedDeployment({
+      sourceCommit: value.sourceCommit,
+      deploymentSha256: value.deploymentSha256,
+      deployedAt: value.versionCreatedAt
+    });
+    if (normalized.version !== 1
+        || normalized.deploymentSha256 !== value.deploymentSha256
+        || normalized.sourceCommit !== value.sourceCommit
+        || normalized.versionCreatedAt !== value.versionCreatedAt) {
+      throw new Error("live Panel runtime provenance is unavailable or malformed");
+    }
+    return normalized;
+  }
   if (!hasExactKeys(value, PANEL_RUNTIME_KEYS)
       || value.version !== 1 || value.provenance !== "cloudflare_version_tag") {
     throw new Error("live Panel runtime provenance is unavailable or malformed");
@@ -80,7 +107,9 @@ export function verificationSummary(runtime) {
     provenance: runtime.provenance,
     tagMatchesExpected: true,
     sourceCommit: runtime.sourceCommit,
-    workerVersionId: runtime.workerVersionId,
+    ...(runtime.provenance === "self_hosted_source_commit"
+      ? { deploymentSha256: runtime.deploymentSha256 }
+      : { workerVersionId: runtime.workerVersionId }),
     versionCreatedAt: runtime.versionCreatedAt
   };
 }

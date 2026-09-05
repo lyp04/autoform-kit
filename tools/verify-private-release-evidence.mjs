@@ -17,6 +17,9 @@ const UTC_TIMESTAMP =
 const PANEL_RUNTIME_KEYS = [
   "provenance", "sourceCommit", "version", "versionCreatedAt", "workerVersionId"
 ];
+const SELF_HOSTED_PANEL_RUNTIME_KEYS = [
+  "deploymentSha256", "provenance", "sourceCommit", "version", "versionCreatedAt"
+];
 const MAX_PRIVATE_FILE_BYTES = 16n * 1024n * 1024n;
 const R2_POINTER_KEY = "catalog-current-v1.json";
 const R2_SNAPSHOT_PREFIX = "catalog-snapshots-v1/";
@@ -77,12 +80,21 @@ function validUtcTimestamp(value) {
 }
 
 export function validatePanelRuntimeContract(value) {
-  if (!exactKeys(value, PANEL_RUNTIME_KEYS)
+  const selfHosted = isObject(value) && value.provenance === "self_hosted_source_commit";
+  const keys = selfHosted ? SELF_HOSTED_PANEL_RUNTIME_KEYS : PANEL_RUNTIME_KEYS;
+  if (!exactKeys(value, keys)
       || value.version !== 1
-      || value.provenance !== "cloudflare_version_tag"
+      || !(value.provenance === "cloudflare_version_tag"
+        || value.provenance === "self_hosted_source_commit")
       || !PANEL_SOURCE_COMMIT.test(String(value.sourceCommit || ""))
-      || !WORKER_VERSION_ID.test(String(value.workerVersionId || ""))
       || !validUtcTimestamp(value.versionCreatedAt)) {
+    throw new Error("live Panel runtime provenance is unavailable or malformed");
+  }
+  // The two deployments are identified by different things: Cloudflare assigns a version id,
+  // a self-hosted panel reports a digest of the tree it is running.
+  if (selfHosted
+    ? !SHA256.test(String(value.deploymentSha256 || ""))
+    : !WORKER_VERSION_ID.test(String(value.workerVersionId || ""))) {
     throw new Error("live Panel runtime provenance is unavailable or malformed");
   }
   return { ...value };
@@ -260,6 +272,23 @@ export function parseDeploymentAuthority(deployment) {
           || authority.jurisdiction === "eu"
           || authority.jurisdiction === "fedramp")) {
       throw new Error("R2 catalog authority is invalid");
+    }
+    return {
+      schemaVersion: 2,
+      legacyAuthorityInput: false,
+      panelBase: deployment.panelBase,
+      catalogReadKey: deployment.catalogReadKey,
+      authority
+    };
+  }
+  if (authority.type === "self-hosted") {
+    if (!exactKeys(authority, ["type", "storePath", "serviceUser", "unit"])
+        || typeof authority.storePath !== "string"
+        || !authority.storePath.startsWith("/")
+        || authority.storePath.includes("\0")
+        || !/^[A-Za-z0-9_][A-Za-z0-9_-]{0,31}$/u.test(String(authority.serviceUser || ""))
+        || !/^[A-Za-z0-9@_.\\-]{1,255}\.service$/u.test(String(authority.unit || ""))) {
+      throw new Error("self-hosted catalog authority is invalid");
     }
     return {
       schemaVersion: 2,
@@ -620,6 +649,104 @@ export async function verifyR2AuthorityWithRunner(
       }
     }
   };
+}
+
+// Read the content-addressed store straight off disk, the way the R2 authority reads the
+// bucket: never through the Panel's own HTTP surface, so the two can be compared.
+async function readSelfHostedStore(authority) {
+  const storePath = resolve(authority.storePath);
+  const directory = await lstat(storePath, { bigint: true });
+  if (!directory.isDirectory() || directory.isSymbolicLink()) {
+    throw new Error("self-hosted catalog store is not a directory");
+  }
+  if ((directory.mode & 0o077n) !== 0n) {
+    throw new Error("self-hosted catalog store is readable or writable by group or others");
+  }
+  const owner = selfHostedServiceUid(authority.serviceUser);
+  if (directory.uid !== BigInt(owner)) {
+    throw new Error("self-hosted catalog store is not owned by the declared service user");
+  }
+  const pointerPath = `${storePath}/${R2_POINTER_KEY}`;
+  const pointerBytes = await readFile(pointerPath);
+  const pointer = strictJsonObject(pointerBytes, "self-hosted current pointer");
+  if (typeof pointer.snapshotKey !== "string"
+      || !pointer.snapshotKey.startsWith(R2_SNAPSHOT_PREFIX)
+      || pointer.snapshotKey.includes("..")
+      || pointer.snapshotKey.includes("\0")) {
+    throw new Error("self-hosted current pointer contract is invalid");
+  }
+  const stateBytes = await readFile(`${storePath}/${pointer.snapshotKey}`);
+  // The pointer/snapshot contract is identical to R2's; reuse it rather than restate it.
+  const snapshot = parseR2AuthoritySnapshot(pointerBytes, stateBytes);
+  return { storePath, directory, pointerBytes, snapshot };
+}
+
+function selfHostedServiceUid(serviceUser) {
+  const bytes = runBytes("id", ["-u", serviceUser], "self-hosted service user");
+  const uid = Number(bytes.toString("utf8").trim());
+  if (!Number.isSafeInteger(uid) || uid < 0) {
+    throw new Error("self-hosted service user could not be resolved");
+  }
+  return uid;
+}
+
+function selfHostedUnitTree(authority) {
+  const bytes = runBytes("systemctl",
+    ["show", authority.unit, "-p", "WorkingDirectory", "--value"],
+    "self-hosted Panel unit");
+  const directory = bytes.toString("utf8").trim();
+  if (!directory.startsWith("/")) {
+    throw new Error("self-hosted Panel unit has no working directory");
+  }
+  return directory;
+}
+
+async function liveSelfHostedAuthority(authority, panelRuntime) {
+  try {
+    const store = await readSelfHostedStore(authority);
+    const unitTree = selfHostedUnitTree(authority);
+    if (!store.storePath.startsWith(`${unitTree}/`)) {
+      throw new Error("self-hosted catalog store is outside the running Panel deployment");
+    }
+    // A self-hosted deployment has no platform-issued identity. What binds the running code to
+    // this store is the deployment digest the Panel reports plus the unit and store it serves
+    // from; that is what the Worker version id is replaced by, and it is self-reported.
+    const workerBindingSha256 = sha256(Buffer.from([
+      "AUTOFORM_KIT_SELF_HOSTED_PANEL_BINDING_V1",
+      panelRuntime.deploymentSha256,
+      panelRuntime.sourceCommit,
+      authority.unit,
+      store.storePath
+    ].join("\n"), "utf8"));
+    return {
+      catalogBytes: store.snapshot.catalogBytes,
+      manifestBytes: store.snapshot.manifestBytes,
+      panelSettingsBytes: store.snapshot.panelSettingsBytes,
+      authorityIdentitySha256: sha256(Buffer.from([
+        "AUTOFORM_KIT_CATALOG_AUTHORITY_V1",
+        "self-hosted",
+        authority.serviceUser,
+        store.storePath,
+        `${store.directory.dev}:${store.directory.ino}`
+      ].join("\n"), "utf8")),
+      authorityRevision: store.snapshot.pointer.stateSha256,
+      workerBindingSha256,
+      async assertStillCurrent() {
+        const after = await readSelfHostedStore(authority);
+        if (after.storePath !== store.storePath
+            || after.directory.dev !== store.directory.dev
+            || after.directory.ino !== store.directory.ino
+            || !after.pointerBytes.equals(store.pointerBytes)
+            || !after.snapshot.catalogBytes.equals(store.snapshot.catalogBytes)
+            || !after.snapshot.manifestBytes.equals(store.snapshot.manifestBytes)
+            || selfHostedUnitTree(authority) !== unitTree) {
+          fail("self-hosted catalog authority changed during verification");
+        }
+      }
+    };
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 async function liveR2Authority(authority, workerVersionId, toolchainSha256) {
@@ -991,7 +1118,15 @@ const panelRuntime = verifiedPanelRuntime(
 if (panelRuntime.sourceCommit !== args["source-commit"]) {
   fail("live Panel source commit does not match the release source");
 }
-const authorityToolchainSha256 = await wranglerToolchainSha256();
+if (panelRuntime.provenance !== (deploymentInput.authority.type === "self-hosted"
+  ? "self_hosted_source_commit"
+  : "cloudflare_version_tag")) {
+  fail("live Panel runtime provenance does not match the declared catalog authority");
+}
+const selfHostedAuthority = deploymentInput.authority.type === "self-hosted";
+const authorityToolchainSha256 = selfHostedAuthority
+  ? null
+  : await wranglerToolchainSha256();
 const publicRepository = liveRepository(args["public-repository"], "public source repository");
 if (publicRepository.private !== false) {
   fail("public source repository identity is invalid");
@@ -1089,6 +1224,9 @@ if (deploymentInput.authority.type === "github") {
       }
     }
   };
+} else if (selfHostedAuthority) {
+  authoritySnapshot = await liveSelfHostedAuthority(
+    deploymentInput.authority, panelRuntime);
 } else {
   authoritySnapshot = await liveR2Authority(
     deploymentInput.authority,
@@ -1243,7 +1381,12 @@ const result = {
   bindings: {
     ...expectedBindings,
     deploymentEvidenceSha256: deploymentFile.sha256,
-    panelWorkerVersionId: panelRuntime.workerVersionId,
+    panelRuntimeProvenance: panelRuntime.provenance,
+    panelRuntimeIdentitySha256: sha256(Buffer.from([
+      "AUTOFORM_KIT_PANEL_RUNTIME_IDENTITY_V1",
+      panelRuntime.provenance,
+      selfHostedAuthority ? panelRuntime.deploymentSha256 : panelRuntime.workerVersionId
+    ].join("\n"), "utf8")),
     catalogAuthorityType: deploymentInput.authority.type,
     catalogAuthorityIdentitySha256: authoritySnapshot.authorityIdentitySha256,
     catalogAuthorityRevision: authoritySnapshot.authorityRevision,
@@ -1252,13 +1395,19 @@ const result = {
     panelSettingsPresent: settingsBinding.present,
     panelSettingsSha256: settingsBinding.sha256
   },
+  // The two deployments do not prove the same set of things. A Worker authority can show that
+  // the catalog store is a separate system from the code serving it; a self-hosted panel cannot,
+  // because it is one host, one process and one user — so that check is absent rather than true,
+  // and what a directory can actually demonstrate takes its place.
   checks: {
     privateFilesRegular0600: true,
     privateMigrationReleaseReady: true,
     panelPairExact: true,
     panelRuntimeSourceExact: true,
     catalogAuthorityPrivate: true,
-    catalogAuthoritySeparated: true,
+    ...(selfHostedAuthority
+      ? { catalogStorePrivateOnDisk: true }
+      : { catalogAuthoritySeparated: true }),
     catalogAuthorityPanelBindingExact: true,
     catalogSnapshotBound: true,
     catalogManifestLiveExact: true,

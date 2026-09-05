@@ -46,7 +46,8 @@ PRIVATE_PANEL_CATALOG_SHA256=""
 PRIVATE_PANEL_PAIR_SHA256=""
 PRIVATE_DEPLOYMENT_EVIDENCE_SHA256=""
 PRIVATE_CATALOG_VERSION=""
-PRIVATE_PANEL_WORKER_VERSION_ID=""
+PRIVATE_PANEL_RUNTIME_PROVENANCE=""
+PRIVATE_PANEL_RUNTIME_IDENTITY_SHA256=""
 PRIVATE_CATALOG_AUTHORITY_TYPE=""
 PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256=""
 PRIVATE_CATALOG_AUTHORITY_REVISION=""
@@ -1455,8 +1456,11 @@ verify_private_release_evidence() {
   PRIVATE_EVIDENCE_REPORT_SHA256="$(sha256_file "${report}")"
   PRIVATE_PANEL_PAIR_SHA256="$(jq -er '.bindings.panelPairSha256' "${report}")"
   PRIVATE_CATALOG_VERSION="$(jq -er '.bindings.catalogVersion | tostring' "${report}")"
-  PRIVATE_PANEL_WORKER_VERSION_ID="$(
-    jq -er '.bindings.panelWorkerVersionId' "${report}"
+  PRIVATE_PANEL_RUNTIME_PROVENANCE="$(
+    jq -er '.bindings.panelRuntimeProvenance' "${report}"
+  )"
+  PRIVATE_PANEL_RUNTIME_IDENTITY_SHA256="$(
+    jq -er '.bindings.panelRuntimeIdentitySha256' "${report}"
   )"
   PRIVATE_CATALOG_AUTHORITY_TYPE="$(
     jq -er '.bindings.catalogAuthorityType' "${report}"
@@ -1487,7 +1491,8 @@ verify_private_release_evidence() {
     --arg catalog "${PRIVATE_PANEL_CATALOG_SHA256}" \
     --arg deployment "${PRIVATE_DEPLOYMENT_EVIDENCE_SHA256}" \
     --arg pair "${PRIVATE_PANEL_PAIR_SHA256}" \
-    --arg panelWorkerVersion "${PRIVATE_PANEL_WORKER_VERSION_ID}" \
+    --arg panelRuntimeProvenance "${PRIVATE_PANEL_RUNTIME_PROVENANCE}" \
+    --arg panelRuntimeIdentity "${PRIVATE_PANEL_RUNTIME_IDENTITY_SHA256}" \
     --arg authorityType "${PRIVATE_CATALOG_AUTHORITY_TYPE}" \
     --arg authorityIdentity "${PRIVATE_CATALOG_AUTHORITY_IDENTITY_SHA256}" \
     --arg authorityRevision "${PRIVATE_CATALOG_AUTHORITY_REVISION}" \
@@ -1512,7 +1517,8 @@ verify_private_release_evidence() {
         panelPairSha256: $pair,
         catalogVersion: $catalogVersion,
         deploymentEvidenceSha256: $deployment,
-        panelWorkerVersionId: $panelWorkerVersion,
+        panelRuntimeProvenance: $panelRuntimeProvenance,
+        panelRuntimeIdentitySha256: $panelRuntimeIdentity,
         catalogAuthorityType: $authorityType,
         catalogAuthorityIdentitySha256: $authorityIdentity,
         catalogAuthorityRevision: $authorityRevision,
@@ -1521,13 +1527,12 @@ verify_private_release_evidence() {
         panelSettingsPresent: $panelSettingsPresent,
         panelSettingsSha256: $panelSettings
       }
-      and .[0].checks == {
+      and .[0].checks == ({
         privateFilesRegular0600: true,
         privateMigrationReleaseReady: true,
         panelPairExact: true,
         panelRuntimeSourceExact: true,
         catalogAuthorityPrivate: true,
-        catalogAuthoritySeparated: true,
         catalogAuthorityPanelBindingExact: true,
         catalogSnapshotBound: true,
         catalogManifestLiveExact: true,
@@ -1538,7 +1543,14 @@ verify_private_release_evidence() {
         incorrectBearerDenied: true,
         runtimeProvenanceRechecked: true,
         evidenceFresh: true
-      }' "${report}" >/dev/null || \
+      } + (if $authorityType == "self-hosted"
+        then {catalogStorePrivateOnDisk: true}
+        else {catalogAuthoritySeparated: true}
+        end))
+      and .[0].bindings.panelRuntimeProvenance == (if $authorityType == "self-hosted"
+        then "self_hosted_source_commit"
+        else "cloudflare_version_tag"
+        end)' "${report}" >/dev/null || \
     die "trusted private evidence verifier returned an invalid report"
   assert_private_evidence_unchanged
   info "trusted private release evidence accepted"
