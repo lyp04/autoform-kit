@@ -107,7 +107,6 @@ public class ScannerActivity extends ComponentActivity {
     private String pendingScanValue = "";
     private int pendingScanCount = 0;
     private long pendingScanFirstSeenMs = 0L;
-    private long pendingScanLastSeenMs = 0L;
     private SnScanRules.Policy scannerPolicy = SnScanRules.Policy.from(new JSONObject());
     private String promptMessage = "";
     private String identifierLabel = "";
@@ -731,13 +730,11 @@ public class ScannerActivity extends ComponentActivity {
             pendingScanValue = value;
             pendingScanCount = 1;
             pendingScanFirstSeenMs = now;
-            pendingScanLastSeenMs = now;
             updateStatus();
             Diagnostics.append(this, "MLKit scanner candidate format=" + format + " length=" + value.length());
             return false;
         }
         pendingScanCount++;
-        pendingScanLastSeenMs = now;
         updateStatus();
         int required = "MLKIT_TEXT".equals(format) ? TEXT_CONFIRM_COUNT : BARCODE_CONFIRM_COUNT;
         return pendingScanCount >= required
@@ -764,7 +761,6 @@ public class ScannerActivity extends ComponentActivity {
         pendingScanValue = state.value;
         pendingScanCount = Math.min(state.count, required);
         pendingScanFirstSeenMs = state.firstSeenMs;
-        pendingScanLastSeenMs = state.lastSeenMs;
         Diagnostics.append(this, "MLKit scanner single-source fallback length=" + state.value.length() + " count=" + state.count);
         return true;
     }
@@ -783,12 +779,10 @@ public class ScannerActivity extends ComponentActivity {
                 textQueue.removeFirst();
                 if (barcode.value.equals(pendingScanValue)) {
                     pendingScanCount++;
-                    pendingScanLastSeenMs = now;
                 } else {
                     pendingScanValue = barcode.value;
                     pendingScanCount = 1;
                     pendingScanFirstSeenMs = Math.min(barcode.seenMs, text.seenMs);
-                    pendingScanLastSeenMs = now;
                 }
                 Diagnostics.append(this, "MLKit scanner cross-confirmed length=" + barcode.value.length() + " count=" + pendingScanCount);
                 if (pendingScanCount >= CROSS_CONFIRM_COUNT

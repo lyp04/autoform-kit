@@ -1363,7 +1363,7 @@ final class CatalogPromotionValidator {
             if (target == null || target == source) reject(entryPath + ".targetProfileId");
 
             try {
-                JSONObject targetProfile = AlternateEntryRules.targetProfile(profiles, entry);
+                AlternateEntryRules.targetProfile(profiles, entry);
                 int minimum = rangedInt(entry.opt("minPhotos"), 1, MAX_ALTERNATE_PHOTOS,
                     entryPath + ".minPhotos");
                 List<String> placeholderUrls = new ArrayList<>();

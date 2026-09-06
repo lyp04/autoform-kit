@@ -439,7 +439,6 @@ public class MainActivity extends Activity {
     private ProgressBar submitProgressBar;
     private TextView submitProgressLabel;
     private int submitProgressTotal;
-    private int submitProgressCompleted;
     // The window flag prevents automatic screen-off; the partial WakeLock keeps the current
     // transfer executing if the operator accidentally presses the physical power button. One
     // submission lease may overlap parallel image transfers, so both protections share this count.
@@ -8752,7 +8751,6 @@ public class MainActivity extends Activity {
                     submitting = false;
                     hideSubmitLoading();
                     if (finalSessionExpired) {
-                        String dnsWarning = buildDnsAffectedMessage();
                         if (finalSubmitted > 0 || !finalErrors.isEmpty() || !finalInlineFailed.isEmpty()) {
                             notifyRoundToNotify(false, finalSubmitted, finalErrors, finalInlineFailed);
                         }
@@ -8887,7 +8885,6 @@ public class MainActivity extends Activity {
             JSONObject st = context.api.printerState();
             requirePrintRemoteBinding(context, target, 0L, "batch",
                 "printer preflight response");
-            JSONObject data = context.api.apiDataObject(st);
             if (context.api.isSuccess(st) && context.api.endpoints.printing.isOnline(st)) {
                 return true;
             }
@@ -10286,7 +10283,6 @@ public class MainActivity extends Activity {
         submitProgressLabel = label;
         submitProgressMessage = message;
         submitProgressTotal = safeTotal;
-        submitProgressCompleted = 0;
 
         submitProgressDialog = new AlertDialog.Builder(this)
             .setTitle(t("submit"))
@@ -10310,7 +10306,6 @@ public class MainActivity extends Activity {
         submitProgressBar = null;
         submitProgressLabel = null;
         submitProgressTotal = 0;
-        submitProgressCompleted = 0;
         releaseSubmitScreenAwakeLease();
     }
 
@@ -10334,7 +10329,6 @@ public class MainActivity extends Activity {
 
     private void setSubmitProgress(int completed) {
         runOnUiThread(() -> {
-            submitProgressCompleted = completed;
             if (submitProgressBar != null) submitProgressBar.setProgress(completed);
             if (submitProgressLabel != null) submitProgressLabel.setText(completed + "/" + submitProgressTotal);
         });
