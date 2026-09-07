@@ -1205,7 +1205,7 @@ public class MainActivity extends Activity {
         LinearLayout submitPanel = panel();
         submitPanel.addView(compactLabel(t("submit")));
         LinearLayout submitRow = row();
-        // Previous-record checks already run when the primary identifier is added.
+        // Previous-record checks run when an identifier is added, on every input path.
         submitRow.addView(button(t("submit_batch"), v -> submitBatch()));
         if (printingConfiguredForProfile()) {
             submitRow.addView(button(t("print_reconcile_open"), v -> showPrintReconcileDialog()));
@@ -6027,9 +6027,13 @@ public class MainActivity extends Activity {
     private void addTypedSn() {
         String sn = normalizeIdentifier(snEdit.getText().toString(), false,
             SnScanRules.SOURCE_ENTERED);
-        if (addSnValue(sn, selectedGrade(), SnScanRules.SOURCE_ENTERED)) {
+        // A keyboard-wedge scanner types the identifier instead of returning a camera result, so
+        // this path must precheck exactly like the camera and OCR paths do.
+        UnitRecord added = addSnRecord(sn, selectedGrade(), SnScanRules.SOURCE_ENTERED);
+        if (added != null) {
             snEdit.setText("");
             resetGradeSelection();
+            checkScannedUnitPreviousSteps(added);
         }
         refocusSnInput();
     }
@@ -6668,10 +6672,6 @@ public class MainActivity extends Activity {
     private void handleSnEnter() {
         addTypedSn();
         refocusSnInput();
-    }
-
-    private boolean addSnValue(String sn, String grade, String source) {
-        return addSnRecord(sn, grade, source) != null;
     }
 
     private UnitRecord addSnRecord(String sn, String grade, String source) {
@@ -8056,89 +8056,6 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> log(builder.toString()));
             } catch (Exception exc) {
                 runOnUiThread(() -> alert(t("payload_failed"), exc.getMessage()));
-            }
-        }).start();
-    }
-
-    private void checkPreviousStepsForBatch() {
-        if (submitting || alternateEntrySubmitting) {
-            toast(t("submit_running"));
-            return;
-        }
-        final ProfileWorkflow workflow = profileWorkflow();
-        if (!workflow.previousStepsEnabled) {
-            alert(t("check_steps"), t("workflow_previous_steps_disabled"));
-            return;
-        }
-        UploadReplayBarrier.RestoreResult blockingUpload =
-            blockingUploadReplayBarrier();
-        if (blockingUpload != null) {
-            showUploadReplayBarrierBlock(blockingUpload);
-            return;
-        }
-        String token = savedToken();
-        if (token.isEmpty()) {
-            alert(t("login_required"), t("login_required_detail"));
-            return;
-        }
-        if (units.isEmpty()) {
-            toast(t("no_sn"));
-            return;
-        }
-        final MainDraftSnapshotRules.Binding expectedDraftBinding;
-        try {
-            expectedDraftBinding = captureMainDraftSubmissionBinding();
-        } catch (Exception error) {
-            Diagnostics.append(this, "Previous-step batch blocked by draft binding: "
-                + conciseError(error));
-            alert(t("cannot_submit"), t("draft_binding_locked_detail"));
-            return;
-        }
-        if (!beginMainDraftRemoteWorker(expectedDraftBinding)) {
-            alert(t("cannot_submit"), t("draft_binding_locked_detail"));
-            return;
-        }
-        appendLog(t("checking_steps"));
-        new Thread(() -> {
-            try {
-                List<String> errors = new ArrayList<>();
-                if (!mainDraftSubmissionAllowed(expectedDraftBinding)) {
-                    runOnUiThread(() -> alert(
-                        t("cannot_submit"), t("draft_binding_locked_detail")));
-                    return;
-                }
-                if (!backendConfigured()) { notifyBackendUnconfigured(); return; }
-                Api api = api(token);
-                for (UnitRecord unit : units) {
-                    try {
-                        runWithMainUploadBarrier(
-                            api, unit, expectedDraftBinding,
-                            () -> ensurePreviousSteps(
-                                api, unit, expectedDraftBinding, workflow));
-                    } catch (Exception exc) {
-                        String message = conciseError(exc);
-                        errors.add(unitLogLine(unit, message));
-                        appendUnitLog(unit, message);
-                        // Once any upload started, its durable barrier intentionally outlives this
-                        // worker. Do not inspect or mutate a later unit in the same manual batch.
-                        if (hasStoredUploadReplayBarrier()) break;
-                    }
-                }
-                runOnUiThread(() -> {
-                    refreshFormUi();
-                    if (errors.isEmpty()) {
-                        alert(t("check_done"), t("steps_ok"));
-                    } else {
-                        alert(t("steps_missing_title"), join(errors, "\n"));
-                    }
-                });
-            } catch (Exception exc) {
-                runOnUiThread(() -> {
-                    refreshFormUi();
-                    alert(t("steps_missing_title"), conciseError(exc));
-                });
-            } finally {
-                endMainDraftRemoteWorker();
             }
         }).start();
     }
@@ -10641,24 +10558,6 @@ public class MainActivity extends Activity {
                     || !clearMainSubmissionAttempt()) {
                 throw new SubmissionAcknowledgedRecoveryException();
             }
-        }
-    }
-
-    private void runWithMainUploadBarrier(
-            Api api, UnitRecord unit,
-            MainDraftSnapshotRules.Binding expectedDraftBinding,
-            SubmissionAction action) throws Exception {
-        if (activeMainUploadBarrier.get() != null) {
-            throw new IllegalStateException("nested upload replay context");
-        }
-        ActiveMainUploadBarrier context = captureMainUploadBarrier(
-            api, unit, expectedDraftBinding);
-        activeMainUploadBarrier.set(context);
-        try {
-            action.run();
-            finishActiveMainUploadBarrier(context);
-        } finally {
-            activeMainUploadBarrier.remove();
         }
     }
 
@@ -18505,7 +18404,6 @@ public class MainActivity extends Activity {
             case "panel_missing_config": return "面板配置不完整，缺少：";
             case "profile_policy_migration_required": return "当前表单仍是旧策略格式，请先在 Panel 完成运行策略迁移后再提交。";
             case "profile_workflow_missing": return "当前表单缺少 workflow 配置，已阻止提交。请先在面板发布完整配置。";
-            case "workflow_previous_steps_disabled": return "当前表单未启用前置步骤检查。";
             case "panel_connecting": return "正在连接面板…";
             case "panel_connected": return "面板已连接";
             case "panel_connect_failed": return "面板连接失败，请检查地址和访问密钥";
@@ -18616,7 +18514,6 @@ public class MainActivity extends Activity {
             case "alternate_entry_scan_cancelled": return "已取消上次未完成的扫码。";
             case "submit": return "提交";
             case "preview_payload": return "预览 Payload";
-            case "check_steps": return "检查前置记录";
             case "dry_run": return "只生成 Payload，不提交";
             case "not_logged_in": return "未登录：真实提交前请先登录";
             case "logged_in": return "已登录：";
@@ -18664,8 +18561,6 @@ public class MainActivity extends Activity {
             case "workflow_artifacts_done": return "所需流程附件已完成";
             case "workflow_artifacts_required": return "请先完成面板配置的必需流程附件。";
             case "workflow_artifact_missing": return "缺少流程附件来源: ";
-            case "check_done": return "检查完成";
-            case "steps_ok": return "当前批次的前置记录检查通过。";
             case "steps_missing_title": return "前置记录缺失";
             case "cannot_submit": return "还不能提交";
             case "scan_precheck_missing_detail": return "配置的前置记录未找到或编号有误，请重试。";
@@ -18933,7 +18828,6 @@ public class MainActivity extends Activity {
             case "panel_missing_config": return "Panel configuration is incomplete. Missing: ";
             case "profile_policy_migration_required": return "This form still uses the legacy policy format. Migrate its runtime policies in the Panel before submitting.";
             case "profile_workflow_missing": return "This form has no workflow configuration. Submission is blocked until the panel publishes one.";
-            case "workflow_previous_steps_disabled": return "Previous-step checks are disabled for this form.";
             case "panel_connecting": return "Connecting to the panel…";
             case "panel_connected": return "Panel connected";
             case "panel_connect_failed": return "Panel connection failed. Check the address and access key.";
@@ -19044,7 +18938,6 @@ public class MainActivity extends Activity {
             case "alternate_entry_scan_cancelled": return "The unfinished previous scan was cancelled.";
             case "submit": return "Submit";
             case "preview_payload": return "Preview Payload";
-            case "check_steps": return "Check previous records";
             case "dry_run": return "Dry run only";
             case "not_logged_in": return "Not logged in. Login before real submit.";
             case "logged_in": return "Logged in: ";
@@ -19092,8 +18985,6 @@ public class MainActivity extends Activity {
             case "workflow_artifacts_done": return "Required workflow attachments complete";
             case "workflow_artifacts_required": return "Complete the panel-required workflow attachments first.";
             case "workflow_artifact_missing": return "Missing workflow attachment source: ";
-            case "check_done": return "Check complete";
-            case "steps_ok": return "Configured previous records are present.";
             case "steps_missing_title": return "Previous records missing";
             case "cannot_submit": return "Cannot submit yet";
             case "scan_precheck_missing_detail": return "Configured previous records are missing or the identifier is incorrect. Retry.";
@@ -19361,7 +19252,6 @@ public class MainActivity extends Activity {
             case "panel_missing_config": return "La configuración del panel está incompleta. Falta: ";
             case "profile_policy_migration_required": return "Este formulario usa el formato de politica anterior. Migre sus politicas en el Panel antes de enviarlo.";
             case "profile_workflow_missing": return "Este formulario no tiene configuración workflow. El envío está bloqueado hasta publicarla en el panel.";
-            case "workflow_previous_steps_disabled": return "La comprobación de pasos previos está desactivada para este formulario.";
             case "panel_connecting": return "Conectando con el panel…";
             case "panel_connected": return "Panel conectado";
             case "panel_connect_failed": return "Error de conexión del panel. Verifique la dirección y la clave de acceso.";
@@ -19472,7 +19362,6 @@ public class MainActivity extends Activity {
             case "alternate_entry_scan_cancelled": return "Se canceló el escaneo anterior sin terminar.";
             case "submit": return "Enviar";
             case "preview_payload": return "Vista previa del payload";
-            case "check_steps": return "Revisar registros previos";
             case "dry_run": return "Solo generar payload";
             case "not_logged_in": return "Sin sesión. Inicie sesión antes de enviar.";
             case "logged_in": return "Sesión: ";
@@ -19520,8 +19409,6 @@ public class MainActivity extends Activity {
             case "workflow_artifacts_done": return "Adjuntos requeridos completos";
             case "workflow_artifacts_required": return "Complete primero los adjuntos requeridos por el panel.";
             case "workflow_artifact_missing": return "Falta la fuente del adjunto: ";
-            case "check_done": return "Revisión completa";
-            case "steps_ok": return "Los registros previos configurados están presentes.";
             case "steps_missing_title": return "Faltan registros previos";
             case "cannot_submit": return "Aún no se puede enviar";
             case "scan_precheck_missing_detail": return "Faltan registros previos configurados o el identificador es incorrecto. Intente de nuevo.";

@@ -297,11 +297,18 @@ assert.match(storedUnit, /JSONObject item, ProfileWorkflow workflow/);
 assert.doesNotMatch(storedUnit, /profileWorkflow\(\)/,
   "stored terminal reconstruction must use its recovery workflow snapshot");
 
-const manualCheck = methodSlice(main, "private void checkPreviousStepsForBatch()",
-  "private void checkScannedUnitPreviousSteps(");
-assert.match(manualCheck, /final ProfileWorkflow workflow = profileWorkflow\(\)/);
-assert.match(manualCheck,
-  /ensurePreviousSteps\(\s*api, unit, expectedDraftBinding, workflow\)/,
-  "manual check must enter the same internally gated side-effect path");
+// The check belongs to adding an identifier, on every input path. A separate batch entry point
+// once carried it, lost its button as redundant, and sat uncallable for the whole visible history
+// while the precheck it deferred to skipped typed identifiers -- so the line saw no checking at
+// all. Assert the property that replaced it, and that the dead entry point stays gone.
+assert.doesNotMatch(main, /checkPreviousStepsForBatch/,
+  "the batch previous-record check was removed; adding an identifier is what checks now");
+
+const typedAdd = methodSlice(main, "private void addTypedSn()",
+  "private void startSnScan(");
+assert.match(typedAdd, /checkScannedUnitPreviousSteps\(added\)/,
+  "typed identifiers (what a keyboard-wedge scanner produces) must precheck like camera and OCR");
+assert.equal((main.match(/checkScannedUnitPreviousSteps\(added\)/g) || []).length, 3,
+  "camera, OCR and typed identifier paths must each run the scan precheck exactly once");
 
 console.log("previous-step journal wiring self-test: pass");
