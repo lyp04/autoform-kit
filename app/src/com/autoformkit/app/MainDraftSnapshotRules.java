@@ -422,6 +422,22 @@ final class MainDraftSnapshotRules {
         }
     }
 
+    /**
+     * Fingerprint of the config half alone, for an update source named by a config whose catalog
+     * peer cannot arrive. The wrapper shape differs from {@link #panelPairSha256}, so a config-only
+     * binding can never collide with a pair binding for the same bytes.
+     */
+    static String panelConfigSha256(JSONObject appConfig) {
+        if (appConfig == null) return "";
+        try {
+            JSONObject cleanConfig = new JSONObject(appConfig.toString());
+            cleanConfig.remove(CACHE_BINDING_FIELD);
+            return sha256(canonicalJson(new JSONObject().put("config", cleanConfig)));
+        } catch (Exception error) {
+            return "";
+        }
+    }
+
     static String semanticSha256(JSONObject value) {
         if (value == null) return "";
         try {

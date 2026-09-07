@@ -252,6 +252,52 @@ public class PanelPairCacheCoordinatorTest {
             newer));
     }
 
+    @Test
+    public void updateSourceResolvesFromConfigHalfWhenCatalogGateStrandsThePair()
+            throws Exception {
+        Object handoffLock = new Object();
+        String connection = AppConfig.connectionNamespaceId(PANEL, KEY);
+        PanelPairCacheCoordinator.ActivePair active =
+            PanelPairCacheCoordinator.parsePair(
+                config(7).toString(), catalog(7).toString(), PANEL, KEY);
+
+        // A complete candidate-free pair is unchanged: it still binds to the pair digest.
+        PanelPairCacheCoordinator.UpdateSourceConfig paired =
+            PanelPairCacheCoordinator.loadUpdateSourceConfig(
+                handoffLock, connection, new RaceSource(handoffLock, active));
+        assertTrue(paired.paired);
+        assertEquals(active.pairSha256, paired.digestSha256);
+
+        // Below the catalog's minAppVersionCode the catalog half never arrives, so the App holds
+        // a config candidate and no pair. It must still be able to learn where its update lives.
+        RaceSource gated = new RaceSource(handoffLock, null);
+        gated.configCandidate = config(9).toString();
+        PanelPairCacheCoordinator.UpdateSourceConfig stranded =
+            PanelPairCacheCoordinator.loadUpdateSourceConfig(handoffLock, connection, gated);
+        assertTrue(!stranded.paired);
+        assertEquals(9, AppConfig.catalogVersion(stranded.config));
+        assertTrue(stranded.digestSha256.matches("[0-9a-f]{64}"));
+        assertTrue(!stranded.digestSha256.equals(active.pairSha256));
+
+        // Same when the gate rose only after this device had already paired.
+        RaceSource strandedAfterPairing = new RaceSource(handoffLock, active);
+        strandedAfterPairing.configCandidate = config(9).toString();
+        PanelPairCacheCoordinator.UpdateSourceConfig newer =
+            PanelPairCacheCoordinator.loadUpdateSourceConfig(
+                handoffLock, connection, strandedAfterPairing);
+        assertTrue(!newer.paired);
+        assertEquals(9, AppConfig.catalogVersion(newer.config));
+
+        // A candidate that is not this Panel's authenticated config never names a source, and
+        // holding nothing at all resolves nothing.
+        RaceSource malformed = new RaceSource(handoffLock, null);
+        malformed.configCandidate = "{\"catalogVersion\":9}";
+        assertEquals(null, PanelPairCacheCoordinator.loadUpdateSourceConfig(
+            handoffLock, connection, malformed));
+        assertEquals(null, PanelPairCacheCoordinator.loadUpdateSourceConfig(
+            handoffLock, connection, new RaceSource(handoffLock, null)));
+    }
+
     private static JSONObject config(int version) throws Exception {
         JSONObject value = new JSONObject()
             .put("catalogVersion", version)

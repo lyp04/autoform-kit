@@ -64,6 +64,22 @@ final class PanelPairCacheCoordinator {
     }
 
     /** Non-sensitive cache state for the hidden on-device support report. */
+    /**
+     * The authenticated Panel config that may name an update source, with the digest the update is
+     * bound to. {@code paired} is true only for a complete, candidate-free pair.
+     */
+    static final class UpdateSourceConfig {
+        final JSONObject config;
+        final String digestSha256;
+        final boolean paired;
+
+        private UpdateSourceConfig(JSONObject config, String digestSha256, boolean paired) {
+            this.config = config;
+            this.digestSha256 = digestSha256;
+            this.paired = paired;
+        }
+    }
+
     static final class DiagnosticSnapshot {
         final boolean connectionMatches;
         final boolean recoveryBlocked;
@@ -217,13 +233,70 @@ final class PanelPairCacheCoordinator {
     }
 
     /**
-     * One-lock conservative view for update-source binding. Any candidate half suppresses the
-     * active pair, even when it is a valid strictly-newer publish still downloading its peer.
+     * One-lock view of the config half that may name an update source.
+     *
+     * <p>An App below the catalog's {@code minAppVersionCode} never completes a pair: it stages the
+     * config candidate and then stops at the catalog gate. Requiring a pair here would leave such a
+     * build permanently unable to learn where its own update lives, so the gate meant to keep an
+     * old App off a new catalog would also close its only route off that old version. The update
+     * source lives in the config half alone, so the newest authenticated config is the right
+     * authority, and the returned digest still pins the exact bytes that named it.
      */
-    static ActivePair loadActivePairIfNoCandidates(
+    static UpdateSourceConfig loadUpdateSourceConfig(
+            Object handoffLock, String expectedConnection, AtomicActiveUseSource source) {
+        if (handoffLock == null || source == null) return null;
+        synchronized (handoffLock) {
+            // Reentrant: the pair view runs inside this same critical section, so the paired
+            // answer and the config-only fallback observe one state of the cache.
+            ActivePair paired = atomicActivePairView(
+                handoffLock, expectedConnection, CandidatePolicy.REQUIRE_NONE, source);
+            if (paired != null) {
+                return new UpdateSourceConfig(paired.config, paired.pairSha256, true);
+            }
+            try {
+                source.recover();
+                if (!clean(expectedConnection).equals(
+                        clean(source.currentConnection()))) {
+                    return null;
+                }
+                String configCandidate = source.configCandidateTextOrNull();
+                JSONObject config = configCandidate == null ? null
+                    : validConfigOrNull(configCandidate, source.panelBase(), source.catalogKey());
+                if (config == null) {
+                    ActivePair active = source.activePair();
+                    if (active == null) return null;
+                    config = active.config;
+                }
+                String digest = MainDraftSnapshotRules.panelConfigSha256(config);
+                if (!digest.matches("[0-9a-f]{64}")) return null;
+                return new UpdateSourceConfig(config, digest, false);
+            } catch (Exception blockedOrInvalid) {
+                return null;
+            }
+        }
+    }
+
+    static UpdateSourceConfig loadUpdateSourceConfig(
             Context context, String expectedConnection) {
-        return atomicActivePairView(context, expectedConnection,
-            CandidatePolicy.REQUIRE_NONE);
+        final Context app;
+        try {
+            app = requireContext(context);
+        } catch (Exception invalid) {
+            return null;
+        }
+        return loadUpdateSourceConfig(UpdateInstallRules.HANDOFF_LOCK,
+            expectedConnection, atomicSource(app));
+    }
+
+    private static JSONObject validConfigOrNull(String text, String panelBase, String key) {
+        try {
+            JSONObject config = new JSONObject(text);
+            if (!validConfig(config, panelBase, key)) return null;
+            if (AppConfig.catalogVersion(config) <= 0) return null;
+            return config;
+        } catch (Exception invalid) {
+            return null;
+        }
     }
 
     /**
@@ -581,7 +654,11 @@ final class PanelPairCacheCoordinator {
             return null;
         }
         return atomicActivePairView(UpdateInstallRules.HANDOFF_LOCK,
-            expectedConnection, policy, new AtomicActiveUseSource() {
+            expectedConnection, policy, atomicSource(app));
+    }
+
+    private static AtomicActiveUseSource atomicSource(final Context app) {
+        return new AtomicActiveUseSource() {
                 @Override public void recover() throws Exception {
                     recoverLocked(app);
                 }
@@ -611,7 +688,7 @@ final class PanelPairCacheCoordinator {
                 @Override public String catalogKey() {
                     return AppConfig.catalogKey(app);
                 }
-            });
+            };
     }
 
     private static String candidateTextOrNull(File file) throws IOException {

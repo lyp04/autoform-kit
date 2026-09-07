@@ -305,16 +305,14 @@ final class UpdateManager {
 
     private static Config loadConfig(Context context) throws Exception {
         JSONObject json = new JSONObject(readAsset(context, CONFIG_ASSET));
-        // Capture config, catalog revision and pair digest under one pair-read lock. Reading the
-        // two AtomicFiles independently could authorize an update from mixed same-revision halves.
+        // Capture config, catalog revision and binding digest under one pair-read lock. Reading
+        // the AtomicFiles independently could authorize an update from mixed same-revision halves.
         String expectedConnection = AppConfig.connectionNamespaceId(
             AppConfig.panelBase(context), AppConfig.catalogKey(context));
-        PanelPairCacheCoordinator.ActivePair panelPair =
-            PanelPairCacheCoordinator.loadActivePairIfNoCandidates(
-                context, expectedConnection);
-        JSONObject panelCfg = panelPair == null ? null : panelPair.config;
-        boolean compatiblePanelPair = panelPair != null;
-        String panelPairSha256 = panelPair == null ? "" : panelPair.pairSha256;
+        PanelPairCacheCoordinator.UpdateSourceConfig panelSource =
+            PanelPairCacheCoordinator.loadUpdateSourceConfig(context, expectedConnection);
+        JSONObject panelCfg = panelSource == null ? null : panelSource.config;
+        String panelPairSha256 = panelSource == null ? "" : panelSource.digestSha256;
         SharedPreferences updatePrefs =
             context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String devicePreference = CHANNEL_STABLE;
@@ -327,7 +325,8 @@ final class UpdateManager {
         UpdateSourceRules.Resolved resolved = AppConfig.resolveUpdateSource(
             json, panelCfg, devicePreference);
         Config config = new Config();
-        config.panelReady = compatiblePanelPair && panelCfg != null;
+        // Ready means the Panel resolved the update policy, which a config half alone can do.
+        config.panelReady = panelCfg != null;
         config.connectionNamespace = expectedConnection;
         config.panelPairSha256 = panelPairSha256;
         config.channel = resolved.channel;
@@ -339,7 +338,7 @@ final class UpdateManager {
         if (config.owner.isEmpty() || config.repo.isEmpty()) {
             config.enabled = false;
         }
-        if (config.enabled && panelCfg != null && compatiblePanelPair) {
+        if (config.enabled && panelCfg != null) {
             try {
                 config.source = UpdateInstallRules.SourceBinding.capture(
                     AppConfig.connectionNamespaceId(

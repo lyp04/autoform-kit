@@ -86,7 +86,7 @@ const checks = new Map([
         "sameOlderMalformedOrCrossPanelCandidatesBlockActiveFallback")],
   ["atomic active-use views close candidate classify/load TOCTOU",
     coordinator.includes("loadActivePairIfCandidatesPermit(")
-      && coordinator.includes("loadActivePairIfNoCandidates(")
+      && coordinator.includes("loadUpdateSourceConfig(")
       && coordinator.includes("atomicActivePairView(")
       && coordinatorTest.includes(
         "atomicViewClassifiesCandidateInsertedAfterActiveRead")
@@ -153,9 +153,9 @@ const checks = new Map([
     safePromotion.includes("synchronized (UpdateInstallRules.HANDOFF_LOCK)")
       && safePromotion.includes("RemoteSideEffectGate.blockingStatePresent(this)")
       && safePromotion.includes("UpdateManager.installerHandoffActive(this)")],
-  ["updater captures one coherent pair and its digest",
-    updateLoad.includes("PanelPairCacheCoordinator.loadActivePairIfNoCandidates(")
-      && updateLoad.includes("panelPair.pairSha256")
+  ["updater captures one coherent config and its digest",
+    updateLoad.includes("PanelPairCacheCoordinator.loadUpdateSourceConfig(")
+      && updateLoad.includes("panelSource.digestSha256")
       && !updateLoad.includes("FormCatalog.readRawCache")],
   ["connection change discards active candidates and transaction receipt together",
     manager.includes("PanelPairCacheCoordinator.discardForConnectionChange(app)")

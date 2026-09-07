@@ -233,11 +233,14 @@ const checks = new Map([
   ["print UI callback checks captured binding", /printRemoteBindingStillCurrent\(context\)/.test(main)],
   ["ambiguous inline POST is not retried", /reprintOutcomeUncertain/.test(main)
     && /inline_reprint_uncertain/.test(main)],
-  ["update source binds exact Panel pair", /catalogVersion/.test(updateRules)
+  ["update source binds exact authenticated Panel config", /catalogVersion/.test(updateRules)
     && /panelPairSha256/.test(updateRules)
-    && /PanelPairCacheCoordinator\.loadActivePairIfNoCandidates\(\s*context, expectedConnection\)/.test(update)
+    && /PanelPairCacheCoordinator\.loadUpdateSourceConfig\(context, expectedConnection\)/.test(update)
     && /CandidatePolicy\.REQUIRE_NONE/.test(panelPairCoordinator)
-    && /panelPair\.pairSha256/.test(update)
+    && /new UpdateSourceConfig\(paired\.config, paired\.pairSha256, true\)/.test(panelPairCoordinator)
+    && /validConfigOrNull\(configCandidate, source\.panelBase\(\), source\.catalogKey\(\)\)/.test(panelPairCoordinator)
+    && /MainDraftSnapshotRules\.panelConfigSha256\(config\)/.test(panelPairCoordinator)
+    && /panelSource\.digestSha256/.test(update)
     && /\.put\("panelPairSha256", pending\.source\.panelPairSha256\)/.test(update)
     && /sourceJson\.getString\("panelPairSha256"\)/.test(update)],
   ["update source requires one coherent compatible config+catalog pair",
